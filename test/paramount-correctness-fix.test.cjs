@@ -65,3 +65,39 @@ test('yolo expiry: re-arming clears the previous timer', () => {
   assert.equal(h.s.timers[0].cleared, true);
   assert.equal(h.s.timers.length, 2);
 });
+
+const { normalizeAutoModePatch, touchesAutoModeExpiry } = loadTs('src/main/autoModeExpiry.ts');
+
+test('config:update: a plain YOLO toggle clears the timed-window stamp', () => {
+  assert.deepEqual(normalizeAutoModePatch({ autoMode: true }), { autoMode: true, autoModeExpiresAt: undefined });
+  assert.deepEqual(normalizeAutoModePatch({ autoMode: false }), { autoMode: false, autoModeExpiresAt: undefined });
+  assert.ok(Object.hasOwn(normalizeAutoModePatch({ autoMode: true }), 'autoModeExpiresAt'), 'key present so writeConfig overrides the stored stamp');
+});
+
+test('config:update: an explicit stamp with autoMode on is kept; off always clears it', () => {
+  const at = '2026-10-15T10:00:00.000Z';
+  assert.deepEqual(normalizeAutoModePatch({ autoMode: true, autoModeExpiresAt: at }), { autoMode: true, autoModeExpiresAt: at });
+  assert.equal(normalizeAutoModePatch({ autoMode: false, autoModeExpiresAt: at }).autoModeExpiresAt, undefined);
+});
+
+test('config:update: unrelated patches pass through and do not re-arm', () => {
+  const p = { notifications: true };
+  assert.equal(normalizeAutoModePatch(p), p);
+  assert.equal(touchesAutoModeExpiry(p), false);
+  assert.equal(touchesAutoModeExpiry(null), false);
+  assert.equal(touchesAutoModeExpiry({ autoMode: true }), true);
+  assert.equal(touchesAutoModeExpiry({ autoModeExpiresAt: '2026-10-15T10:00:00.000Z' }), true);
+});
+
+test('config:update scenario: Settings off→on after a timed window leaves no stale expiry', () => {
+  const h = harness({ expiresAt: new Date(1_000_000 + 3_600_000).toISOString() });
+  h.expiry.arm();
+  const first = h.s.timers.at(-1);
+  for (const patch of [{ autoMode: false }, { autoMode: true }]) {
+    h.s.cfg = { ...h.s.cfg, ...normalizeAutoModePatch(patch) };
+    if (touchesAutoModeExpiry(patch)) h.expiry.arm();
+  }
+  assert.equal(first.cleared, true, 'old timer cleared');
+  assert.equal(h.s.timers.length, 1, 'no new timer: YOLO is now always-on');
+  assert.equal(h.effectiveAutoMode(), true);
+});

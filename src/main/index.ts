@@ -14,7 +14,7 @@ import { homedir, release as osRelease, type as osType, totalmem, freemem } from
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
-import { createAutoModeExpiry } from './autoModeExpiry';
+import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } from './autoModeExpiry';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
@@ -3212,7 +3212,9 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
   // transition so ordinary config writes never re-enter it.
   const hiveWasEnabled = hive.enabled();
   const wasOnboarded = readConfig().onboardingComplete;
-  const next = writeConfig(patch);
+  // A plain YOLO toggle ends any timed window; re-arm so a stale timer never fires.
+  const next = writeConfig(normalizeAutoModePatch(patch));
+  if (touchesAutoModeExpiry(patch)) armAutoModeExpiry();
   // Live opt-in/out from Settings → Privacy (TELEMETRY.md).
   if (typeof patch?.telemetryEnabled === 'boolean') analytics.setEnabled(patch.telemetryEnabled);
   // Activation funnel (v0.4.6): onboarding just finished (false → true) — the top of
@@ -4687,7 +4689,10 @@ registerRealtimeActionIpc({
     try { liveWebContents()?.send('realtime:enqueue', { agentId: id, text }); } catch { /* window gone */ }
   },
   getConfigValue: (key) => (readConfig() as unknown as Record<string, unknown>)[key],
-  patchConfig: (patch) => { writeConfig(patch as Partial<HarnessConfig>); }
+  patchConfig: (patch) => {
+    writeConfig(normalizeAutoModePatch(patch as Partial<HarnessConfig>));
+    if (touchesAutoModeExpiry(patch)) armAutoModeExpiry();
+  }
 });
 
 // rt-12 seam: push detected completions to the live floor; bridge live-flag, queue
