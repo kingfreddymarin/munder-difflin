@@ -25,7 +25,8 @@ export type ParamountCommand =
   | { type: 'account.profile'; patch: Partial<{ name: string; workEmail: string; timezone: string }> }
   | { type: 'terminal.input'; agentId: string; text: string }
   | { type: 'layout.panels'; panels: string[] }
-  | { type: 'prereq.install'; id: string }
+  /** Read-only unless `confirm: true`; then opens a visible installer terminal. */
+  | { type: 'prereq.install'; id: string; confirm?: boolean }
   | { type: 'prereq.start'; id: string }
   | { type: 'setup.dismiss'; degraded: string[] }
   /** Read-only: returns a redacted diagnostics bundle on the result. */
@@ -60,8 +61,21 @@ export interface ParamountFailure {
   correlationId: string;
 }
 export type ParamountResult =
-  | { ok: true; event: ParamountEvent; diagnostics?: ParamountDiagnostics }
+  | { ok: true; event: ParamountEvent; diagnostics?: ParamountDiagnostics; prereq?: ParamountPrereqReport }
   | ParamountFailure;
+
+/** What `prereq.install` would run (confirmed=false) or started (confirmed=true). */
+export interface ParamountPrereqReport {
+  id: string;
+  label: string;
+  installed: boolean;
+  kind: 'npm' | 'node-then-npm' | 'native' | 'manual';
+  /** The exact trusted command the installer terminal runs. */
+  command: string;
+  confirmed: boolean;
+  /** Terminal to stream with onPtyData; present only after a confirmed start. */
+  ptyId?: string;
+}
 
 /** Redacted support bundle returned by `diagnostics.bundle`. */
 export interface ParamountDiagnostics {

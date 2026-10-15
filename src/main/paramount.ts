@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ScheduledMission } from './config';
-import type { ParamountDiagnostics, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand } from '../preload/paramount';
+import type { ParamountDiagnostics, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand, ParamountPrereqReport } from '../preload/paramount';
 import { createSpan, type Span } from './paramountObservability';
 
 export interface ParamountDeps {
@@ -17,13 +17,50 @@ export interface ParamountDeps {
   publish(event: ParamountEvent): void;
   /** Redacted support bundle for `diagnostics.bundle`; absent means unsupported. */
   diagnostics?(options: { logLines?: number; cid: string }): ParamountDiagnostics;
+  /** Floor-wide YOLO: persisted as config `autoMode` (new agents spawn with the
+   *  engine's bypass-permissions stance). Absent means unsupported. */
+  setFloorAutoMode?(on: boolean): void;
+  /** Connect/disconnect a registered integration by toggling its `enabled` flag.
+   *  Never receives or returns a secret. `needs_secret` = the record requires a
+   *  credential that has not been stored through the integrations flow. */
+  setIntegrationConnected?(id: string, connected: boolean): 'ok' | 'not_found' | 'needs_secret';
+  /** Vetted engine-CLI installers only. `plan` is read-only. `run` starts a
+   *  VISIBLE terminal that runs the plan's trusted command and returns its pty id. */
+  prereqInstall?: {
+    plan(id: string): ParamountPrereqPlan | null;
+    run(plan: ParamountPrereqPlan, cid: string): { ok: boolean; ptyId?: string; error?: string };
+  };
+  /** One audit line per step of a prerequisite action, tagged with the correlation id. */
+  logStep?(step: Record<string, unknown>): void;
 }
+
+export interface ParamountPrereqPlan {
+  id: string;
+  label: string;
+  installed: boolean;
+  kind: 'npm' | 'node-then-npm' | 'native' | 'manual';
+  /** Trusted constant from the provider preset; absent for the manual rung. */
+  command?: string;
+}
+
+/** Iteration limits. The heartbeat mission and the ops standup are the only
+ *  cadences the fork schedules, so they are the only iteration knobs offered. */
+const HEARTBEAT_SEC = { min: 30, max: 86_400 };
+const STANDUP_MIN = { min: 1, max: 1_440 };
+const HEARTBEAT_MISSION_ID = 'heartbeat';
+const STANDUP_MISSION_ID = 'ops-standup';
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 function id(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 200 && !/[\r\n\0]/.test(value);
+}
+/** Commands that touch credentials or installers accept an exact key set, so an
+ *  extra field (for example a pasted token) is rejected instead of being
+ *  persisted into the audit event. The error never echoes the rejected values. */
+function onlyKeys(command: Record<string, unknown>, allowed: string[]): boolean {
+  return Object.keys(command).every((key) => allowed.includes(key));
 }
 function text(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= 10_000;
@@ -38,6 +75,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
   if (!object(command) || !id(command.type)) return fail('INVALID_COMMAND', 'Invalid command');
   let writeAttempted = false;
   let diagnostics: ParamountDiagnostics | undefined;
+  let prereq: ParamountPrereqReport | undefined;
   try {
     switch (command.type) {
       case 'question.answer':
@@ -113,13 +151,89 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         diagnostics = deps.diagnostics({ logLines: command.logLines as number | undefined, cid: span.cid });
         break;
       }
-      case 'access.set':
-      case 'floor.yolo':
-      case 'floor.iteration':
-      case 'account.connection':
-      case 'prereq.install':
-      case 'prereq.start':
-        return fail('UNSUPPORTED', `${command.type} is not supported by the fork's enforcement or trusted launcher`);
+      case 'access.set': {
+        if (!id(command.agentId) || !id(command.sourceId) || !['rw', 'r', 'none'].includes(command.access as string)) {
+          return fail('INVALID_INPUT', 'Invalid access grant');
+        }
+        // The fork has no per-agent/per-source access matrix to persist or enforce,
+        // and inventing one would imply a guarantee nothing checks. Product decision.
+        return fail('UNSUPPORTED', 'access.set needs a product decision: what a read/none grant per agent and source means, and which fork gate enforces it (tool permissions, integration scope, or file roots)');
+      }
+      case 'floor.yolo': {
+        const patch = command.patch;
+        if (!object(patch) || Object.keys(patch).length === 0) return fail('INVALID_INPUT', 'Invalid floor yolo patch');
+        const unsupported = Object.keys(patch).filter((k) => k !== 'on');
+        if (unsupported.length) return fail('UNSUPPORTED', `floor.yolo fields without a fork mechanism: ${unsupported.join(', ')}; only "on" is supported`);
+        if (typeof patch.on !== 'boolean') return fail('INVALID_INPUT', 'floor.yolo "on" must be a boolean');
+        if (!deps.setFloorAutoMode) return fail('UNSUPPORTED', 'Floor YOLO is not available in this build');
+        writeAttempted = true;
+        deps.setFloorAutoMode(patch.on);
+        break;
+      }
+      case 'floor.iteration': {
+        const patch = command.patch;
+        if (!object(patch) || Object.keys(patch).length === 0) return fail('INVALID_INPUT', 'Invalid floor iteration patch');
+        const unsupported = Object.keys(patch).filter((k) => k !== 'heartbeatSec' && k !== 'standupMin');
+        if (unsupported.length) return fail('UNSUPPORTED', `floor.iteration fields without a fork mechanism: ${unsupported.join(', ')}; heartbeatSec and standupMin are supported`);
+        const within = (v: unknown, r: { min: number; max: number }): v is number =>
+          typeof v === 'number' && Number.isInteger(v) && v >= r.min && v <= r.max;
+        if (patch.heartbeatSec !== undefined && !within(patch.heartbeatSec, HEARTBEAT_SEC)) return fail('INVALID_INPUT', `heartbeatSec must be an integer from ${HEARTBEAT_SEC.min} to ${HEARTBEAT_SEC.max}`);
+        if (patch.standupMin !== undefined && !within(patch.standupMin, STANDUP_MIN)) return fail('INVALID_INPUT', `standupMin must be an integer from ${STANDUP_MIN.min} to ${STANDUP_MIN.max}`);
+        const missions = deps.missions();
+        const beat = patch.heartbeatSec === undefined ? undefined : missions.find((m) => m.id === HEARTBEAT_MISSION_ID);
+        const standup = patch.standupMin === undefined ? undefined : missions.find((m) => m.id === STANDUP_MISSION_ID);
+        if (patch.heartbeatSec !== undefined && !beat) return fail('NOT_FOUND', 'Heartbeat mission not found');
+        if (patch.standupMin !== undefined && !standup) return fail('NOT_FOUND', 'Ops standup mission not found');
+        // One write for both cadences, so a partial update never reaches the scheduler.
+        writeAttempted = true;
+        deps.saveMissions(missions.map((m) =>
+          m === beat ? { ...m, intervalMs: (patch.heartbeatSec as number) * 1000 }
+            : m === standup ? { ...m, intervalMs: (patch.standupMin as number) * 60_000 } : m));
+        break;
+      }
+      case 'account.connection': {
+        if (!id(command.id) || typeof command.connected !== 'boolean' || !onlyKeys(command, ['type', 'id', 'connected'])) return fail('INVALID_INPUT', 'Invalid account connection; only id and connected are accepted, never credentials');
+        if (!deps.setIntegrationConnected) return fail('UNSUPPORTED', 'Account connections are not available in this build');
+        writeAttempted = true;
+        const outcome = deps.setIntegrationConnected(command.id, command.connected);
+        if (outcome === 'not_found') { writeAttempted = false; return fail('NOT_FOUND', 'Connection is not registered; add it through Integrations'); }
+        if (outcome === 'needs_secret') { writeAttempted = false; return fail('CONFLICT', 'Connection has no stored credential; enter it through Integrations first'); }
+        break;
+      }
+      case 'prereq.install': {
+        if (!id(command.id) || !onlyKeys(command, ['type', 'id', 'confirm'])) return fail('INVALID_INPUT', 'Invalid prerequisite install request');
+        if (command.confirm !== undefined && typeof command.confirm !== 'boolean') return fail('INVALID_INPUT', 'confirm must be a boolean');
+        if (!deps.prereqInstall) return fail('UNSUPPORTED', 'Prerequisite install is not available in this build');
+        const plan = deps.prereqInstall.plan(command.id);
+        if (!plan) return fail('UNSUPPORTED', `No vetted installer for "${command.id}"; only engine CLIs (claude, codex, opencode) can be installed`);
+        deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'plan', id: plan.id, installed: plan.installed, rung: plan.kind, command: plan.command });
+        if (plan.installed) return fail('CONFLICT', `${plan.label} is already installed`);
+        if (!plan.command) return fail('UNSUPPORTED', `${plan.label} has no automatic installer on this machine; install it manually`);
+        const report: ParamountPrereqReport = { id: plan.id, label: plan.label, installed: false, kind: plan.kind, command: plan.command, confirmed: command.confirm === true };
+        if (command.confirm !== true) {
+          // Read-only by default: show exactly what would run and run nothing.
+          deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'confirm-required', id: plan.id });
+          prereq = report;
+          break;
+        }
+        deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'confirmed', id: plan.id });
+        writeAttempted = true;
+        const started = deps.prereqInstall.run(plan, span.cid);
+        if (!started.ok) {
+          writeAttempted = false;
+          deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'spawn-failed', id: plan.id, error: started.error });
+          return fail('INTERNAL', `Could not start the installer terminal: ${started.error ?? 'unknown error'}`);
+        }
+        deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'spawned', id: plan.id, ptyId: started.ptyId });
+        prereq = { ...report, ptyId: started.ptyId };
+        break;
+      }
+      case 'prereq.start': {
+        if (!id(command.id)) return fail('INVALID_INPUT', 'Invalid prerequisite id');
+        // Nothing in the fork starts a prerequisite service (Skidbladnir has no launcher
+        // here), so any start would be an unvetted command. Product decision.
+        return fail('UNSUPPORTED', 'prereq.start needs a product decision: which vetted launcher starts each service prerequisite (for example Skidbladnir)');
+      }
       case 'layout.panels':
         return fail('UNSUPPORTED', 'Team panel layout is a renderer-local preference');
       default:
@@ -128,7 +242,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
     const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as ParamountCommand, correlationId: span.cid };
     deps.appendEvent(event);
     deps.publish(event);
-    return diagnostics ? { ok: true, event, diagnostics } : { ok: true, event };
+    return { ok: true, event, ...(diagnostics ? { diagnostics } : {}), ...(prereq ? { prereq } : {}) };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Command failed';
     return writeAttempted

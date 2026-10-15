@@ -109,7 +109,8 @@ test('every dispatch failure path returns a code and errorId', () => {
     [{ type: 'nope' }, 'INVALID_COMMAND'],
     [{ type: 'automation.toggle', id: 'x' }, 'INVALID_INPUT'],
     [{ type: 'automation.toggle', id: 'x', enabled: true }, 'NOT_FOUND'],
-    [{ type: 'access.set' }, 'UNSUPPORTED'],
+    [{ type: 'access.set' }, 'INVALID_INPUT'],
+    [{ type: 'access.set', agentId: 'jim', sourceId: 'ado', access: 'rw' }, 'UNSUPPORTED'],
     [{ type: 'layout.panels', panels: [] }, 'UNSUPPORTED'],
     [{ type: 'diagnostics.bundle' }, 'UNSUPPORTED'],
     [{ type: 'diagnostics.bundle', logLines: 0 }, 'INVALID_INPUT']

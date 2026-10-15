@@ -13,7 +13,7 @@ import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
-import { dispatchParamount } from './paramount';
+import { dispatchParamount, type ParamountPrereqPlan } from './paramount';
 import { buildDiagnostics, installCrashCapture, redact, traced, type LogSink } from './paramountObservability';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
@@ -65,7 +65,7 @@ import { analytics, isRendererMessageSurface } from './analytics';
 import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import * as integrations from './integrations';
-import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
+import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
@@ -77,6 +77,7 @@ import type { HireManifest } from '../shared/hire';
 import { ClosingTimeController } from './closingTime';
 import {
   argsWithAutoModeFlag,
+  defaultCommandForProvider,
   inferAgentProvider,
   isClaudeProvider,
   nonInteractiveEnvForProvider,
@@ -3486,6 +3487,38 @@ function saveParamountPreference(key: 'profile' | 'setup', value: Record<string,
   writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
   renameSync(tmp, path);
 }
+/** Paramount prerequisite ids that have a vetted installer: the engine CLIs, via the
+ *  same trusted preset commands the missing-CLI auto-install uses. Nothing else. */
+const PARAMOUNT_INSTALLABLE_CLIS: Record<string, AgentProvider> = { claude: 'claude', codex: 'codex', opencode: 'opencode' };
+function paramountPrereqPlan(prereqId: string): ParamountPrereqPlan | null {
+  if (!Object.hasOwn(PARAMOUNT_INSTALLABLE_CLIS, prereqId)) return null;
+  const provider = PARAMOUNT_INSTALLABLE_CLIS[prereqId];
+  const bin = defaultCommandForProvider(provider, prereqId);
+  const npmAvailable = ptyManager.isCommandAvailable('npm') && nodeIsUsable(detectNodeVersion(ptyManager.commandPath('node')));
+  // No network here: a plan never downloads a Node installer, so a machine without
+  // a usable npm gets the native or manual rung.
+  const rung = chooseInstallRung(installInfoForProvider(provider), npmAvailable, null);
+  return { id: prereqId, label: providerPreset(provider).label, installed: ptyManager.isCommandAvailable(bin), kind: rung.kind, command: rung.command };
+}
+function paramountRunPrereqInstall(plan: ParamountPrereqPlan, sender: Electron.WebContents): { ok: boolean; ptyId?: string; error?: string } {
+  const provider = PARAMOUNT_INSTALLABLE_CLIS[plan.id];
+  const bin = defaultCommandForProvider(provider, plan.id);
+  const npmAvailable = ptyManager.isCommandAvailable('npm') && nodeIsUsable(detectNodeVersion(ptyManager.commandPath('node')));
+  const ptyId = `prereq-install-${plan.id}-${randomBytes(4).toString('hex')}`;
+  const res = ptyManager.spawn({ id: ptyId, cwd: homedir(), command: bin, shellScript: buildMissingCliScript(bin, provider, npmAvailable, process.platform, null) }, sender);
+  return res.ok ? { ok: true, ptyId } : { ok: false, error: res.error };
+}
+/** Connect = enable a registered integration that already holds its credential;
+ *  disconnect = disable it (the stored secret stays). Secrets never pass through here. */
+function paramountSetIntegrationConnected(connectionId: string, connected: boolean): 'ok' | 'not_found' | 'needs_secret' {
+  const record = integrations.getRecord(connectionId);
+  if (!record) return 'not_found';
+  if (connected && authTypeNeedsSecret(record.authType) && !integrations.hasSecret(record.secretRef)) return 'needs_secret';
+  if (record.enabled === connected) return 'ok';
+  const result = integrations.upsertRecord({ ...record, enabled: connected });
+  if (!result.ok) throw new Error(result.error);
+  return 'ok';
+}
 /** Paramount calls log `paramount-op` start/end lines and `paramount-error`
  *  lines into the hive's log.jsonl; see paramountObservability.ts. */
 const paramountLog: LogSink = (event) => hive.appendLog(event);
@@ -3508,6 +3541,10 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   renameAgent: (id, name) => hive.renameAgent(id, name),
   setAgentTokenCap: (id, cap) => { setAgentTokenCap(id, cap); },
   setNotifications: (on) => { writeConfig({ notifications: on }); },
+  setFloorAutoMode: (on) => { writeConfig({ autoMode: on }); },
+  setIntegrationConnected: paramountSetIntegrationConnected,
+  prereqInstall: { plan: paramountPrereqPlan, run: (plan) => paramountRunPrereqInstall(plan, evt.sender) },
+  logStep: (step) => paramountLog(step),
   savePreference: saveParamountPreference,
   appendEvent: (event) => {
     const root = hive.root();
