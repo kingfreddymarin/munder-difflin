@@ -101,3 +101,10 @@ test('config:update scenario: Settings off→on after a timed window leaves no s
   assert.equal(h.s.timers.length, 1, 'no new timer: YOLO is now always-on');
   assert.equal(h.effectiveAutoMode(), true);
 });
+
+test('probePort: an invalid port resolves { ok: false, code } instead of rejecting', async () => {
+  const { probePort } = loadTs('src/main/portProbe.ts');
+  for (const port of [-1, 0, 65536, 1.5, NaN]) {
+    assert.deepEqual(await probePort(port), { ok: false, code: 'INVALID_PORT' }, `port ${port}`);
+  }
+});

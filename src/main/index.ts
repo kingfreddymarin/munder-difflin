@@ -3526,9 +3526,9 @@ const PARAMOUNT_STARTABLE: Record<string, { label: string; bin: string; command:
 async function paramountProbeService(prereqId: string, cid: string): Promise<boolean> {
   if (!Object.hasOwn(PARAMOUNT_STARTABLE, prereqId)) return false;
   const port = PARAMOUNT_STARTABLE[prereqId].port;
-  const open = await probePort(port);
-  paramountLog({ kind: 'paramount-prereq', cid, step: 'port-probe', id: prereqId, port, open });
-  return open;
+  const probe = await probePort(port);
+  paramountLog({ kind: 'paramount-prereq', cid, step: 'port-probe', id: prereqId, port, open: probe.ok, ...(probe.ok ? {} : { code: probe.code }) });
+  return probe.ok;
 }
 function paramountStartPlan(prereqId: string, portOpen = false): ParamountPrereqStartPlan | null {
   if (!Object.hasOwn(PARAMOUNT_STARTABLE, prereqId)) return null;

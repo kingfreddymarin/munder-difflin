@@ -377,15 +377,15 @@ test('probePort sees a real local listener and reports a closed port as false', 
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const { port } = server.address();
   try {
-    assert.equal(await probePort(port), true);
+    assert.deepEqual(await probePort(port), { ok: true });
   } finally { await new Promise((r) => server.close(r)); }
-  assert.equal(await probePort(port), false, 'closed after the listener stops');
+  assert.deepEqual(await probePort(port), { ok: false, code: 'CLOSED' }, 'closed after the listener stops');
 });
 
 test('probePort times out on a black hole instead of blocking (known bad)', async () => {
   const { probePort } = loadTs('src/main/portProbe.ts');
   const started = Date.now();
-  assert.equal(await probePort(9, '10.255.255.1', 150), false);
+  assert.deepEqual(await probePort(9, '10.255.255.1', 150), { ok: false, code: 'TIMEOUT' });
   assert.ok(Date.now() - started < 2000);
 });
 
