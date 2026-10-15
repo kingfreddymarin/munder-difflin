@@ -11,7 +11,7 @@ import { statusMeta } from '@/components/app/status';
 import { useDispatch, useFloor } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
-import { LiveTerminal } from '@/components/app/live-terminal';
+import { PtyTerminalView } from '@/components/app/terminal/pty-terminal-view';
 
 export function TerminalPage() {
   const terminals = useFloor((s) => s.terminals);
@@ -51,7 +51,7 @@ export function TerminalPage() {
       {!session && <section className="flex items-center justify-center rounded-xl border p-6 text-sm text-muted-foreground" role="status">No live terminal is available. Start an agent to see its session here.</section>}
       {session && agent && (
         <section className="flex min-h-0 flex-col gap-3">
-          {session.ptyId ? <div className="min-h-0 flex-1 overflow-hidden rounded-xl border"><LiveTerminal key={session.ptyId} ptyId={session.ptyId} label={`${agent.name} live terminal`} /></div> : <Code code={text} className="min-h-0 flex-1 overflow-hidden rounded-xl border">
+          {session.ptyId ? <div className="min-h-[320px] flex-1 overflow-hidden rounded-xl border"><PtyTerminalView ptyId={session.ptyId} cwd={session.cwd} label={`${agent.name} live terminal`} /></div> : <Code code={text} className="min-h-0 flex-1 overflow-hidden rounded-xl border">
             <CodeHeader icon={Terminal} copyButton>
               {agent.name} · {session.cwd}
             </CodeHeader>
