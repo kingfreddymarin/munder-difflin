@@ -30,7 +30,14 @@ export type ParamountCommand =
   | { type: 'prereq.start'; id: string }
   | { type: 'setup.dismiss'; degraded: string[] }
   /** Read-only: returns a redacted diagnostics bundle on the result. */
-  | { type: 'diagnostics.bundle'; logLines?: number };
+  | { type: 'diagnostics.bundle'; logLines?: number }
+  /** Read-only: lists agents defined in Claude Code, Codex and Munder setups.
+   *  `projectDir` adds that project's `.claude/agents` and `AGENTS.md`. */
+  | { type: 'agents.discover'; sources?: ParamountAgentSource[]; projectDir?: string }
+  /** Imports one discovered agent through the hire path: the Add-Agent form
+   *  opens pre-filled and the human confirms the spawn. Pass the same
+   *  `projectDir` used to discover a project agent. */
+  | { type: 'agents.import'; source: ParamountAgentSource; id: string; projectDir?: string };
 
 export interface ParamountEvent {
   id: string;
@@ -61,7 +68,8 @@ export interface ParamountFailure {
   correlationId: string;
 }
 export type ParamountResult =
-  | { ok: true; event: ParamountEvent; diagnostics?: ParamountDiagnostics; prereq?: ParamountPrereqReport }
+  | { ok: true; event: ParamountEvent; diagnostics?: ParamountDiagnostics; prereq?: ParamountPrereqReport;
+      discovery?: ParamountAgentDiscovery; imported?: ParamountAgentImport }
   | ParamountFailure;
 
 /** What `prereq.install` would run (confirmed=false) or started (confirmed=true). */
@@ -75,6 +83,48 @@ export interface ParamountPrereqReport {
   confirmed: boolean;
   /** Terminal to stream with onPtyData; present only after a confirmed start. */
   ptyId?: string;
+}
+
+export type ParamountAgentSource = 'claude' | 'codex' | 'munder';
+
+/** A file that could not be read or parsed. Never skipped silently: the same
+ *  errorId is on a `paramount-agent-source` line in log.jsonl. */
+export interface ParamountSourceWarning {
+  errorId: string;
+  path: string;
+  message: string;
+}
+
+/** One agent definition found on disk. Read-only: nothing is copied or changed. */
+export interface ParamountDiscoveredAgent {
+  source: ParamountAgentSource;
+  /** Stable within a source; pass it back to `agents.import`. */
+  id: string;
+  name: string;
+  description: string;
+  model?: string;
+  tools?: string[];
+  /** File holding the agent's instructions (or its definition, for a model-only profile). */
+  instructionsPath: string;
+  origin: 'user' | 'project';
+  /** Problems with this agent's file that did not stop it being listed. */
+  warnings: ParamountSourceWarning[];
+}
+
+export interface ParamountAgentDiscovery {
+  agents: ParamountDiscoveredAgent[];
+  /** Files or directories that could not be read; their agents are missing above. */
+  warnings: ParamountSourceWarning[];
+  /** Roots that were scanned, per source; a missing root just yields no agents. */
+  roots: Record<ParamountAgentSource, string[]>;
+}
+
+export interface ParamountAgentImport {
+  agent: ParamountDiscoveredAgent;
+  /** Hire manifest handed to the Add-Agent form (munder-difflin/hire@1). */
+  manifest: Record<string, unknown>;
+  /** Fields that were dropped or shortened to fit the hire manifest limits. */
+  adjustments: string[];
 }
 
 /** Redacted support bundle returned by `diagnostics.bundle`. */
