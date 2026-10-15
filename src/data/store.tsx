@@ -148,6 +148,14 @@ export function useUnsupported() {
   return React.useCallback((command: Command) => learned.get(command.type) ?? store.provider.unsupported?.(command) ?? null, [learned, store]);
 }
 
+/** The provider's agent discovery and import, or null when it has none (the control is then disabled with a reason). */
+export function useAgentImport() {
+  const { provider } = useStore();
+  return React.useMemo(() => provider.discoverAgents && provider.importAgent
+    ? { discover: provider.discoverAgents.bind(provider), importAgent: provider.importAgent.bind(provider) }
+    : null, [provider]);
+}
+
 /** Fetches the redacted `diagnostics.bundle` and puts it on the clipboard. */
 export function useDiagnostics() {
   const { provider } = useStore();

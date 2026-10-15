@@ -10,7 +10,8 @@ import { ActivityPanel } from '@/features/team/activity-panel';
 import { SourcesPanel } from '@/features/team/sources-panel';
 import { AutomationsPanel } from '@/features/team/automations-panel';
 import { AgentSheet } from '@/features/team/agent-sheet';
-import { useDispatch } from '@/data/store';
+import { ImportAgentsSheet } from '@/features/team/import-agents-sheet';
+import { useAgentImport, useDispatch } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 
@@ -47,6 +48,8 @@ export function TeamPage() {
   const { route, go } = useRouter();
   const [panels, setPanels] = React.useState<PanelId[]>(load);
   const open = route.params.get('agent');
+  const agentImport = useAgentImport();
+  const [importing, setImporting] = React.useState(false);
 
   const apply = (next: PanelId[]) => {
     setPanels(next);
@@ -102,6 +105,8 @@ export function TeamPage() {
             </div>
           </PopoverContent>
         </Popover>
+        <Button variant="outline" disabled={!agentImport} onClick={() => setImporting(true)}
+          title={agentImport ? 'List agents defined in Claude Code, Codex and Munder on this machine' : 'Import needs the desktop core.'}>Import from Claude / Codex / Munder</Button>
         <Button>Hire from a bundle</Button>
       </div>
       <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3', gridFor[panels.length] ?? gridFor[5])}>
@@ -110,6 +115,7 @@ export function TeamPage() {
         ))}
       </div>
       <AgentSheet agentId={open} onClose={() => go('team')} />
+      <ImportAgentsSheet open={importing} onClose={() => setImporting(false)} />
     </div>
   );
 }
