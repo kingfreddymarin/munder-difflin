@@ -1,13 +1,24 @@
 // React binding for a DataProvider. Components read with useFloor(selector) and write with useDispatch().
+// Every backend call has an explicit state: loading, error, disconnected (snapshot) and pending/error (commands).
+// Failures are kept as BackendError so the UI always shows {errorId, code, message}.
 import * as React from 'react';
+import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/app/error-notice';
+import { BackendError, toBackendError } from './errors';
 import type { Command, DataProvider } from './protocol';
 import { applyEvent } from './reducer';
 import type { Snapshot } from './types';
 
+export type FloorStatus = 'loading' | 'ready' | 'error' | 'disconnected';
+export type DiagnosticsState = { status: 'idle' | 'loading' | 'copied' | 'error'; error?: BackendError };
+
 type Store = {
+  provider: DataProvider;
   get: () => Snapshot | null;
-  getError: () => string | null;
-  getActionError: () => string | null;
+  getError: () => BackendError | null;
+  getActionError: () => BackendError | null;
+  getPending: () => number;
+  getUnsupported: () => ReadonlyMap<string, string>;
   clearActionError: () => void;
   retry: () => void;
   start: () => () => void;
@@ -20,14 +31,18 @@ const StoreContext = React.createContext<Store | null>(null);
 export function FloorProvider({ provider, children, fallback }: { provider: DataProvider; children: React.ReactNode; fallback?: React.ReactNode }) {
   const store = React.useMemo<Store>(() => {
     let state: Snapshot | null = null;
-    let error: string | null = null;
-    let actionError: string | null = null;
+    let error: BackendError | null = null;
+    let actionError: BackendError | null = null;
+    let pending = 0;
+    // Command types the core answered UNSUPPORTED to; their controls stay disabled with the core's reason.
+    let unsupported: ReadonlyMap<string, string> = new Map();
     let active = false;
     let refreshVersion = 0;
     const subs = new Set<() => void>();
     const emit = () => subs.forEach((f) => f());
     const refresh = () => {
       const version = ++refreshVersion;
+      if (!state) { error = null; emit(); }
       provider.snapshot().then((s) => {
         if (!active || version !== refreshVersion) return;
         state = s;
@@ -36,14 +51,17 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
       }).catch((cause: unknown) => {
         if (!active || version !== refreshVersion) return;
         state = null;
-        error = cause instanceof Error ? cause.message : 'Could not load the floor.';
+        error = toBackendError(cause, 'snapshot');
         emit();
       });
     };
     return {
+      provider,
       get: () => state,
       getError: () => error,
       getActionError: () => actionError,
+      getPending: () => pending,
+      getUnsupported: () => unsupported,
       clearActionError: () => { actionError = null; emit(); },
       retry: refresh,
       start: () => {
@@ -54,7 +72,7 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
           state = applyEvent(state, ev);
           emit();
         });
-        const offRefresh = (provider as DataProvider & { onRefresh?: (listener: () => void) => () => void }).onRefresh?.(refresh);
+        const offRefresh = provider.onRefresh?.(refresh);
         return () => { active = false; refreshVersion++; offEvents(); offRefresh?.(); };
       },
       subscribe: (fn) => {
@@ -62,30 +80,45 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
         return () => subs.delete(fn);
       },
       dispatch: async (c) => {
+        pending++;
+        emit();
         try {
           await provider.dispatch(c);
           actionError = null;
-          emit();
           return true;
         } catch (cause) {
-          actionError = cause instanceof Error ? cause.message : 'The command failed.';
-          emit();
+          actionError = toBackendError(cause, c.type);
+          if (actionError.code === 'UNSUPPORTED') unsupported = new Map(unsupported).set(c.type, actionError.message);
+          if (actionError.code === 'DISCONNECTED') refresh();
           return false;
+        } finally {
+          pending--;
+          emit();
         }
       },
     };
   }, [provider]);
   React.useEffect(() => store.start(), [store]);
-  const status = React.useSyncExternalStore(store.subscribe, () => store.get() ? 'ready' : store.getError() ? 'error' : 'loading');
+  const status = React.useSyncExternalStore(store.subscribe, (): FloorStatus => store.get() ? 'ready' : !store.getError() ? 'loading' : store.getError()?.code === 'DISCONNECTED' ? 'disconnected' : 'error');
   const actionError = React.useSyncExternalStore(store.subscribe, store.getActionError);
-  return <StoreContext.Provider value={store}>{status === 'ready' ? children : status === 'error' ? (
-    <div role="alert" className="p-8 text-sm">
-      <p>{store.getError()}</p>
-      <button type="button" onClick={store.retry} className="mt-3 rounded border px-3 py-2">Retry connection</button>
+  const pending = React.useSyncExternalStore(store.subscribe, store.getPending);
+  return <StoreContext.Provider value={store}>{status === 'ready' ? children : status === 'loading' ? fallback : (
+    <div className="flex max-w-xl flex-col gap-3 p-8">
+      <h1 className="text-lg font-semibold">{status === 'disconnected' ? 'Not connected to the desktop core' : 'Could not load the floor'}</h1>
+      <ErrorNotice error={store.getError()} />
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" onClick={store.retry}>Retry connection</Button>
+        <CopyDiagnosticsButton />
+      </div>
     </div>
-  ) : fallback}{actionError && <div role="alert" className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-destructive bg-background p-3 text-sm shadow-lg">
-    <span>{actionError}</span>
-    <button type="button" onClick={store.clearActionError} className="ml-3 underline">Dismiss</button>
+  )}{(actionError || pending > 0) && <div className="fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2">
+    {pending > 0 && <span role="status" className="bg-background self-end rounded-lg border px-3 py-1.5 text-xs shadow-lg">Sending to the core…</span>}
+    {actionError && <ErrorNotice error={actionError} className="bg-background shadow-lg">
+      <div className="flex gap-2 pt-1">
+        <Button type="button" size="sm" variant="ghost" onClick={store.clearActionError}>Dismiss</Button>
+        <CopyDiagnosticsButton size="sm" />
+      </div>
+    </ErrorNotice>}
   </div>}</StoreContext.Provider>;
 }
 
@@ -106,4 +139,41 @@ export function useDispatch() {
 
 export function useAgent(id: string | undefined) {
   return useFloor((s) => s.agents.find((a) => a.id === id));
+}
+
+/** Why the core cannot run this command (known up front or learned from an UNSUPPORTED answer), else null. */
+export function useUnsupported() {
+  const store = useStore();
+  const learned = React.useSyncExternalStore(store.subscribe, store.getUnsupported);
+  return React.useCallback((command: Command) => learned.get(command.type) ?? store.provider.unsupported?.(command) ?? null, [learned, store]);
+}
+
+/** Fetches the redacted `diagnostics.bundle` and puts it on the clipboard. */
+export function useDiagnostics() {
+  const { provider } = useStore();
+  const [state, setState] = React.useState<DiagnosticsState>({ status: 'idle' });
+  const available = !!provider.diagnostics;
+  const copy = React.useCallback(async () => {
+    if (!provider.diagnostics) return;
+    setState({ status: 'loading' });
+    try {
+      const bundle = await provider.diagnostics();
+      await navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
+      setState({ status: 'copied' });
+    } catch (cause) {
+      setState({ status: 'error', error: toBackendError(cause, 'diagnostics.bundle') });
+    }
+  }, [provider]);
+  return { ...state, available, copy };
+}
+
+export function CopyDiagnosticsButton({ size, variant = 'outline' }: { size?: 'sm'; variant?: 'outline' | 'ghost' }) {
+  const diagnostics = useDiagnostics();
+  const label = diagnostics.status === 'loading' ? 'Collecting…' : diagnostics.status === 'copied' ? 'Diagnostics copied' : 'Copy diagnostics';
+  return <span className="inline-flex flex-col gap-2">
+    <Button type="button" size={size} variant={variant} disabled={!diagnostics.available || diagnostics.status === 'loading'}
+      title={diagnostics.available ? 'Copy a redacted support bundle (app, OS, config, recent log lines, crashes)' : 'Diagnostics need the desktop core; sample data has none.'}
+      onClick={() => void diagnostics.copy()}>{label}</Button>
+    {diagnostics.error && <ErrorNotice error={diagnostics.error} />}
+  </span>;
 }

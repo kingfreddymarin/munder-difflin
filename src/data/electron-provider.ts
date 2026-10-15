@@ -6,7 +6,14 @@ import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, Message, Snapshot } from './types';
 
-type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics'>> & { kind: 'electron' };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported'>> & { kind: 'electron' };
+
+const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
+
+function unsupported(command: Command): string | null {
+  if (command.type === 'card.move' && !CORE_COLUMNS.includes(command.status)) return `The core board has no "${command.status}" column; use todo, doing, blocked or done.`;
+  return null;
+}
 
 const array = (value: unknown): Record<string, unknown>[] =>
   Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object') : [];
@@ -130,6 +137,7 @@ export function createElectronProvider(): ElectronProvider {
       lastSnapshot = snapshot;
       return snapshot;
     },
+    unsupported,
     async dispatch(command: Command) {
       const bridge = requireBridge();
       const operation = command.type;
@@ -140,7 +148,8 @@ export function createElectronProvider(): ElectronProvider {
           if (!recipient || !command.text.trim()) throw BackendError.local('INVALID_INPUT', 'Choose a real agent and enter a message.', operation);
           checkOk(await bridge.hiveSend({ to: recipient, act: 'request', subject: 'Message from human', body: command.text.trim() }, 'human'), operation, 'Message delivery failed.');
         } else if (command.type === 'card.move') {
-          if (!['todo', 'doing', 'blocked', 'done'].includes(command.status)) throw BackendError.local('UNSUPPORTED', `The core board has no "${command.status}" column; use todo, doing, blocked or done.`, operation);
+          const reason = unsupported(command);
+          if (reason) throw BackendError.local('UNSUPPORTED', reason, operation);
           checkOk(await bridge.hivePatchTask(command.key, { status: command.status }), operation, 'Could not move the task.');
         } else if (command.type === 'terminal.input') {
           const pty = lastSnapshot?.terminals.find((item) => item.agentId === command.agentId);
@@ -154,7 +163,7 @@ export function createElectronProvider(): ElectronProvider {
             if (result.code === 'UNCERTAIN_STATE') refresh();
             throw BackendError.fromFailure(result, operation);
           }
-          if (!result?.ok) throw BackendError.local('INTERNAL', 'The core answered without a result.', operation);
+          if (!result?.ok) throw BackendError.local('INTERNAL', (result as { error?: string } | undefined)?.error || 'The core answered without a result.', operation);
           const event = { ...result.event, command } as FloorEvent;
           emit(event);
           return event;

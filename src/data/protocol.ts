@@ -39,6 +39,8 @@ export interface DataProvider {
   kind?: 'electron' | 'mock';
   /** Asks for a fresh snapshot when the core says its data changed. */
   onRefresh?(listener: () => void): () => void;
+  /** Why the core cannot run this command, before it is sent; null when it can. The UI disables the control and shows the reason. */
+  unsupported?(command: Command): string | null;
   /** Redacted support bundle. Absent when the provider cannot produce one. */
   diagnostics?(): Promise<ParamountDiagnostics>;
 }
