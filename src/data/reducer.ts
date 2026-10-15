@@ -1,7 +1,7 @@
 // Applies one event to the floor state. The mock provider and the UI store share it;
 // the real core runs the same rules on its side.
 import type { FloorEvent } from './protocol';
-import type { AuditEntry, Message, Snapshot } from './types';
+import type { AuditEntry, Card, Message, Snapshot } from './types';
 
 const nameOf = (s: Snapshot, agentId: string) => s.agents.find((a) => a.id === agentId)?.name ?? agentId;
 const chatFor = (s: Snapshot, agentId: string) => s.chats.find((c) => c.kind === 'agent' && c.agentIds[0] === agentId)?.id;
@@ -71,6 +71,15 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
       const cards = s.cards.map((x) => (x.key === c.key ? { ...x, status: c.status, updated: ev.at } : x));
       return audit({ ...s, cards }, ev, 'Moved card', card.key, `${card.status} → ${c.status}`, [card.agentId]);
     }
+    case 'card.create': {
+      if (!c.key || s.cards.some((x) => x.key === c.key)) return s;
+      const card: Card = {
+        key: c.key, title: c.title, status: c.status ?? 'todo', priority: c.priority === 1 ? 'P1' : c.priority === 3 ? 'P3' : 'P2',
+        agentId: c.assignee ?? '', created: ev.at, createdBy: 'you', updated: ev.at, description: c.description ?? '',
+        plan: [], doneMeans: [], tags: [], refs: [], tokens: 0, origin: 'you', people: [],
+      };
+      return audit({ ...s, cards: [...s.cards, card] }, ev, 'Created card', card.key, card.title, c.assignee ? [c.assignee] : []);
+    }
     case 'automation.toggle': {
       const a = s.automations.find((x) => x.id === c.id);
       if (!a) return s;
@@ -133,4 +142,17 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
       // Opening is a side effect in the core; the board's data does not change.
       return s;
   }
+}
+
+/** The next key of the most used prefix (NSC-68 → NSC-69); the core does the same for real cards. */
+export function nextCardKey(keys: string[]): string {
+  const counts = new Map<string, { n: number; max: number }>();
+  for (const key of keys) {
+    const m = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(key);
+    if (!m) continue;
+    const at = counts.get(m[1]) ?? { n: 0, max: 0 };
+    counts.set(m[1], { n: at.n + 1, max: Math.max(at.max, Number(m[2])) });
+  }
+  const [prefix, at] = [...counts].sort((a, b) => b[1].n - a[1].n)[0] ?? ['P', { max: 0 }];
+  return `${prefix}-${at.max + 1}`;
 }

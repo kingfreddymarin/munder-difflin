@@ -1,18 +1,25 @@
 // The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
 import { findBridge, requireBridge } from './bridge';
-import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountRawSnapshot, ParamountResult } from './electron-api';
+import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import { askOptions, cardAsks, logActivity } from './projection';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, CardRef, CardStatus, Message, Snapshot } from './types';
 
-type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn'>> & { kind: 'electron' };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn' | 'teamModels' | 'hire'>> & { kind: 'electron' };
 
 const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
+/** Agent fields the core's agent.update accepts (name, budget; model via the Team module). */
+const CORE_AGENT_FIELDS: readonly string[] = ['name', 'tokensCap', 'model'];
 
 function unsupported(command: Command): string | null {
   if (command.type === 'card.move' && !CORE_COLUMNS.includes(command.status)) return `The core board has no "${command.status}" column; use todo, doing, blocked or done.`;
+  if (command.type === 'agent.update') {
+    const keys = Object.keys(command.patch);
+    if (keys.length !== 1) return 'The core changes one agent field per command.';
+    if (!CORE_AGENT_FIELDS.includes(keys[0])) return `the core does not store an agent's ${keys[0]} yet.`;
+  }
   return null;
 }
 
@@ -58,21 +65,22 @@ function status(value: string, breaker: string): Agent['status'] {
   return 'idle';
 }
 
-type ResultPayload = 'diagnostics' | 'discovery' | 'imported';
+type OkResult = Extract<ParamountResult, { ok: true }> & Omit<ParamountTeamResult, 'ok' | 'event'>;
+type ResultPayload = 'diagnostics' | 'discovery' | 'imported' | 'models' | 'hire';
 
 /** Sends a command whose answer is a payload on the result rather than a floor event. */
-async function query<K extends ResultPayload>(command: ParamountCommand, payload: K, missing: string): Promise<NonNullable<Extract<ParamountResult, { ok: true }>[K]>> {
+async function query<K extends ResultPayload>(command: ParamountCommand | ParamountTeamCommand, payload: K, missing: string): Promise<NonNullable<OkResult[K]>> {
   const bridge = requireBridge();
   let result: ParamountResult;
   try {
-    result = await bridge.paramountDispatch(command);
+    result = await bridge.paramountDispatch(command as ParamountCommand);
   } catch (cause) {
     throw toBackendError(cause, command.type);
   }
   if (isFailure(result)) throw BackendError.fromFailure(result, command.type);
-  const value = result?.ok ? result[payload] : undefined;
+  const value = result?.ok ? (result as OkResult)[payload] : undefined;
   if (!value) throw BackendError.local('INTERNAL', missing, command.type);
-  return value as NonNullable<Extract<ParamountResult, { ok: true }>[K]>;
+  return value as NonNullable<OkResult[K]>;
 }
 
 /** Sends a command that only acts outside the floor (no snapshot change); any failure becomes a BackendError. */
@@ -220,15 +228,19 @@ export function createElectronProvider(): ElectronProvider {
           checkOk(await bridge.writePty(pty.ptyId, command.text), operation, 'Could not write to the terminal.');
           checkOk(await bridge.writePty(pty.ptyId, '\r'), operation, 'Could not submit terminal input.');
         } else {
-          const result = await bridge.paramountDispatch(command as ParamountCommand);
+          // card.create's key is the core's to pick; it comes back on the result.
+          const wire = command.type === 'card.create' ? (({ key: _key, ...rest }) => rest)(command) : command;
+          const result = await bridge.paramountDispatch(wire as ParamountCommand);
           if (isFailure(result)) {
             // The command may have been applied; the snapshot is the only truth now.
             if (result.code === 'UNCERTAIN_STATE') refresh();
             throw BackendError.fromFailure(result, operation);
           }
           if (!result?.ok) throw BackendError.local('INTERNAL', (result as { error?: string } | undefined)?.error || 'The core answered without a result.', operation);
-          const event = { ...result.event, command } as FloorEvent;
+          const card = (result as OkResult).card;
+          const event = { ...result.event, command: card && command.type === 'card.create' ? { ...command, key: card.key } : command } as FloorEvent;
           emit(event);
+          if (command.type === 'card.create') refresh();
           return event;
         }
       } catch (cause) {
@@ -252,6 +264,14 @@ export function createElectronProvider(): ElectronProvider {
     },
     openIn(app, path) {
       return act({ type: 'shell.openIn', app, path });
+    },
+    teamModels(): Promise<ParamountTeamModels> {
+      return query({ type: 'team.models' }, 'models', 'The core returned no model list.');
+    },
+    async hire(manifest, options = {}): Promise<ParamountHirePlan> {
+      const plan = await query({ type: 'agent.hire', manifest, ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.confirm ? { confirm: true } : {}) }, 'hire', 'The core returned no hire plan.');
+      if (plan.confirmed) refresh();
+      return plan;
     },
     subscribe(listener) {
       listeners.add(listener);

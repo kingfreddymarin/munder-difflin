@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/animate-ui/components/radix/sheet';
+// An agent's big card: overview, queue, activity and profile in one modal, opened from any agent on the Team screen.
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 import { Tabs, TabsContent, TabsContents, TabsList, TabsTrigger } from '@/components/animate-ui/components/radix/tabs';
 import { Switch } from '@/components/animate-ui/components/radix/switch';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/animate-ui/components/radix/toggle-group';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/animate-ui/components/radix/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -12,45 +12,76 @@ import { Badge } from '@/components/ui/badge';
 import { AgentSummary } from '@/components/app/agent-summary';
 import { clock } from '@/components/app/format';
 import { accent } from '@/components/app/status';
-import { useDispatch, useFloor } from '@/data/store';
+import { UnsupportedReason } from '@/components/app/error-notice';
+import { ErrorNotice } from '@/components/app/error-notice';
+import { ModelSelect } from '@/features/team/hire-sheet';
+import { NewCardDialog } from '@/features/team/new-card-dialog';
+import { useDispatch, useFloor, useTeamApi, useUnsupported } from '@/data/store';
+import { toBackendError, type BackendError } from '@/data/errors';
+import type { ParamountTeamModels } from '@/data/paramount-api';
+import type { Agent } from '@/data/types';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 
+// Choices offered for tone and autonomy when the provider stores them (the sample data does; the core does not yet).
 const tones = ['Concise', 'Detailed', 'Friendly', 'Formal'];
 const autonomies = ['Read only', 'Ask for merges', 'Ask for anything risky', 'Full within budget'];
+
+type Form = Pick<Agent, 'name' | 'color' | 'tokensCap' | 'yolo'> & { persona: string; tone: string; autonomy: string };
+const formOf = (a: Agent): Form => ({ name: a.name, color: a.color, tokensCap: a.tokensCap, persona: a.persona ?? '', tone: a.tone ?? '', autonomy: a.autonomy ?? '', yolo: !!a.yolo });
 
 /** `tab` opens a given tab first (Chats' avatar click opens `profile`, the agent's settings). */
 export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; onClose: () => void; tab?: string | null }) {
   const agent = useFloor((s) => s.agents.find((a) => a.id === agentId));
   const cards = useFloor((s) => s.cards);
   const activity = useFloor((s) => s.activity);
-  const engines = useFloor((s) => s.engines);
   const dispatch = useDispatch();
+  const unsupported = useUnsupported();
+  const teamApi = useTeamApi();
   const { go } = useRouter();
-  const [form, setForm] = React.useState({ name: '', color: 'slate', model: '', engine: '', tokensCap: 1, persona: '', tone: 'Concise', autonomy: 'Ask for merges', yolo: false });
-  React.useEffect(() => {
-    if (agent) setForm({ name: agent.name, color: agent.color, model: agent.model, engine: agent.engine, tokensCap: agent.tokensCap, persona: agent.persona ?? '', tone: agent.tone ?? 'Concise', autonomy: agent.autonomy ?? 'Ask for merges', yolo: !!agent.yolo });
-  }, [agent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [form, setForm] = React.useState<Form | null>(null);
+  const [models, setModels] = React.useState<ParamountTeamModels | null>(null);
+  const [model, setModel] = React.useState('');
+  const [modelsError, setModelsError] = React.useState<BackendError | null>(null);
+  const [saving, setSaving] = React.useState(false);
+  const [creating, setCreating] = React.useState(false);
+  React.useEffect(() => { setForm(agent ? formOf(agent) : null); }, [agent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadModels = React.useCallback(() => {
+    if (!teamApi || !agentId) return;
+    setModelsError(null);
+    teamApi.models().then((m) => { setModels(m); setModel(m.agents[agentId]?.model ?? ''); }, (cause) => setModelsError(toBackendError(cause, 'team.models')));
+  }, [teamApi, agentId]);
+  React.useEffect(() => { setModels(null); setModel(''); loadModels(); }, [loadModels]);
 
   const mine = React.useMemo(() => cards.filter((c) => c.agentId === agentId && c.status !== 'done'), [cards, agentId]);
   const events = React.useMemo(() => activity.filter((e) => e.agentId === agentId).slice(0, 8), [activity, agentId]);
 
-  const save = () => {
-    if (!agent) return;
-    const patch = Object.fromEntries(Object.entries(form).filter(([k, v]) => (agent as unknown as Record<string, unknown>)[k] !== v && !(k === 'yolo' && !v && !agent.yolo)));
-    if (Object.keys(patch).length) dispatch({ type: 'agent.update', agentId: agent.id, patch });
+  // The core takes one field per agent.update, so each changed field is its own command (and its own log line).
+  const fieldReason = (key: keyof Form | 'model') => (agent ? unsupported({ type: 'agent.update', agentId: agent.id, patch: { [key]: key === 'model' ? model : form?.[key as keyof Form] } }) : null);
+  const engineId = (agent && models?.agents[agent.id]?.engine) || agent?.engine || '';
+  const savedModel = (agent && models?.agents[agent.id]?.model) ?? '';
+  const changes = agent && form ? (Object.keys(form) as (keyof Form)[]).filter((k) => form[k] !== formOf(agent)[k] && !fieldReason(k)) : [];
+  const modelChanged = !!models && model !== savedModel && !fieldReason('model');
+  const save = async () => {
+    if (!agent || !form) return;
+    setSaving(true);
+    for (const k of changes) if (!(await dispatch({ type: 'agent.update', agentId: agent.id, patch: { [k]: form[k] } }))) break;
+    if (modelChanged && await dispatch({ type: 'agent.update', agentId: agent.id, patch: { model } })) loadModels();
+    setSaving(false);
   };
+  const blocked = (['color', 'persona', 'tone', 'autonomy', 'yolo'] as const).map((k) => fieldReason(k)).find(Boolean);
 
   return (
-    <Sheet open={!!agent} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="w-[520px] sm:max-w-[520px]">
-        {agent && (
+    <Dialog open={!!agent} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[88vh] flex-col overflow-y-auto sm:max-w-3xl">
+        {agent && form && (
           <>
-            <SheetHeader>
-              <SheetTitle>{agent.name}</SheetTitle>
-              <SheetDescription>{agent.doing}</SheetDescription>
-            </SheetHeader>
-            <Tabs key={`${agentId}:${tab ?? ''}`} defaultValue={tab ?? 'overview'} className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-4">
+            <DialogHeader>
+              <DialogTitle>{agent.name}</DialogTitle>
+              <DialogDescription>{agent.doing || 'Not reported.'}</DialogDescription>
+            </DialogHeader>
+            <Tabs key={`${agentId}:${tab ?? ''}`} defaultValue={tab ?? 'overview'} className="flex min-h-0 flex-1 flex-col gap-3">
               <TabsList className="w-full">
                 <TabsTrigger value="overview">Overview</TabsTrigger>
                 <TabsTrigger value="tasks">Tasks</TabsTrigger>
@@ -66,7 +97,10 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
                   </div>
                 </TabsContent>
                 <TabsContent value="tasks" className="flex flex-col gap-2">
-                  <span className="text-muted-foreground text-xs">In the order {agent.name} will work them; it reads this queue every turn.</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground flex-1 text-xs">In the order {agent.name} will work them; it reads this queue every turn.</span>
+                    <Button size="sm" variant="outline" onClick={() => setCreating(true)}>New card</Button>
+                  </div>
                   {mine.map((c, i) => {
                     const now = c.plan.find((p) => p.state === 'doing' || p.state === 'ask' || p.state === 'blocked');
                     return (
@@ -92,56 +126,55 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
                   ))}
                 </TabsContent>
                 <TabsContent value="profile" className="flex flex-col gap-3">
-                  <div className="grid gap-1.5"><Label htmlFor="ag-name">Display name</Label><Input id="ag-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
+                  <div className="grid gap-1.5"><Label htmlFor="ag-name">Display name</Label><Input id="ag-name" value={form.name} disabled={!!fieldReason('name')} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
                   <div className="grid gap-1.5">
-                    <Label>Colour</Label>
-                    <ToggleGroup type="single" value={form.color} onValueChange={(v) => v && setForm({ ...form, color: v })} aria-label="Colour">
-                      {Object.keys(accent).map((c) => (
-                        <ToggleGroupItem key={c} value={c} aria-label={c} className="size-8 p-0"><span className={cn('size-4 rounded-full', accent[c].bg, 'ring-1 ring-current', accent[c].fg)} /></ToggleGroupItem>
-                      ))}
-                    </ToggleGroup>
-                  </div>
-                  <div className="grid gap-1.5">
-                    <Label>Engine and model</Label>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild><Button variant="outline" className="justify-between">{form.engine} · {form.model}<span className="text-muted-foreground text-xs">change</span></Button></DropdownMenuTrigger>
-                      <DropdownMenuContent className="w-72">
-                        <DropdownMenuRadioGroup value={`${form.engine}|${form.model}`} onValueChange={(v) => { const [engine, model] = v.split('|'); setForm({ ...form, engine, model }); }}>
-                          {engines.map((e, i) => (
-                            <React.Fragment key={e.id}>
-                              {i > 0 && <DropdownMenuSeparator />}
-                              <DropdownMenuLabel className="text-muted-foreground text-xs">{e.name} · {e.plan}</DropdownMenuLabel>
-                              {e.models.map((m) => <DropdownMenuRadioItem key={m} value={`${e.name}|${m}`} disabled={e.state === 'fail'}>{m}</DropdownMenuRadioItem>)}
-                            </React.Fragment>
-                          ))}
-                        </DropdownMenuRadioGroup>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  <div className="grid gap-1.5"><Label htmlFor="ag-persona">Persona and standing instructions</Label><Textarea id="ag-persona" rows={3} value={form.persona} onChange={(e) => setForm({ ...form, persona: e.target.value })} /></div>
-                  <div className="grid gap-1.5"><Label>Tone</Label>
-                    <ToggleGroup type="single" variant="outline" size="sm" value={form.tone} onValueChange={(v) => v && setForm({ ...form, tone: v })}>{tones.map((t) => <ToggleGroupItem key={t} value={t} className="px-2.5 text-xs">{t}</ToggleGroupItem>)}</ToggleGroup>
-                  </div>
-                  <div className="grid gap-1.5"><Label>Autonomy</Label>
-                    <ToggleGroup type="single" variant="outline" size="sm" value={form.autonomy} onValueChange={(v) => v && setForm({ ...form, autonomy: v })} className="flex-wrap">{autonomies.map((t) => <ToggleGroupItem key={t} value={t} className="px-2.5 text-xs">{t}</ToggleGroupItem>)}</ToggleGroup>
+                    <Label htmlFor="ag-model">Model</Label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground shrink-0 text-xs" title="Moving an agent to another engine means hiring it again on that engine.">{engineId || 'engine not reported'} ·</span>
+                      <ModelSelect id="ag-model" models={models} engineId={engineId} value={model} onChange={setModel} disabled={!!fieldReason('model')} />
+                    </div>
+                    <span className="text-muted-foreground text-xs">Used from {agent.name}’s next start. “Use the default” follows the harness default model.</span>
+                    {!teamApi && <UnsupportedReason reason="This build cannot list models." />}
+                    <UnsupportedReason reason={fieldReason('model')} />
+                    {modelsError && <ErrorNotice error={modelsError}><Button size="sm" variant="outline" onClick={loadModels}>Retry</Button></ErrorNotice>}
                   </div>
                   <div className="flex items-center gap-3">
                     <Label className="flex-1">Daily token budget</Label>
-                    <Button size="sm" variant="outline" onClick={() => setForm({ ...form, tokensCap: Math.max(0.5, form.tokensCap - 0.5) })}>−</Button>
+                    <Button size="sm" variant="outline" disabled={!!fieldReason('tokensCap')} onClick={() => setForm({ ...form, tokensCap: Math.max(0.5, form.tokensCap - 0.5) })}>−</Button>
                     <span className="w-14 text-center font-mono text-sm">{form.tokensCap}M</span>
-                    <Button size="sm" variant="outline" onClick={() => setForm({ ...form, tokensCap: form.tokensCap + 0.5 })}>+</Button>
+                    <Button size="sm" variant="outline" disabled={!!fieldReason('tokensCap')} onClick={() => setForm({ ...form, tokensCap: form.tokensCap + 0.5 })}>+</Button>
                   </div>
-                  <div className="flex items-center gap-3 rounded-lg border border-fuchsia-500/30 p-2.5">
-                    <span className="flex flex-1 flex-col"><span className="text-sm font-medium">YOLO for this agent</span><span className="text-muted-foreground text-xs">No cap, approvals auto-granted, fast cycles</span></span>
-                    <Switch checked={form.yolo} onCheckedChange={(v) => setForm({ ...form, yolo: v })} aria-label="YOLO for this agent" />
-                  </div>
-                  <Button onClick={save}>Save · logged and sent to {agent.name}</Button>
+                  {blocked ? <UnsupportedReason reason="the core does not store an agent's colour, persona, tone, autonomy or YOLO yet." /> : (
+                    <>
+                      <div className="grid gap-1.5">
+                        <Label>Colour</Label>
+                        <ToggleGroup type="single" value={form.color} onValueChange={(v) => v && setForm({ ...form, color: v })} aria-label="Colour">
+                          {Object.keys(accent).map((c) => (
+                            <ToggleGroupItem key={c} value={c} aria-label={c} className="size-8 p-0"><span className={cn('size-4 rounded-full', accent[c].bg, 'ring-1 ring-current', accent[c].fg)} /></ToggleGroupItem>
+                          ))}
+                        </ToggleGroup>
+                      </div>
+                      <div className="grid gap-1.5"><Label htmlFor="ag-persona">Persona and standing instructions</Label><Textarea id="ag-persona" rows={3} value={form.persona} onChange={(e) => setForm({ ...form, persona: e.target.value })} /></div>
+                      <div className="grid gap-1.5"><Label>Tone</Label>
+                        <ToggleGroup type="single" variant="outline" size="sm" value={form.tone} onValueChange={(v) => v && setForm({ ...form, tone: v })}>{tones.map((t) => <ToggleGroupItem key={t} value={t} className="px-2.5 text-xs">{t}</ToggleGroupItem>)}</ToggleGroup>
+                      </div>
+                      <div className="grid gap-1.5"><Label>Autonomy</Label>
+                        <ToggleGroup type="single" variant="outline" size="sm" value={form.autonomy} onValueChange={(v) => v && setForm({ ...form, autonomy: v })} className="flex-wrap">{autonomies.map((t) => <ToggleGroupItem key={t} value={t} className="px-2.5 text-xs">{t}</ToggleGroupItem>)}</ToggleGroup>
+                      </div>
+                      <div className="flex items-center gap-3 rounded-lg border border-fuchsia-500/30 p-2.5">
+                        <span className="flex flex-1 flex-col"><span className="text-sm font-medium">YOLO for this agent</span><span className="text-muted-foreground text-xs">No cap, approvals auto-granted, fast cycles</span></span>
+                        <Switch checked={!!form.yolo} onCheckedChange={(v) => setForm({ ...form, yolo: v })} aria-label="YOLO for this agent" />
+                      </div>
+                    </>
+                  )}
+                  <Button disabled={saving || (changes.length === 0 && !modelChanged)} onClick={() => void save()}>{saving ? 'Saving…' : `Save · logged and sent to ${agent.name}`}</Button>
                 </TabsContent>
               </TabsContents>
             </Tabs>
           </>
         )}
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+      <NewCardDialog open={creating} onClose={() => setCreating(false)} assignee={agent?.id} />
+    </Dialog>
   );
 }

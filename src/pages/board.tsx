@@ -113,6 +113,7 @@ function ColumnOrder({ order }: { order: CardStatus[] }) {
 
 const DRAG_TYPE = 'application/x-paramount-card';
 
+import { NewCardDialog } from '@/features/team/new-card-dialog';
 function BoardCard({ card, onOpen }: { card: CardT; onOpen: () => void }) {
   const agent = useFloor((s) => s.agents.find((a) => a.id === card.agentId));
   const done = card.plan.filter((p) => p.state === 'done').length;
@@ -190,13 +191,14 @@ export function BoardPage() {
   const { route, go } = useRouter();
   const [view, setView] = React.useState('columns');
   const [selected, setSelected] = React.useState<Set<FilterKey>>(() => new Set());
-  const open = cards.find((c) => c.key === route.params.get('card'));
+
+  const [creating, setCreating] = React.useState(false);  const open = cards.find((c) => c.key === route.params.get('card'));
   const visible = React.useMemo(() => cards.filter((c) => matches(c, selected)), [cards, selected]);
   const openCard = (key: string) => go('board', { card: key });
 
   return (
     <Screen fill>
-      <PageHeader title="Board" description="The single list of work. Agents read their card’s plan every turn and tick steps as they go." />
+      <PageHeader title="Board" description="The single list of work. Agents read their card’s plan every turn and tick steps as they go." actions={<Button onClick={() => setCreating(true)}>New card</Button>} />
       <div className="flex flex-wrap items-center gap-3">
         <Tabs value={view} onValueChange={setView}>
           <TabsList>
@@ -246,6 +248,6 @@ export function BoardPage() {
           )}
         </DialogContent>
       </Dialog>
-    </Screen>
-  );
+      <NewCardDialog open={creating} onClose={() => setCreating(false)} />
+    </Screen>  );
 }

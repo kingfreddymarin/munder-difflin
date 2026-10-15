@@ -3,7 +3,7 @@
 import { BackendError } from './errors';
 import { agentDiscovery, fixtures } from './fixtures';
 import type { Command, DataProvider, FloorEvent } from './protocol';
-import { applyEvent } from './reducer';
+import { applyEvent, nextCardKey } from './reducer';
 import type { Snapshot } from './types';
 
 const KEY = 'paramount.mock.events.v1';
@@ -27,12 +27,14 @@ export function createMockProvider(): DataProvider {
   const listeners = new Set<(e: FloorEvent) => void>();
   let events = loadEvents();
   let seq = events.length;
+  const current = () => events.reduce(applyEvent, structuredClone(fixtures));
   return {
     kind: 'mock',
     async snapshot(): Promise<Snapshot> {
-      return events.reduce(applyEvent, structuredClone(fixtures));
+      return current();
     },
-    async dispatch(command: Command) {
+    async dispatch(input: Command) {
+      const command: Command = input.type === 'card.create' ? { ...input, key: nextCardKey(current().cards.map((card) => card.key)) } : input;
       // The browser cannot open local apps; a stored https link opens in a new tab instead.
       if (command.type === 'card.open') throw BackendError.local('UNSUPPORTED', 'Opening a folder in Warp or VS Code needs the desktop app.', command.type);
       if (command.type === 'card.link') {
@@ -53,7 +55,29 @@ export function createMockProvider(): DataProvider {
     async importAgent(source, id) {
       const agent = agentDiscovery.agents.find((item) => item.source === source && item.id === id);
       if (!agent) throw BackendError.local('NOT_FOUND', `No ${source} agent "${id}" in the sample data.`, 'agents.import');
-      return { agent: structuredClone(agent), manifest: { schema: 'munder-difflin/hire@1', name: agent.name, role: agent.description }, adjustments: [] };
+      return { agent: structuredClone(agent), manifest: { spec: 'munder-difflin/hire@1', name: agent.name, ...(agent.description ? { description: agent.description } : {}) }, adjustments: [] };
+    },
+    async teamModels() {
+      const s = current();
+      const byName = new Map(s.engines.map((engine) => [engine.name, engine.id]));
+      return {
+        engines: s.engines.map((engine) => ({ id: engine.id, label: engine.name, models: engine.models.map((model) => ({ id: model, label: model })) })),
+        defaultModel: s.engines[0]?.defaultModel,
+        agents: Object.fromEntries(s.agents.map((agent) => [agent.id, { engine: byName.get(agent.engine) ?? agent.engine, model: agent.model || undefined }])),
+      };
+    },
+    async hire(manifest, options = {}) {
+      const name = typeof manifest.name === 'string' ? manifest.name.trim() : '';
+      if (!name) throw BackendError.local('INVALID_INPUT', 'The hire form is not valid: "name" is required', 'agent.hire');
+      if (options.confirm) throw BackendError.local('UNSUPPORTED', 'Sample data cannot start an agent; connect the desktop core to hire.', 'agent.hire');
+      const engine = typeof manifest.provider === 'string' ? manifest.provider : 'claude';
+      const model = typeof manifest.model === 'string' && manifest.model ? manifest.model : undefined;
+      return {
+        agentId: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name, engine, ...(model ? { model } : {}),
+        ...(typeof manifest.description === 'string' ? { role: manifest.description } : {}),
+        cwd: options.cwd ?? '(sample folder)', isolate: manifest.isolate === true,
+        command: [engine, ...(model ? ['--model', model] : [])].join(' '), engineInstalled: true, confirmed: false, consentRequired: [], ignored: [],
+      };
     },
     async openExternal(url) {
       // The browser preview has no allow-list of its own; it only refuses what is not a web link.
