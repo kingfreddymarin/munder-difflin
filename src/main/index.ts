@@ -15,6 +15,7 @@ import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
 import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } from './autoModeExpiry';
+import { defaultMunderHive, type AgentSourceRoots } from './agentSources';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
@@ -3578,6 +3579,17 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   // Service prerequisite state, including a daemon started outside the app.
   prereqs: { skid: paramountStartPlan('skid', await paramountProbeService('skid', span.cid)) }
 }), { rethrow: true }));
+/** Roots for agents.discover/import, resolved per call so a changed CODEX_HOME
+ *  or Munder config is picked up. Read-only: agentSources.ts never writes. */
+function paramountAgentRoots(): AgentSourceRoots {
+  const munder = defaultMunderHive(app.getPath('appData'));
+  return {
+    claudeHome: join(homedir(), '.claude'),
+    codexHome: process.env.CODEX_HOME?.trim() || join(homedir(), '.codex'),
+    munderHive: munder.hive,
+    ...(munder.warning ? { munderHiveWarning: munder.warning } : {})
+  };
+}
 ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramount.dispatch', paramountLog, {
   sender: evt.sender.id,
   commandType: command && typeof command === 'object' && typeof (command as { type?: unknown }).type === 'string'
@@ -3601,6 +3613,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   setIntegrationConnected: paramountSetIntegrationConnected,
   prereqInstall: { plan: paramountPrereqPlan, run: (plan) => paramountRunPrereqInstall(plan, evt.sender) },
   logStep: (step) => paramountLog(step),
+  agentSources: { roots: paramountAgentRoots, deliverHire },
   savePreference: saveParamountPreference,
   appendEvent: (event) => {
     const root = hive.root();
