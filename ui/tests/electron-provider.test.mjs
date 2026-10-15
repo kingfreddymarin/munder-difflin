@@ -236,3 +236,16 @@ test('projects prerequisite and health evidence instead of invented ready state 
   assert.equal(snapshot.log[0].source, 'drop');
   assert.equal(snapshot.log[1].level, 'error');
 });
+
+test('projects non-secret settings and redacted integrations from the core', async () => {
+  const native = nativeSnapshot();
+  native.config = { ...native.config, defaultModel: 'model-1', semanticMemory: true, circuitBreaker: { enabled: true, hardStop: false } };
+  native.integrations = [{ id: 'github', label: 'GitHub', kind: 'github', baseUrl: 'https://api.github.com', authType: 'bearer', enabled: true, hasSecret: true }];
+  globalThis.window = { cth: bridge(native) };
+  const snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.settings.defaultModel, 'model-1');
+  assert.equal(snapshot.settings.circuitBreaker.enabled, true);
+  assert.deepEqual(snapshot.me.connections[0], { id: 'github', name: 'GitHub', detail: 'github', connected: true,
+    kind: 'github', baseUrl: 'https://api.github.com', authType: 'bearer', hasSecret: true });
+  assert.equal(JSON.stringify(snapshot).includes('secretRef'), false);
+});
