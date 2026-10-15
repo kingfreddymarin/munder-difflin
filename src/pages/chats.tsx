@@ -13,6 +13,7 @@ import { useDispatch, useFloor } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { Chat } from '@/data/types';
+import { Screen } from '@/components/app/screen';
 
 type Filter = 'all' | 'unread' | 'leads' | 'workers' | 'groups';
 
@@ -62,11 +63,11 @@ export function ChatsPage() {
   };
 
   return (
-    <div className="bg-card grid h-full min-h-0 grid-cols-1 overflow-hidden rounded-xl border lg:grid-cols-[300px_1fr] 2xl:grid-cols-[300px_1fr_320px]">
+    <Screen fill className="bg-card grid grid-cols-1 gap-0 overflow-hidden rounded-xl border lg:grid-cols-[300px_1fr] 2xl:grid-cols-[300px_1fr_320px]">
       <aside className="flex min-h-0 flex-col gap-3 overflow-hidden border-r p-3">
         <Input placeholder="Search chats" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search chats" />
         <FilterChips label="Filter chats" value={filter} onChange={setFilter} options={[{ value: 'all', label: 'All' }, { value: 'unread', label: 'Unread' }, { value: 'leads', label: 'Leads' }, { value: 'workers', label: 'Workers' }, { value: 'groups', label: 'Groups' }]} />
-        <nav className="flex min-h-0 flex-col gap-0.5 overflow-hidden" aria-label="Chats">
+        <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain" aria-label="Chats">
           {list.map((c) => {
             const a = lead(c);
             const last = lastOf(c.id);
@@ -130,10 +131,10 @@ export function ChatsPage() {
       </section>
 
       {focus && (
-        <aside className="hidden min-h-0 overflow-hidden border-l p-4 2xl:block">
+        <aside className="hidden min-h-0 overflow-y-auto border-l p-4 2xl:block">
           <AgentSummary agent={focus} onOpenProfile={() => go('team', { agent: focus.id })} />
         </aside>
       )}
-    </div>
+    </Screen>
   );
 }

@@ -12,6 +12,7 @@ import { useDispatch, useFloor } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { LiveTerminal } from '@/components/app/live-terminal';
+import { Screen } from '@/components/app/screen';
 
 export function TerminalPage() {
   const terminals = useFloor((s) => s.terminals);
@@ -31,8 +32,8 @@ export function TerminalPage() {
   };
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 gap-3 lg:grid-cols-[260px_1fr]">
-      <nav aria-label="Sessions" className="bg-card flex min-h-0 flex-col gap-1 overflow-hidden rounded-xl border p-2">
+    <Screen fill className="grid grid-cols-1 lg:grid-cols-[260px_1fr]">
+      <nav aria-label="Sessions" className="bg-card flex min-h-0 flex-col gap-1 overflow-y-auto overscroll-contain rounded-xl border p-2">
         <span className="text-muted-foreground px-2 py-1 text-xs">Live sessions</span>
         {terminals.map((t) => {
           const a = agents.find((x) => x.id === t.agentId);
@@ -71,6 +72,6 @@ export function TerminalPage() {
           </div>}
         </section>
       )}
-    </div>
+    </Screen>
   );
 }

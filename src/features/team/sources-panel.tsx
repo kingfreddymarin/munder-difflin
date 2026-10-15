@@ -16,7 +16,7 @@ export function SourcesPanel() {
   const engines = useFloor((s) => s.engines);
   const dispatch = useDispatch();
   return (
-    <div className="flex min-h-0 flex-col gap-2 overflow-hidden">
+    <div className="flex min-h-0 flex-col gap-2">
       <div className="grid gap-1" style={{ gridTemplateColumns: `110px repeat(${sources.length}, minmax(0, 1fr))` }}>
         <span />
         {sources.map((s) => (

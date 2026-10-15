@@ -1,4 +1,4 @@
-// "See all" pattern: panels show what fits; the rest opens in a sheet. No page ever scrolls.
+// "See all" pattern: panels show the newest few; the full list opens in a sheet that scrolls.
 import * as React from 'react';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/animate-ui/components/radix/sheet';
 import { Button } from '@/components/animate-ui/components/buttons/button';

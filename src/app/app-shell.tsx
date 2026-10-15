@@ -85,7 +85,7 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
         </header>
         <YoloBanner />
         <SetupGate />
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden p-4">{children}</main>
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain p-4">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );
