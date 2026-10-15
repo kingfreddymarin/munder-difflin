@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 const { dispatchParamount, autoModeExpired } = loadTs('src/main/paramount.ts');
-const { accessFor, withAccess, isReadMethod } = loadTs('src/main/accessMatrix.ts');
+const { accessFor, withAccess, isReadMethod, hasMethodOverride, isRpcStyle, isRpcReadPath } = loadTs('src/main/accessMatrix.ts');
 
 function fixture(overrides = {}) {
   const state = {
@@ -323,6 +323,64 @@ test('integration broker enforces none and r, logs a denial with errorId and ids
     assert.deepEqual(Object.keys(denials[0]).sort(), ['errorId', 'integrationId', 'level', 'method', 'workerId']);
     assert.ok(!JSON.stringify(denials).includes('SECRET-PAYLOAD'));
     assert.ok(started.ok);
+  } finally { broker.stop(); upstream.close(); }
+});
+
+test('read-only helpers: method overrides, RPC-style sources and the RPC read allowlist (B1)', () => {
+  assert.equal(hasMethodOverride({}, ''), false);
+  assert.equal(hasMethodOverride({ accept: 'x' }, '?page=2'), false);
+  for (const h of ['x-http-method-override', 'X-HTTP-Method', 'x-method-override']) assert.equal(hasMethodOverride({ [h]: 'DELETE' }, ''), true, h);
+  assert.equal(hasMethodOverride({}, '?_method=DELETE'), true);
+  assert.equal(hasMethodOverride({}, '?a=1&_METHOD=put'), true);
+  const u = (s) => new URL(s);
+  assert.equal(isRpcStyle('chat', u('https://slack.com/api/x')), true);
+  assert.equal(isRpcStyle('ws', u('https://acme.slack.com/api/x')), true);
+  assert.equal(isRpcStyle('my-slack', u('http://127.0.0.1:9/api/x')), true, 'id match only makes a source stricter');
+  assert.equal(isRpcStyle('github', u('https://api.github.com/repos')), false);
+  assert.equal(isRpcStyle('evil', u('https://slack.com.evil.test/api/x')), false);
+  for (const ok of ['conversations.list', 'conversations.history', 'conversations.replies', 'users.info', 'users.profile.get', 'auth.test'])
+    assert.equal(isRpcReadPath(u(`https://slack.com/api/${ok}`)), true, ok);
+  for (const bad of ['chat.postMessage', 'chat.delete', 'conversations.create', 'files.upload', 'auth.revoke', 'list', 'chat.postMessage/conversations.list', 'conversations.list/', 'conversations.list%2F'])
+    assert.equal(isRpcReadPath(u(`https://slack.com/api/${bad}`)), false, bad);
+});
+
+test('broker at r: RPC writes sent as GET and method overrides are denied and logged (B1)', async () => {
+  const { IntegrationBroker } = loadTs('src/main/integrationBroker.ts');
+  const http = require('node:http');
+  const hits = [];
+  const upstream = http.createServer((req, res) => { hits.push(`${req.method} ${req.url}`); res.end('ok'); });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${upstream.address().port}`;
+  const denials = [];
+  let matrix = { 'jim:slack': 'r', 'jim:ado': 'r' };
+  const broker = new IntegrationBroker({
+    getRecord: (id) => ({ id, enabled: true, baseUrl: base, authType: 'none' }),
+    getSecret: () => undefined,
+    access: (w, i) => accessFor(matrix, w, i),
+    onDeny: (d) => denials.push(d)
+  });
+  await broker.start(0);
+  const token = broker.grant('jim', ['slack', 'ado']);
+  const call = (p, headers = {}) => fetch(`${broker.url()}/i/${p}`, { headers: { 'x-md-broker-token': token, ...headers } });
+  try {
+    const post = await call('slack/api/chat.postMessage?channel=C1&text=hi');
+    assert.equal(post.status, 403);
+    assert.match((await post.json()).error, /read-only.*errorId [0-9a-f]+/);
+    assert.equal((await call('slack/api/conversations.list')).status, 200);
+    assert.equal((await call('slack/api/auth.test')).status, 200);
+    assert.equal((await call('slack/api/conversations.list', { 'x-http-method-override': 'POST' })).status, 403);
+    // Unknown (plain REST) kind at r: GET passes, any override is denied.
+    assert.equal((await call('ado/x')).status, 200);
+    assert.equal((await call('ado/x', { 'X-HTTP-Method': 'DELETE' })).status, 403);
+    assert.equal((await call('ado/x', { 'x-method-override': 'PUT' })).status, 403);
+    assert.equal((await call('ado/x?_method=DELETE')).status, 403);
+    assert.equal(denials.length, 5);
+    assert.ok(denials.every((d) => d.level === 'r' && /^[0-9a-f]{12}$/.test(d.errorId)));
+    assert.deepEqual(hits, ['GET /api/conversations.list', 'GET /api/auth.test', 'GET /x'], 'no denied call reached the upstream');
+    // rw is unchanged: the same calls pass.
+    matrix = {};
+    assert.equal((await call('slack/api/chat.postMessage')).status, 200);
+    assert.equal((await call('ado/x', { 'x-http-method-override': 'DELETE' })).status, 200);
   } finally { broker.stop(); upstream.close(); }
 });
 

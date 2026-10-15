@@ -26,7 +26,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
-import { isReadMethod } from './accessMatrix';
+import { hasMethodOverride, isReadMethod, isRpcReadPath, isRpcStyle } from './accessMatrix';
 import {
   type IntegrationRecord,
   buildAuthHeaders,
@@ -196,15 +196,18 @@ export class IntegrationBroker {
     if (!cap.allowedIds.has(integrationId)) {
       return IntegrationBroker.sendError(res, 403, 'forbidden', 'integration not in this worker capability');
     }
-    // 4b) Access matrix: 'none' denies, 'r' allows read methods only. Checked on every
-    //     request, so a grant change takes effect without respawning the worker.
+    // 4b) Access matrix: 'none' denies; 'r' allows read methods only and denies any
+    //     method override. Checked on every request, so a grant change takes effect
+    //     without respawning the worker.
     const level = this.deps.access?.(cap.workerId, integrationId) ?? 'rw';
     const method = (req.method ?? 'GET').toUpperCase();
-    if (level === 'none' || (level === 'r' && !isReadMethod(method))) {
+    const deny = (denied: 'r' | 'none'): void => {
       const errorId = randomBytes(6).toString('hex');
-      try { this.deps.onDeny?.({ errorId, workerId: cap.workerId, integrationId, level, method }); } catch { /* logging must not break the deny */ }
-      return IntegrationBroker.sendError(res, 403, 'access_denied', `access ${level === 'none' ? 'denied' : 'is read-only'} for this integration (errorId ${errorId})`);
-    }
+      try { this.deps.onDeny?.({ errorId, workerId: cap.workerId, integrationId, level: denied, method }); } catch { /* logging must not break the deny */ }
+      IntegrationBroker.sendError(res, 403, 'access_denied', `access ${denied === 'none' ? 'denied' : 'is read-only'} for this integration (errorId ${errorId})`);
+    };
+    if (level === 'none') return deny('none');
+    if (level === 'r' && (!isReadMethod(method) || hasMethodOverride(req.headers, query))) return deny('r');
     // 5) Resolve the record (still enabled?).
     const rec = this.deps.getRecord(integrationId);
     if (!rec) return IntegrationBroker.sendError(res, 404, 'not_found', 'unknown integration');
@@ -213,6 +216,9 @@ export class IntegrationBroker {
     // 6) Confine the upstream URL under the integration origin (NOT an open proxy).
     const upstream = resolveUpstreamUrl(rec.baseUrl, path + query);
     if (!upstream) return IntegrationBroker.sendError(res, 400, 'bad_request', 'invalid or out-of-bounds path');
+    // 6b) At 'r', an RPC-style source (one path = one action, writes callable by
+    //     GET) may only reach its read-method allowlist.
+    if (level === 'r' && isRpcStyle(integrationId, upstream) && !isRpcReadPath(upstream)) return deny('r');
 
     // 7) Secret (decrypted ONLY here, used ONLY to inject the upstream header).
     let secret: string | undefined;

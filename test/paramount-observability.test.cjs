@@ -288,6 +288,39 @@ test('redaction removes secret shapes from text and secret keys from objects', (
   assert.equal(obj.list[0], 's [REDACTED]');
 });
 
+test('redaction covers prefixed env names, JSON keys in any casing and URL userinfo (A1)', () => {
+  const cases = [
+    ['MD_BROKER_TOKEN=3f9a0c1d2e3f4a5b', 'MD_BROKER_TOKEN=[REDACTED]'],
+    ['export ANTHROPIC_API_KEY="abc123def456"', 'export ANTHROPIC_API_KEY="[REDACTED]"'],
+    ['X_API_KEY=k1 DB_PASSWORD=hunter2 WEBHOOK_SECRET=s3', 'X_API_KEY=[REDACTED] DB_PASSWORD=[REDACTED] WEBHOOK_SECRET=[REDACTED]'],
+    ['{"apiKey":"abc123"}', '{"apiKey":"[REDACTED]"}'],
+    ['{"Token": "t0k", "SECRET":"s", "Password" : "p", "AUTHORIZATION":"Bearer x"}',
+      '{"Token": "[REDACTED]", "SECRET":"[REDACTED]", "Password" : "[REDACTED]", "AUTHORIZATION":"[REDACTED]"}'],
+    ["{'api_key': 'abc'}", "{'api_key': '[REDACTED]'}"],
+    ['Authorization: Basic dXNlcg', 'Authorization: [REDACTED]'],
+    ['clone https://u:p@h/repo.git', 'clone https://u:[REDACTED]@h/repo.git'],
+    ['postgres://admin:s3cr3t@db.local:5432/x', 'postgres://admin:[REDACTED]@db.local:5432/x']
+  ];
+  for (const [input, want] of cases) assert.equal(obs.redactText(input), want, input);
+  // Budgets, flags and harmless neighbours survive.
+  for (const keep of ['"maxTokens": 4096', 'hasToken=true', 'tokenRef: null', 'MY_TOKEN_FILE=/tmp/x', 'tokenizer=bpe', 'https://h/path', 'mailto:a@b.c'])
+    assert.equal(obs.redactText(keep), keep, keep);
+});
+
+test('diagnostics redacts agent-exit tails from crashes/ (A1)', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-a1-'));
+  fs.mkdirSync(path.join(root, 'crashes'));
+  fs.writeFileSync(path.join(root, 'crashes', 'agent-exit-1.log'),
+    'env dump\nMD_BROKER_TOKEN=3f9a0c1d2e3f4a5b\nANTHROPIC_API_KEY=abc123\n{"apiKey":"zz9"}\nhttps://u:pw@h\n');
+  fs.writeFileSync(path.join(root, 'log.jsonl'), 'not json SECRET=raw-line-secret\n');
+  try {
+    const d = obs.buildDiagnostics({ root, app: {}, os: {}, config: {} }, 'cid');
+    const text = JSON.stringify(d);
+    for (const leak of ['3f9a0c1d2e3f4a5b', 'abc123', 'zz9', ':pw@', 'raw-line-secret']) assert.ok(!text.includes(leak), leak);
+    assert.match(d.crashes[0].content, /MD_BROKER_TOKEN=\[REDACTED\]/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('redaction survives cycles and errors', () => {
   const a = { name: 'a' }; a.self = a;
   assert.equal(obs.redact(a).self, '[CIRCULAR]');
