@@ -33,6 +33,7 @@ export interface ParamountTeamDeps {
   appVersion: string;
   /** config.defaultModel. */
   defaultModel(): string | undefined;
+  ticketKeyPrefix?(): string | undefined;
   /** config.defaultCommand, the fallback engine command. */
   defaultCommand(): string | undefined;
   autoMode(): boolean;
@@ -119,7 +120,11 @@ export function teamModels(catalog: ModelCatalog, appVersion: string): Paramount
 // ── Cards ──────────────────────────────────────────────────────────────────
 
 /** Next key on the ledger's most used `PREFIX-n` scheme; `P-1` on an empty ledger. */
-export function nextCardKey(ids: string[]): string {
+export function nextCardKey(ids: string[], selectedPrefix?: string): string {
+  if (selectedPrefix) {
+    const numbers = ids.map((id) => new RegExp(`^${selectedPrefix}-(\\d+)$`).exec(id)).filter((match): match is RegExpExecArray => !!match).map((match) => Number(match[1]));
+    return `${selectedPrefix}-${Math.max(0, ...numbers) + 1}`;
+  }
   const counts = new Map<string, { n: number; max: number }>();
   for (const id of ids) {
     const m = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(id);
@@ -187,7 +192,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (command.status !== undefined && command.status !== 'todo' && command.status !== 'blocked') return fail('INVALID_INPUT', 'A new card starts in todo or blocked');
         const assignee = command.assignee;
         if (assignee !== undefined && (typeof assignee !== 'string' || !Object.hasOwn(deps.agents(), assignee))) return fail('NOT_FOUND', 'Assignee is not an agent on this floor');
-        const key = nextCardKey((deps.tasks().tasks ?? []).map((t) => t.id));
+        const key = nextCardKey((deps.tasks().tasks ?? []).map((t) => t.id), team.ticketKeyPrefix?.());
         const description = typeof command.description === 'string' && command.description.trim() ? command.description.trim() : undefined;
         writeAttempted = true;
         const added = team.addTask({

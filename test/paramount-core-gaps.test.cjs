@@ -70,13 +70,14 @@ test('settings.update saves one vetted non-secret field and rejects extra or inv
   assert.equal(dispatchParamount({ type: 'settings.update', patch: { providerBaseUrls: { qwen: 'http://localhost:11434/v1' } } }, deps).ok, true);
   assert.equal(state.settings.providerBaseUrls.qwen, 'http://localhost:11434/v1');
   assert.equal(dispatchParamount({ type: 'settings.update', patch: { responseStyleBrief: 'Be clear.' } }, deps).ok, true);
+  assert.equal(dispatchParamount({ type: 'settings.update', patch: { ticketKeyPrefix: 'LAB' } }, deps).ok, true);
   for (const patch of [{}, { semanticMemory: true, maxTurns: 12 }, { semanticMemory: 'false' },
     { maxTurns: -1 }, { providerKey: 'secret' }, { circuitBreaker: { hardStop: true, surprise: 1 } },
     { providerBaseUrls: { qwen: 'http://public.example/v1' } }, { providerBaseUrls: { qwen: 'javascript:alert(1)' } },
-    { providerDefaultModels: Object.fromEntries([['__proto__', 'x']]) }, { responseStyleBrief: 'x'.repeat(1201) }]) {
+    { providerDefaultModels: Object.fromEntries([['__proto__', 'x']]) }, { responseStyleBrief: 'x'.repeat(1201) }, { ticketKeyPrefix: 'bad-prefix' }]) {
     assertFailure(dispatchParamount({ type: 'settings.update', patch }, deps), 'INVALID_INPUT');
   }
-  assert.equal(state.writes, 3);
+  assert.equal(state.writes, 4);
 });
 
 test('floor.yolo persists autoMode and emits one event', () => {

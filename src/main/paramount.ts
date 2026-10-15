@@ -232,6 +232,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
           : key === 'embeddingModel' ? value !== 'minilm' && value !== 'embeddinggemma'
           : key === 'responseStyleBrief' ? typeof value !== 'string' || value.length > 1200 || value.includes('\0')
           : key === 'claudeOutputStyle' ? !['off', 'concise', 'explanatory', 'learning'].includes(value as string)
+          : key === 'ticketKeyPrefix' ? typeof value !== 'string' || (!!value && !/^[A-Z][A-Z0-9]{0,9}$/.test(value))
           : key === 'providerBaseUrls' || key === 'providerDefaultModels' ? !providerField
           : key === 'circuitBreaker' ? !object(value) || Object.keys(value).length !== 1 || !Object.entries(value).every(([k, v]) =>
               ['enabled', 'hardStop'].includes(k) ? typeof v === 'boolean' :

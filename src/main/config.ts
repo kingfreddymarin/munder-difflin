@@ -210,6 +210,8 @@ export interface HarnessConfig {
   defaultCommand: string;
   /** Default model for newly spawned agents (e.g. 'claude-sonnet-4-6[1m]'); unset = CLI default. */
   defaultModel?: string;
+  /** Prefix for newly created Paramount cards; unset follows the existing ledger. */
+  ticketKeyPrefix?: string;
   /** Operator's response guidance, applied to newly started hive agents. */
   responseStyleBrief?: string;
   /** Additional Claude Code response mode for newly started Claude agents. */

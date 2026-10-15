@@ -95,6 +95,14 @@ test('nextCardKey follows the most used prefix and starts at P-1', () => {
   assert.equal(nextCardKey(['free-form', 'X-10']), 'X-11');
 });
 
+test('configured ticket prefix only advances keys in that namespace', () => {
+  assert.equal(nextCardKey(['NSC-9', 'LAB-2', 'LAB-5'], 'LAB'), 'LAB-6');
+  const { deps } = fixture({ ticketKeyPrefix: () => 'LAB' });
+  const result = dispatchParamount({ type: 'card.create', title: 'Check launch' }, deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.card.key, 'LAB-1');
+});
+
 test('team.models lists engines from the catalog, filtered by version, with the default and picks', () => {
   const { deps } = fixture();
   const result = dispatchParamount({ type: 'team.models' }, deps);
