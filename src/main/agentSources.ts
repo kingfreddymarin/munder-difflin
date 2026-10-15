@@ -20,6 +20,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, extname, join } from 'node:path';
 import type { ParamountAgentDiscovery, ParamountAgentSource, ParamountDiscoveredAgent, ParamountSourceWarning } from '../preload/paramount';
 import { newErrorId } from './paramountObservability';
+import { HIRE_SPEC_V1, validateHireManifest, type HireValidation } from '../shared/hire';
 
 export const AGENT_SOURCES: readonly ParamountAgentSource[] = ['claude', 'codex', 'munder'];
 /** Agent definitions are prompts, not data dumps; anything bigger is refused. */
@@ -456,4 +457,41 @@ export function findAgents(roots: AgentSourceRoots, options: DiscoverOptions = {
 export function discoverAgents(roots: AgentSourceRoots, options: DiscoverOptions = {}): ParamountAgentDiscovery {
   const { found, warnings, roots: scanned } = findAgents(roots, options);
   return { agents: found.map((f) => f.agent), warnings, roots: scanned };
+}
+
+// ─── import: discovered agent -> hire manifest ──────────────────────────────
+const HIRE_PROVIDERS: Record<ParamountAgentSource, string | undefined> = { claude: 'claude', codex: 'codex', munder: undefined };
+/** Claude Code model values that mean "no specific model". */
+const NO_MODEL = new Set(['inherit', 'default']);
+
+function cap(text: string, max: number, field: string, adjustments: string[], tail = ''): string {
+  if (text.length <= max) return text;
+  adjustments.push(`${field} shortened from ${text.length} to ${max} characters`);
+  return text.slice(0, max - tail.length).trimEnd() + tail;
+}
+
+/** Builds and validates the hire manifest for one discovered agent. The hire
+ *  path never auto-spawns: the manifest only pre-fills the Add-Agent form. */
+export function toHireManifest(found: FoundAgent, warnings: ParamountSourceWarning[]): HireValidation & { adjustments: string[] } {
+  const { agent } = found;
+  const adjustments: string[] = [];
+  const manifest: Record<string, unknown> = { spec: HIRE_SPEC_V1, name: cap(agent.name, 40, 'name', adjustments) };
+  if (agent.description) manifest.description = cap(agent.description.replace(/\s+/g, ' '), 200, 'description', adjustments, '…');
+  const instructions = (found.instructions ?? found.loadInstructions?.(warnings))?.trim();
+  if (instructions) manifest.goal = cap(instructions, 4000, 'goal', adjustments, `\n…(truncated; full instructions: ${agent.instructionsPath})`);
+  const provider = HIRE_PROVIDERS[agent.source] ?? found.provider;
+  if (provider) manifest.provider = provider;
+  if (agent.model && !NO_MODEL.has(agent.model)) manifest.model = agent.model;
+  else if (agent.model) adjustments.push(`model "${agent.model}" dropped; the provider default applies`);
+  if (found.capabilities) manifest.capabilities = found.capabilities;
+  manifest.author = `${agent.source} ${agent.origin} agent`;
+  let result = validateHireManifest(manifest);
+  // Fields the hire spec cannot carry are dropped one at a time, never silently.
+  for (const field of ['model', 'provider', 'capabilities'] as const) {
+    if (result.ok || manifest[field] === undefined || !result.errors.some((e) => e.includes(`"${field}"`))) continue;
+    adjustments.push(`${field} ${JSON.stringify(manifest[field])} dropped: ${result.errors.find((e) => e.includes(`"${field}"`))}`);
+    delete manifest[field];
+    result = validateHireManifest(manifest);
+  }
+  return { ...result, adjustments };
 }
