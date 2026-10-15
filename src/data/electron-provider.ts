@@ -178,16 +178,42 @@ export function createElectronProvider(): ElectronProvider {
       const cards: Card[] = tasks.map((task) => ({
         key: string(task.id), title: string(task.title, 'Untitled task'),
         status: ['todo', 'doing', 'blocked', 'done'].includes(string(task.status)) ? string(task.status) as Card['status'] : 'todo',
-        priority: Number(task.priority) <= 1 ? 'P1' : Number(task.priority) === 2 ? 'P2' : 'P3',
+        priority: task.priority === 1 ? 'P1' : task.priority === 2 ? 'P2' : task.priority === 3 ? 'P3' : '',
         agentId: string(task.assignee), created: date(task.createdAt), createdBy: string(task.createdBy), updated: date(task.updatedAt ?? task.createdAt),
         description: string(task.description), dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.filter((id): id is string => typeof id === 'string').join(', ') : '',
         plan: [], doneMeans: [], tags: strings(task.tags), workspace: string(task.workspace) || undefined,
         dir: string(task.dir) || undefined, refs: refs(task.refs), tokens: 0, origin: 'hive', people: [],
       }));
+      const skid = object(object(native.prereqs).skid);
+      const skidKnown = !!string(skid.id);
+      const skidReady = skid.installed === true && skid.running === true;
+      const prerequisites: Snapshot['prerequisites'] = skidKnown ? [{
+        id: string(skid.id), name: string(skid.label, 'Skidbladnir'), level: 'required',
+        state: skidReady ? 'ready' : skid.installed === true ? 'installed-not-running' : 'missing',
+        detail: skidReady ? 'Running' : skid.installed === true ? 'Installed, not running' : 'Not installed',
+        why: 'Paramount uses this local model runtime when available.',
+        ...(skid.installed === true && !skidReady && string(skid.command) ? { start: string(skid.command) } : {}),
+      }] : [];
+      const log: Snapshot['log'] = array(native.log).map((entry, index) => {
+        const kind = string(entry.kind, 'event');
+        const code = string(entry.code);
+        const at = typeof entry.ts === 'number' && Number.isFinite(entry.ts)
+          ? new Date(entry.ts).toISOString() : date(entry.ts);
+        return {
+          id: string(entry.id, string(entry.errorId, `event-${index}`)), at,
+          level: /error|fail|drop/i.test(kind) ? 'error' as const : /warn|bounce|degrad/i.test(kind) ? 'warn' as const : 'info' as const,
+          source: kind, text: code ? `${kind} · ${code}` : kind,
+          correlation: string(entry.cid, string(entry.errorId)),
+        };
+      });
       const snapshot: Snapshot = {
-        prerequisites: [], setupDismissed: true, objectives: [], wins: [],
+        usageReported: false,
+        settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels'].filter((key) => key in config).map((key) => [key, config[key]])),
+        prerequisites, setupDismissed: object(preferences.setup).dismissed === true, objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
-          connections: [], notify: [{ id: 'desktop', label: 'Desktop', on: config.notifications === true }], yolo: { on: config.autoMode === true, autoOffHours: null, keepHardRules: true },
+          connections: array(native.integrations).map((item) => ({ id: string(item.id), name: string(item.label, string(item.id)), detail: string(item.kind), connected: item.enabled === true,
+            kind: string(item.kind), baseUrl: string(item.baseUrl), authType: string(item.authType), hasSecret: item.hasSecret === true })),
+          notify: [{ id: 'desktop', label: 'Desktop', on: config.notifications === true }], yolo: { on: config.autoMode === true, autoOffHours: null, keepHardRules: true },
           iteration: { speed: 'balanced', heartbeatSec: 0, standupMin: 0, checkpointEverySteps: 0 } },
         agents, chats, messages,
         notifications: messages.filter((message) => message.kind === 'question' && !message.read && !message.answer && !message.dismissed).map((message) => {
@@ -200,7 +226,10 @@ export function createElectronProvider(): ElectronProvider {
         cards, board: { columns: boardColumns(object(preferences.board).columns) }, activity: logActivity(native.log, agentIds, nameOf), timelines: [], sources: [], access: {}, engines: [],
         automations: array(native.missions).map((mission) => ({ id: string(mission.id), name: string(mission.label), when: String(mission.intervalMs ?? ''),
           onlyIf: '', then: string(mission.body), onFailure: '', enabled: mission.enabled === true, runs: [], last: '', file: '' })),
-        services: [{ id: 'core', group: 'command-center', name: 'Local core', state: 'ok', detail: 'Connected' }], log: [],
+        services: [
+          { id: 'core', group: 'command-center', name: 'Local core', state: 'ok', detail: 'Snapshot received' },
+          ...(skidKnown ? [{ id: string(skid.id), group: 'studio' as const, name: string(skid.label, 'Skidbladnir'), state: skidReady ? 'ok' as const : 'warn' as const, detail: skidReady ? 'Running' : skid.installed === true ? 'Installed, not running' : 'Not installed', fix: skidReady ? undefined : 'Open setup' }] : []),
+        ], log,
         terminals: agents.filter((agent) => ptyByAgent.has(agent.id)).map((agent) => ({ agentId: agent.id, ptyId: string(ptyByAgent.get(agent.id)?.id), cwd: string(ptyByAgent.get(agent.id)?.cwd), lines: [] })),
         audit: [],
         homeLayout: object(preferences.home),

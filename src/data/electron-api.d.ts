@@ -19,6 +19,9 @@ export type ElectronBridge = ParamountPreloadAPI & {
   revealPath?(path: string): Promise<{ ok: boolean; error?: string }>;
   pathForFile?(file: File): string;
   statAbs?(path: string): Promise<{ exists: boolean; isFile: boolean; path: string }>;
+  providerKeyHas?(backend: string): Promise<boolean>;
+  providerKeySet?(request: { backend: string; key: string }): Promise<{ ok: boolean; error?: string }>;
+  providerKeyClear?(backend: string): Promise<{ ok: boolean; error?: string }>;
 };
 
 declare global {

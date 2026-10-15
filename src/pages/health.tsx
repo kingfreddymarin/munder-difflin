@@ -7,33 +7,22 @@ import { SeeAll } from '@/components/app/see-all';
 import { StatTile } from '@/components/app/stat-tile';
 import { clock } from '@/components/app/format';
 import { stateDot, stateTone } from '@/components/app/status';
-import { CopyDiagnosticsButton, useDispatch, useFloor, useUnsupported } from '@/data/store';
-import { UnsupportedReason } from '@/components/app/error-notice';
+import { CopyDiagnosticsButton, useFloor, useSnapshotRefresh } from '@/data/store';
+import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { Service } from '@/data/types';
 import { Screen } from '@/components/app/screen';
 
 function ServiceRow({ s }: { s: Service }) {
-  const [fixing, setFixing] = React.useState<'idle' | 'sending' | 'started'>('idle');
-  const dispatch = useDispatch();
-  const prereq = useFloor((st) => st.prerequisites.find((p) => p.id === s.id));
-  const command = prereq ? { type: prereq.state === 'missing' ? 'prereq.install' : 'prereq.start', id: prereq.id } as const : null;
-  const reason = useUnsupported()(command ?? { type: 'prereq.start', id: s.id });
-  const fix = () => {
-    if (!command) return;
-    setFixing('sending');
-    // A failure shows in the store's error notice with its errorId; the button returns to its label.
-    void dispatch(command).then((ok) => setFixing(ok ? 'started' : 'idle'));
-  };
+  const { go } = useRouter();
   return (
     <div className="flex items-center gap-3 rounded-lg border px-3 py-2">
       <span className={cn('size-2 shrink-0 rounded-full', stateDot[s.state])} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-sm font-medium">{s.name}</span>
         <span className="text-muted-foreground truncate text-xs">{s.detail}</span>
-        {s.fix && <UnsupportedReason reason={command ? reason : 'No installer is known for this service.'} />}
       </span>
-      {s.fix && <Button size="sm" variant={fixing === 'idle' ? 'outline' : 'secondary'} disabled={!command || !!reason || fixing === 'sending'} onClick={fix}>{fixing === 'sending' ? 'Starting…' : fixing === 'started' ? 'Fix started' : s.fix}</Button>}
+      {s.fix && <Button size="sm" variant="outline" onClick={() => go('settings', { tab: 'setup' })}>{s.fix}</Button>}
       {!s.fix && <span className={cn('text-xs', stateTone[s.state])}>{s.state === 'ok' ? 'healthy' : s.state === 'warn' ? 'degraded' : 'failing'}</span>}
     </div>
   );
@@ -43,8 +32,9 @@ export function HealthPage() {
   const services = useFloor((s) => s.services);
   const log = useFloor((s) => s.log);
   const agents = useFloor((s) => s.agents);
+  const usageReported = useFloor((s) => s.usageReported !== false);
+  const { refresh, refreshedAt } = useSnapshotRefresh();
   const [level, setLevel] = React.useState('all');
-  const [checked, setChecked] = React.useState<string | null>(null);
   const cc = services.filter((s) => s.group === 'command-center');
   const studio = services.filter((s) => s.group === 'studio');
   const bad = services.filter((s) => s.state !== 'ok');
@@ -56,16 +46,16 @@ export function HealthPage() {
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-1 flex-col">
           <h1 className="text-xl font-semibold tracking-tight">Health</h1>
-          <span className={cn('text-xs', bad.length ? 'text-amber-300' : 'text-emerald-400')}>{bad.length ? `${bad.length} need attention` : 'Everything healthy'}{checked ? ` · checked ${checked}` : ''}</span>
+          <span className={cn('text-xs', bad.length ? 'text-amber-300' : 'text-emerald-400')}>{bad.length ? `${bad.length} need attention` : `${services.length} reported services healthy`}{refreshedAt ? ` · checked ${clock(new Date(refreshedAt).toISOString())}` : ''}</span>
         </div>
-        <Button onClick={() => setChecked(clock(new Date().toISOString()))}><RefreshCw animateOnHover /> Run doctor</Button>
+        <Button onClick={refresh}><RefreshCw animateOnHover /> Refresh checks</Button>
         <CopyDiagnosticsButton />
       </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatTile label="Services healthy" value={services.length - bad.length} sub={`of ${services.length}`} />
-        <StatTile label="Floor tokens today" value={Number(tokens.toFixed(1))} decimals={1} suffix="M" sub="cached reads counted apart" />
-        <StatTile label="Errors in the log" value={log.filter((e) => e.level === 'error').length} sub="last 24 h" />
-        <StatTile label="Messages dropped" value={0} sub="router · atomic writes" />
+        <StatTile label="Floor tokens today" value={usageReported ? Number(tokens.toFixed(1)) : '—'} decimals={1} suffix={usageReported ? 'M' : ''} sub={usageReported ? 'Reported by core' : 'Not reported by core'} />
+        <StatTile label="Errors in the log" value={log.filter((e) => e.level === 'error').length} sub="in loaded log tail" />
+        <StatTile label="Logged message drops" value={log.filter((e) => /drop/i.test(e.source)).length} sub="in loaded log tail" />
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-3">
         <Tile title="Command center" hint={`${cc.filter((s) => s.state === 'ok').length}/${cc.length} healthy`}>

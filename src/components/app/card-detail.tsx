@@ -99,7 +99,7 @@ export function CardDetail({ card }: { card: CardT }) {
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground font-mono">{card.key}</span>
         <Badge variant="outline"><span className={cn('size-2 rounded-full', col?.dot)} />{col?.label}</Badge>
-        <Badge variant={card.priority === 'P1' ? 'danger' : card.priority === 'P2' ? 'violet' : 'secondary'}>{card.priority}</Badge>
+        {card.priority && <Badge variant={card.priority === 'P1' ? 'danger' : card.priority === 'P2' ? 'violet' : 'secondary'}>{card.priority}</Badge>}
         <span className="text-muted-foreground">from {card.origin}</span>
       </div>
       <dl className="grid grid-cols-[90px_1fr] gap-x-3 gap-y-1.5 text-sm">

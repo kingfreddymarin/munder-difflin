@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { Tabs, TabsContent, TabsContents, TabsList, TabsTrigger } from '@/components/animate-ui/components/radix/tabs';
 import { Switch } from '@/components/animate-ui/components/radix/switch';
-import { RadioGroup, RadioGroupItem } from '@/components/animate-ui/components/radix/radio-group';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -12,16 +11,11 @@ import { stamp } from '@/components/app/format';
 import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { UnsupportedReason } from '@/components/app/error-notice';
 import { useRouter } from '@/app/router';
-import { resetMockData } from '@/data/mock-provider';
 import { PrereqList } from '@/components/app/prereq-list';
-import type { IterationSettings } from '@/data/types';
 import { Screen } from '@/components/app/screen';
-
-const speeds: Record<IterationSettings['speed'], { label: string; hint: string; patch: Partial<IterationSettings> }> = {
-  fast: { label: 'Fast', hint: 'Heartbeat 15 s · standup every 15 min · checkpoint every step', patch: { speed: 'fast', heartbeatSec: 15, standupMin: 15, checkpointEverySteps: 1 } },
-  balanced: { label: 'Balanced', hint: 'Heartbeat 60 s · standup hourly · checkpoint every step', patch: { speed: 'balanced', heartbeatSec: 60, standupMin: 60, checkpointEverySteps: 1 } },
-  careful: { label: 'Careful', hint: 'Heartbeat 5 min · standup hourly · checkpoint every step, review before merges', patch: { speed: 'careful', heartbeatSec: 300, standupMin: 60, checkpointEverySteps: 1 } },
-};
+import { CoreSettings } from '@/features/settings/core-settings';
+import { ProviderSettings } from '@/features/settings/provider-settings';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 
 export function SettingsPage() {
   const me = useFloor((s) => s.me);
@@ -31,10 +25,11 @@ export function SettingsPage() {
   const unsupported = useUnsupported();
   const profileReason = unsupported({ type: 'account.profile', patch: {} });
   const yoloReason = unsupported({ type: 'floor.yolo', patch: {} });
-  const iterationReason = unsupported({ type: 'floor.iteration', patch: {} });
   const { route, go } = useRouter();
   const tab = route.params.get('tab') ?? 'account';
   const [profile, setProfile] = React.useState({ name: me.name, workEmail: me.workEmail, timezone: me.timezone });
+  const [connectionId, setConnectionId] = React.useState<string | null>(null);
+  const connection = me.connections.find((item) => item.id === connectionId);
   const names = (ids: string[]) => ids.map((id) => agents.find((a) => a.id === id)?.name ?? id).join(', ') || '—';
 
   const auditRow = (e: (typeof audit)[number]) => (
@@ -49,13 +44,15 @@ export function SettingsPage() {
     <Screen>
       <div className="flex flex-col">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <span className="text-muted-foreground text-xs">Every change here is logged and added to the context of the agents it affects.</span>
+        <span className="text-muted-foreground text-xs">Changes sent to the desktop core are logged with a correlation ID.</span>
       </div>
       <Tabs value={tab} onValueChange={(v) => go('settings', { tab: v })} className="flex min-h-0 flex-1 flex-col gap-3">
         <TabsList>
           <TabsTrigger value="setup">Setup</TabsTrigger>
           <TabsTrigger value="account">Account</TabsTrigger>
           <TabsTrigger value="connections">Connections</TabsTrigger>
+          <TabsTrigger value="team">Team & models</TabsTrigger>
+          <TabsTrigger value="providers">AI engines</TabsTrigger>
           <TabsTrigger value="autonomy">Autonomy & YOLO</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="audit">My changes</TabsTrigger>
@@ -73,7 +70,6 @@ export function SettingsPage() {
               <div className="grid gap-1.5"><Label htmlFor="s-tz">Time zone</Label><Input id="s-tz" value={profile.timezone} onChange={(e) => setProfile({ ...profile, timezone: e.target.value })} /></div>
               <div className="flex gap-2 pt-1">
                 <Button disabled={!!profileReason} onClick={() => dispatch({ type: 'account.profile', patch: profile })}>Save</Button>
-                <Button variant="ghost" onClick={() => { resetMockData(); window.location.reload(); }}>Reset sample data</Button>
               </div>
               <UnsupportedReason reason={profileReason} />
             </Tile>
@@ -81,46 +77,35 @@ export function SettingsPage() {
           <TabsContent value="connections">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {me.connections.map((c) => (
-                <div key={c.id} className="bg-card flex items-center gap-3 rounded-xl border p-4">
+                <button key={c.id} type="button" onClick={() => setConnectionId(c.id)} className="bg-card hover:bg-accent flex items-center gap-3 rounded-xl border p-4 text-left">
                   <span className="flex flex-1 flex-col"><span className="font-medium">{c.name}</span><span className="text-muted-foreground text-xs">{c.detail}</span></span>
-                  <Badge variant={c.connected ? 'success' : 'danger'}>{c.connected ? 'connected' : 'off'}</Badge>
-                  <Switch checked={c.connected} disabled={!!unsupported({ type: 'account.connection', id: c.id, connected: !c.connected })} title={unsupported({ type: 'account.connection', id: c.id, connected: !c.connected }) ?? undefined} onCheckedChange={(v) => dispatch({ type: 'account.connection', id: c.id, connected: v })} aria-label={`Connect ${c.name}`} />
-                </div>
+                  <Badge variant={c.connected ? 'success' : 'danger'}>{c.connected ? 'enabled' : 'off'}</Badge>
+                </button>
               ))}
             </div>
+            {!me.connections.length && <p className="text-muted-foreground p-4 text-sm">No integrations are registered in this core.</p>}
+            <Dialog open={!!connection} onOpenChange={(open) => !open && setConnectionId(null)}>
+              <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+                {connection && <><DialogHeader><DialogTitle>{connection.name}</DialogTitle><DialogDescription>{connection.kind || connection.detail}</DialogDescription></DialogHeader>
+                  <div className="grid gap-2 text-sm"><span>Endpoint: {connection.baseUrl || 'Not reported'}</span><span>Authentication: {connection.authType || 'Not reported'}</span><span>Credential: {connection.hasSecret ? 'Stored securely' : 'Not stored'}</span></div>
+                  <div className="flex items-center gap-3"><span className="flex-1 text-sm">Allow agents to use this connection</span><Switch checked={connection.connected} disabled={!!unsupported({ type: 'account.connection', id: connection.id, connected: !connection.connected })} onCheckedChange={(on) => { void dispatch({ type: 'account.connection', id: connection.id, connected: on }); }} aria-label={`Enable ${connection.name}`} /></div>
+                  <UnsupportedReason reason={unsupported({ type: 'account.connection', id: connection.id, connected: !connection.connected })} />
+                </>}
+              </DialogContent>
+            </Dialog>
           </TabsContent>
+          <TabsContent value="team"><CoreSettings /></TabsContent>
+          <TabsContent value="providers"><ProviderSettings /></TabsContent>
           <TabsContent value="autonomy">
             <div className="grid gap-3 lg:grid-cols-2">
               <Tile title="YOLO mode" hint="no limits, fast cycles" className="border-fuchsia-500/30">
                 <div className="flex items-center gap-3">
-                  <span className="flex-1 text-sm">No token caps · approvals auto-granted · the breaker only steers. Everything is still logged.</span>
+                  <span className="flex-1 text-sm">YOLO overrides autonomy limits while on. The breaker still records activity.</span>
                   <Switch checked={me.yolo.on} disabled={!!yoloReason} onCheckedChange={(v) => dispatch({ type: 'floor.yolo', patch: { on: v } })} aria-label="YOLO mode" />
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="flex-1 text-sm">Keep my hard rules (no deletes, no policy bypass)</span>
-                  <Switch checked={me.yolo.keepHardRules} disabled={!!yoloReason} onCheckedChange={(v) => dispatch({ type: 'floor.yolo', patch: { keepHardRules: v } })} aria-label="Keep hard rules" />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <span className="text-sm">Turn itself off after</span>
-                  <RadioGroup value={String(me.yolo.autoOffHours ?? 'never')} disabled={!!yoloReason} onValueChange={(v) => dispatch({ type: 'floor.yolo', patch: { autoOffHours: v === 'never' ? null : Number(v) } })} className="flex flex-wrap gap-4">
-                    {['1', '2', '8', 'never'].map((v) => (
-                      <Label key={v} className="gap-2 font-normal"><RadioGroupItem value={v} />{v === 'never' ? 'Never' : `${v} h`}</Label>
-                    ))}
-                  </RadioGroup>
                 </div>
                 <UnsupportedReason reason={yoloReason} />
               </Tile>
-              <Tile title="Iteration cycle" hint="how fast the floor loops">
-                <RadioGroup value={me.iteration.speed} disabled={!!iterationReason} onValueChange={(v) => dispatch({ type: 'floor.iteration', patch: speeds[v as IterationSettings['speed']].patch })} className="flex flex-col gap-3">
-                  {(Object.keys(speeds) as IterationSettings['speed'][]).map((k) => (
-                    <Label key={k} className="items-start gap-3 rounded-lg border p-3 font-normal">
-                      <RadioGroupItem value={k} className="mt-0.5" />
-                      <span className="flex flex-col gap-0.5"><span className="font-medium">{speeds[k].label}</span><span className="text-muted-foreground text-xs">{speeds[k].hint}</span></span>
-                    </Label>
-                  ))}
-                </RadioGroup>
-                <UnsupportedReason reason={iterationReason} />
-              </Tile>
+              <Tile title="Mission cadence"><p className="text-muted-foreground text-sm">Heartbeat and standup schedules are managed in Team → Automations.</p></Tile>
             </div>
           </TabsContent>
           <TabsContent value="notifications">

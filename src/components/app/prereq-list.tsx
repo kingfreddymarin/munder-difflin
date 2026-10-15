@@ -20,7 +20,7 @@ function Row({ p, featured }: { p: Prerequisite; featured?: boolean }) {
   const unsupported = useUnsupported();
   const [label, variant] = stateLook[p.state];
   const cmd = p.state === 'installed-not-running' ? p.start : p.install;
-  const command = { type: p.state === 'installed-not-running' ? 'prereq.start' : 'prereq.install', id: p.id } as const;
+  const command = { type: p.state === 'installed-not-running' ? 'prereq.start' : 'prereq.install', id: p.id, confirm: true } as const;
   const reason = unsupported(command);
   return (
     <div className={cn('flex flex-col gap-2 rounded-lg border p-3', featured && p.state !== 'ready' && 'border-amber-500/50 bg-amber-500/5')}>
@@ -47,12 +47,13 @@ function Row({ p, featured }: { p: Prerequisite; featured?: boolean }) {
 
 export function PrereqList({ compact }: { compact?: boolean }) {
   const prereqs = useFloor((s) => s.prerequisites);
-  const featured = prereqs.find((p) => p.id === 'skid');
-  const rest = prereqs.filter((p) => p.id !== 'skid' && (!compact || p.state !== 'ready' || p.level === 'required'));
+  const featured = prereqs.find((p) => p.level === 'required' && p.state !== 'ready') ?? prereqs.find((p) => p.level === 'required');
+  const rest = prereqs.filter((p) => p !== featured && (!compact || p.state !== 'ready' || p.level === 'required'));
   return (
     <div className="flex flex-col gap-2">
       {featured && <Row p={featured} featured />}
       <div className={cn('grid gap-2', !compact && 'md:grid-cols-2')}>{rest.map((p) => <Row key={p.id} p={p} />)}</div>
+      {!prereqs.length && <p className="text-muted-foreground text-sm">No prerequisite checks were reported by the core.</p>}
     </div>
   );
 }

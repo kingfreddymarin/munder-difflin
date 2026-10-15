@@ -98,7 +98,7 @@ export interface Card {
   key: string;
   title: string;
   status: CardStatus;
-  priority: 'P1' | 'P2' | 'P3';
+  priority: 'P1' | 'P2' | 'P3' | '';
   agentId: string;
   created: string;
   createdBy: string;
@@ -207,6 +207,10 @@ export interface Connection {
   name: string;
   detail: string;
   connected: boolean;
+  kind?: string;
+  baseUrl?: string;
+  authType?: string;
+  hasSecret?: boolean;
 }
 export type IterationSpeed = 'fast' | 'balanced' | 'careful';
 export interface YoloSettings {
@@ -276,6 +280,10 @@ export interface Prerequisite {
 }
 
 export interface Snapshot {
+  /** False when the core has no token telemetry for the displayed agents. */
+  usageReported?: boolean;
+  /** Supported, non-secret settings read from the fork. Missing on the sample provider. */
+  settings?: Record<string, unknown>;
   prerequisites: Prerequisite[];
   setupDismissed?: boolean;
   objectives: Objective[];
