@@ -1,7 +1,7 @@
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
 import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics } from './paramount-api';
-import type { Access, Agent, CardStatus, IterationSettings, Snapshot, YoloSettings } from './types';
+import type { Access, Agent, AskMode, CardStatus, ChatView, HomeLayout, IterationSettings, Snapshot, YoloSettings } from './types';
 
 export type Command =
   | { type: 'chat.send'; chatId: string; text: string }
@@ -20,7 +20,11 @@ export type Command =
   | { type: 'layout.panels'; panels: string[] }
   | { type: 'prereq.install'; id: string; confirm?: boolean }
   | { type: 'prereq.start'; id: string; confirm?: boolean }
-  | { type: 'setup.dismiss'; degraded: string[] };
+  | { type: 'setup.dismiss'; degraded: string[] }
+  | { type: 'ask.reply'; messageId: string; mode: AskMode; text: string }
+  | { type: 'ask.dismiss'; messageId: string }
+  | { type: 'home.layout'; layout: HomeLayout }
+  | ({ type: 'chats.view' } & ChatView);
 
 // Every event is attributed and correlated, which is what makes the audit log and
 // "your change goes into the agent's context" fall out of the log for free.

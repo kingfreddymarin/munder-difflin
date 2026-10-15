@@ -36,6 +36,27 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
       const notifications = s.notifications.map((n) => (n.messageId === c.messageId ? { ...n, resolved: c.option } : n));
       return audit({ ...s, messages, notifications }, ev, 'Answered', m.ticket ?? nameOf(s, m.from), `“${c.option}” to: ${m.text}`, [m.from]);
     }
+    case 'ask.reply': {
+      const m = s.messages.find((x) => x.id === c.messageId);
+      if (!m) return s;
+      const messages = s.messages.map((x) => (x.id === c.messageId ? { ...x, answer: c.text, answerMode: c.mode, read: true } : x));
+      const notifications = s.notifications.map((n) => (n.messageId === c.messageId ? { ...n, resolved: c.text } : n));
+      const action = c.mode === 'done' ? 'Marked done' : c.mode === 'decision' ? 'Decided' : 'Answered';
+      return audit({ ...s, messages, notifications }, ev, action, m.ticket ?? nameOf(s, m.from), `“${c.text}” to: ${m.text}`, [m.from]);
+    }
+    case 'ask.dismiss': {
+      const m = s.messages.find((x) => x.id === c.messageId);
+      if (!m) return s;
+      const messages = s.messages.map((x) => (x.id === c.messageId ? { ...x, dismissed: true, read: true } : x));
+      const notifications = s.notifications.map((n) => (n.messageId === c.messageId ? { ...n, resolved: 'Dismissed' } : n));
+      return { ...s, messages, notifications };
+    }
+    case 'home.layout':
+      return { ...s, homeLayout: { ...s.homeLayout, ...c.layout } };
+    case 'chats.view': {
+      const { type: _type, ...view } = c;
+      return { ...s, chatView: { ...s.chatView, ...view } };
+    }
     case 'notification.act': {
       const n = s.notifications.find((x) => x.id === c.notificationId);
       if (!n) return s;

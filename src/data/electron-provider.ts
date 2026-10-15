@@ -3,6 +3,7 @@
 import { findBridge, requireBridge } from './bridge';
 import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountRawSnapshot, ParamountResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
+import { askOptions, cardAsks, logActivity } from './projection';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, Message, Snapshot } from './types';
 
@@ -113,18 +114,25 @@ export function createElectronProvider(): ElectronProvider {
       }; });
       const agentIds = new Set(agents.map((agent) => agent.id));
       const chats = agents.map((agent) => ({ id: `agent:${agent.id}`, kind: 'agent' as const, title: agent.name, agentIds: [agent.id], pinned: agent.role === 'paramount' }));
-      const routedMessages: Message[] = array(rawMessages).filter((item) => agentIds.has(string(item.owner))).map((item) => ({
-        id: string(item.id), chatId: `agent:${string(item.owner)}`, from: string(item.from) === 'human' ? 'you' : string(item.from),
-        at: date(item.created_at), kind: item.requires_reply ? 'question' : 'text',
-        text: [string(item.subject), string(item.body)].filter(Boolean).join('\n\n'),
-        read: item.archived === true,
-      }));
-      const questions: Message[] = tasks.flatMap((task) => array(task.humanQA).map((item, index) => ({
-        id: `${string(task.id)}:${index}`, chatId: `agent:${agentIds.has(string(task.assignee)) ? string(task.assignee) : string(registry.godId)}`,
-        from: agentIds.has(string(task.assignee)) ? string(task.assignee) : string(registry.godId),
-        at: date(item.askedAt), kind: 'question' as const, text: string(item.q), ticket: string(task.id),
-        answer: string(item.a) || undefined, read: !!item.a,
-      })));
+      const godId = string(registry.godId);
+      const nameOf = (id: string) => agents.find((agent) => agent.id === id)?.name ?? id;
+      const mail = array(rawMessages).filter((item) => agentIds.has(string(item.owner)));
+      // A direct question is mail an agent sent to the human that needs a reply. It counts as answered
+      // once the human has written in the same conversation after it.
+      const humanReplies = mail.filter((item) => string(item.from) === 'human');
+      const answeredBy = (item: Record<string, unknown>) => humanReplies.find((reply) => string(reply.conversation) === string(item.conversation) && string(reply.created_at) > string(item.created_at));
+      const routedMessages: Message[] = mail.map((item) => {
+        const text = [string(item.subject), string(item.body)].filter(Boolean).join('\n\n');
+        const asks = item.requires_reply === true && string(item.to) === 'human' && string(item.from) !== 'human';
+        const reply = asks ? answeredBy(item) : undefined;
+        return {
+          id: string(item.id), chatId: `agent:${string(item.owner)}`, from: string(item.from) === 'human' ? 'you' : string(item.from),
+          at: date(item.created_at), kind: asks ? 'question' : 'text', text,
+          ...(asks ? { options: askOptions(string(item.body)), answer: reply ? string(reply.body) : undefined } : {}),
+          read: item.archived === true || !!reply,
+        };
+      });
+      const questions = cardAsks(tasks, agentIds, godId);
       const messages: Message[] = [...routedMessages, ...questions];
       const cards: Card[] = tasks.map((task) => ({
         key: string(task.id), title: string(task.title, 'Untitled task'),
@@ -140,16 +148,21 @@ export function createElectronProvider(): ElectronProvider {
           connections: [], notify: [{ id: 'desktop', label: 'Desktop', on: config.notifications === true }], yolo: { on: config.autoMode === true, autoOffHours: null, keepHardRules: true },
           iteration: { speed: 'balanced', heartbeatSec: 0, standupMin: 0, checkpointEverySteps: 0 } },
         agents, chats, messages,
-        notifications: messages.filter((message) => message.kind === 'question' && !message.read).map((message) => ({
-          id: message.id, kind: 'question' as const, from: message.from, title: 'Needs your answer', body: message.text,
-          at: message.at, chatId: message.chatId, messageId: message.id, actions: [],
-        })),
-        cards, activity: [], timelines: [], sources: [], access: {}, engines: [],
+        notifications: messages.filter((message) => message.kind === 'question' && !message.read && !message.answer && !message.dismissed).map((message) => {
+          const [first, ...rest] = message.text.split('\n').filter((line) => line.trim());
+          return {
+            id: message.id, kind: 'question' as const, from: message.from, title: (first ?? '').replace(/\*\*|`/g, '').trim(), body: rest.join('\n'),
+            at: message.at, chatId: message.chatId, messageId: message.id, actions: message.options ?? [],
+          };
+        }),
+        cards, activity: logActivity(native.log, agentIds, nameOf), timelines: [], sources: [], access: {}, engines: [],
         automations: array(native.missions).map((mission) => ({ id: string(mission.id), name: string(mission.label), when: String(mission.intervalMs ?? ''),
           onlyIf: '', then: string(mission.body), onFailure: '', enabled: mission.enabled === true, runs: [], last: '', file: '' })),
         services: [{ id: 'core', group: 'command-center', name: 'Local core', state: 'ok', detail: 'Connected' }], log: [],
         terminals: agents.filter((agent) => ptyByAgent.has(agent.id)).map((agent) => ({ agentId: agent.id, ptyId: string(ptyByAgent.get(agent.id)?.id), cwd: string(ptyByAgent.get(agent.id)?.cwd), lines: [] })),
         audit: [],
+        homeLayout: object(preferences.home),
+        chatView: object(preferences.chats),
       };
       lastSnapshot = snapshot;
       return snapshot;
