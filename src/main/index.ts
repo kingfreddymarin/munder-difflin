@@ -10,10 +10,11 @@ import {
 } from 'node:fs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { dispatchParamount } from './paramount';
+import { buildDiagnostics, installCrashCapture, redact, traced, type LogSink } from './paramountObservability';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
@@ -103,12 +104,19 @@ import {
 // NOT take the whole app and every running agent down with it. Log and continue
 // rather than letting the default handler exit the process.
 // (Restored during the #71 merge — the PR's rebase dropped these handlers.)
-process.on('uncaughtException', (err) => {
-  console.error('[main] uncaughtException (kept alive):', err);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[main] unhandledRejection (kept alive):', reason);
-});
+// Each one also leaves a crash report (crashes/, 0600) and a `crash` line in
+// log.jsonl under one errorId; renderer and child-process deaths do too.
+// `hive` is declared further down: until it exists the report has no root and
+// only the console line is written (the getters swallow the TDZ error).
+const crashCapture = {
+  root: (): string | null => { try { return hive.root(); } catch { return null; } },
+  sink: (event: Record<string, unknown>): void => { try { hive.appendLog(event); } catch { /* not ready */ } },
+  runtime: (): Record<string, unknown> => ({
+    version: app.getVersion(), packaged: app.isPackaged, electron: process.versions.electron,
+    platform: process.platform, arch: process.arch
+  })
+};
+installCrashCapture(crashCapture, process, app);
 
 const ptyManager = new PtyManager();
 
@@ -3478,13 +3486,20 @@ function saveParamountPreference(key: 'profile' | 'setup', value: Record<string,
   writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
   renameSync(tmp, path);
 }
-ipcMain.handle('paramount:snapshot', () => ({
+/** Paramount calls log `paramount-op` start/end lines and `paramount-error`
+ *  lines into the hive's log.jsonl; see paramountObservability.ts. */
+const paramountLog: LogSink = (event) => hive.appendLog(event);
+ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, () => ({
   registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
   log: hive.logTail(500), roster: roster.read(),
   config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode },
   missions: readConfig().missions ?? [], ptys: ptyManager.list(), preferences: paramountPreferences()
-}));
-ipcMain.handle('paramount:dispatch', (_evt, command: unknown) => dispatchParamount(command, {
+}), { rethrow: true }));
+ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramount.dispatch', paramountLog, {
+  sender: evt.sender.id,
+  commandType: command && typeof command === 'object' && typeof (command as { type?: unknown }).type === 'string'
+    ? String((command as { type: string }).type).slice(0, 80) : undefined
+}, (span) => dispatchParamount(command, {
   tasks: () => hive.tasks() as { tasks?: HiveTask[] },
   patchTask: (id, patch) => hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>),
   missions: () => readConfig().missions ?? [],
@@ -3503,8 +3518,21 @@ ipcMain.handle('paramount:dispatch', (_evt, command: unknown) => dispatchParamou
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', event);
     }
-  }
-}));
+  },
+  diagnostics: ({ logLines, cid }) => buildDiagnostics({
+    root: hive.root(),
+    app: {
+      version: app.getVersion(), packaged: app.isPackaged, appPath: app.getAppPath(), exePath: process.execPath,
+      electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node,
+      uptimeSec: Math.round(process.uptime())
+    },
+    os: { platform: process.platform, arch: process.arch, release: osRelease(), type: osType(), totalMemBytes: totalmem(), freeMemBytes: freemem() },
+    // redact() again inside buildDiagnostics; this first pass keeps the
+    // unredacted config from ever being held in the bundle object.
+    config: redact(readConfig()),
+    logLines
+  }, cid)
+}, span)));
 ipcMain.handle('hive:registry', () => hive.registry());
 ipcMain.handle('hive:renameAgent', (_evt, id: unknown, name: unknown) => {
   if (typeof id !== 'string' || typeof name !== 'string') {
