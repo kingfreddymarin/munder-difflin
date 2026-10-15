@@ -141,6 +141,14 @@ export interface HiveTask {
    *  once and never persisted), so a GET status lookup can match by hashing the
    *  presented token. Read-only capability: it never widens routing or exposure. */
   webhook?: { tokenHash: string };
+  /** Board fields (Paramount lane c-board), set by the agent that owns the card:
+   *  free `tags` and a `workspace` the board filters on, an absolute working `dir`
+   *  for "open in Warp / VS Code", and `refs` to the PR, build, run and ADO work
+   *  items the card touches (https URLs; ADO work items hold the evidence). */
+  tags?: string[];
+  workspace?: string;
+  dir?: string;
+  refs?: Array<{ kind: 'pr' | 'build' | 'run' | 'workitem'; system: 'github' | 'ado'; id: string; url: string }>;
 }
 
 export interface AgentMeta {

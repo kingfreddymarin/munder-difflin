@@ -14,6 +14,7 @@ import { homedir, release as osRelease, type as osType, totalmem, freemem } from
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
+import { createBoardDeps } from './paramount-board';
 import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } from './autoModeExpiry';
 import { defaultMunderHive, type AgentSourceRoots } from './agentSources';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
@@ -3485,7 +3486,7 @@ function paramountPreferences(): Record<string, unknown> {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Paramount preferences are corrupt');
   return parsed as Record<string, unknown>;
 }
-function saveParamountPreference(key: 'profile' | 'setup', value: Record<string, unknown>): void {
+function saveParamountPreference(key: 'profile' | 'setup' | 'board', value: Record<string, unknown>): void {
   const root = hive.root();
   if (!root) throw new Error('hive disabled (no harnessHome)');
   hive.ensureHive();
@@ -3615,6 +3616,13 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   logStep: (step) => paramountLog(step),
   agentSources: { roots: paramountAgentRoots, deliverHire },
   savePreference: saveParamountPreference,
+  board: createBoardDeps({
+    savePreference: (value) => saveParamountPreference('board', { ...value }),
+    isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
+    handlerFor: (url) => app.getApplicationNameForProtocol(url),
+    open: (url) => shell.openExternal(url),
+    onOpenError: (url, error) => paramountLog({ kind: 'paramount-error', errorId: newErrorId(), cid: span.cid, op: 'board.open', code: 'INTERNAL', scheme: url.split(':')[0], message: error instanceof Error ? error.message : String(error) })
+  }),
   appendEvent: (event) => {
     const root = hive.root();
     if (!root) throw new Error('hive disabled (no harnessHome)');
