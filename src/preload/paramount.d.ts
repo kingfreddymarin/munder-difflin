@@ -45,7 +45,10 @@ export type ParamountCommand =
    *  dev.azure.com, *.visualstudio.com; anything else fails INVALID_INPUT. */
   | { type: 'shell.openExternal'; url: string }
   /** Opens an existing absolute directory in Warp or VS Code (macOS). */
-  | { type: 'shell.openIn'; app: ParamountOpenInApp; path: string };
+  | { type: 'shell.openIn'; app: ParamountOpenInApp; path: string }
+  // lane e-terminal
+  /** Read-only: what one agent touched (git changes/commits in its cwd, paths and links in its messages). */
+  | { type: 'terminal.artifacts'; agentId: string };
 
 // lane a-shell
 export type ParamountOpenInApp = 'warp' | 'vscode';
@@ -80,7 +83,7 @@ export interface ParamountFailure {
 }
 export type ParamountResult =
   | { ok: true; event: ParamountEvent; diagnostics?: ParamountDiagnostics; prereq?: ParamountPrereqReport;
-      discovery?: ParamountAgentDiscovery; imported?: ParamountAgentImport }
+      discovery?: ParamountAgentDiscovery; imported?: ParamountAgentImport; artifacts?: ParamountArtifactMap }
   | ParamountFailure;
 
 /** What `prereq.install` would run (confirmed=false) or started (confirmed=true). */
@@ -237,3 +240,30 @@ export type ParamountBoardCommand =
   | { type: 'board.columns'; order: ParamountCardStatus[] }
   | { type: 'card.open'; key: string; app: ParamountOpenApp }
   | { type: 'card.link'; key: string; url: string };
+
+// lane e-terminal
+/** One thing an agent touched. `dir` is an existing absolute directory to pass to
+ *  `shell.openIn` (Warp / VS Code); absent when nothing on disk matches. */
+export interface ParamountArtifact {
+  /** changed = uncommitted in its tree; committed = in a recent commit; commit = the commit itself;
+   *  mentioned = an absolute path in a message it sent; link = an http(s) link in a message it sent. */
+  kind: 'changed' | 'committed' | 'commit' | 'mentioned' | 'link';
+  label: string;
+  path?: string;
+  dir?: string;
+  url?: string;
+  /** git porcelain status (M, A, D, ??, R…) for `changed`. */
+  status?: string;
+  commit?: string;
+  at?: string;
+  messageId?: string;
+}
+export interface ParamountArtifactMap {
+  agentId: string;
+  /** The agent's registry cwd; empty when it has none. */
+  cwd: string;
+  repo: { root: string; branch: string; head: string } | null;
+  artifacts: ParamountArtifact[];
+  /** Sources that could not be read; each errorId is on a `paramount-terminal` line in log.jsonl. */
+  warnings: Array<{ errorId: string; source: string; message: string }>;
+}

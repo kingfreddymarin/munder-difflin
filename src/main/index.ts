@@ -3617,6 +3617,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   logStep: (step) => paramountLog(step),
   agentSources: { roots: paramountAgentRoots, deliverHire },
   shell: paramountShellDeps((url) => shell.openExternal(url), (step) => paramountLog(step)),
+  terminal: { messages: (agentId) => hive.voiceMessages({ agentId, limit: 200 }), logStep: (step) => paramountLog(step) },
   savePreference: saveParamountPreference,
   // lane b-home-chats: ask replies are mailed as the human; direct questions are looked up by id.
   send: (msg) => { const sent = hive.send(msg, 'human'); analytics.trackMessageSent('hive'); return { ok: !!sent?.id }; },

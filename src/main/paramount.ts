@@ -10,6 +10,8 @@ import { AGENT_SOURCES, discoverAgents, findAgents, toHireManifest, type AgentSo
 import type { HireManifest } from '../shared/hire';
 import { dispatchBoard, isBoardCommand, type ParamountBoardDeps } from './paramount-board';
 import { runShellCommand, type ParamountShellDeps } from './paramount-shell';
+import { runTerminalCommand, type ParamountTerminalDeps } from './paramount-terminal';
+import type { ParamountArtifactMap } from '../preload/paramount';
 
 export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'message' | 'godId'>> {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -59,6 +61,8 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   board?: ParamountBoardDeps;
   /** Opens allow-listed links and folders (paramount-shell.ts); absent means unsupported. */
   shell?: ParamountShellDeps;
+  /** Artifact map behind each agent's terminal (paramount-terminal.ts); absent means unsupported. */
+  terminal?: ParamountTerminalDeps;
 }
 
 export interface ParamountPrereqPlan {
@@ -132,6 +136,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
   let prereq: ParamountPrereqReport | undefined;
   let discovery: ParamountAgentDiscovery | undefined;
   let imported: ParamountAgentImport | undefined;
+  let artifacts: ParamountArtifactMap | undefined;
   // Every unreadable or malformed source file is logged under its own errorId,
   // the same one returned to the caller in `warnings`.
   const logWarnings = (warnings: ParamountSourceWarning[]) => {
@@ -363,6 +368,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
       }
       case 'ask.reply': case 'ask.dismiss': case 'home.layout': case 'chats.view': { const r = dispatchHomeChats(command as unknown as ParamountHomeChatsCommand, deps, fail, () => { writeAttempted = true; }); if (r) return r; break; }
       case 'shell.openExternal': case 'shell.openIn': return runShellCommand(command, deps.shell, span.cid, fail);
+      case 'terminal.artifacts': { const r = runTerminalCommand(command, deps.terminal, deps.agents(), span.cid, fail); if (!('artifacts' in r)) return r; artifacts = r.artifacts; break; }
       case 'layout.panels':
         return fail('UNSUPPORTED', 'Team panel layout is a renderer-local preference');
       default:
@@ -372,7 +378,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
     deps.appendEvent(event);
     deps.publish(event);
     return { ok: true, event, ...(diagnostics ? { diagnostics } : {}), ...(prereq ? { prereq } : {}),
-      ...(discovery ? { discovery } : {}), ...(imported ? { imported } : {}) };
+      ...(discovery ? { discovery } : {}), ...(imported ? { imported } : {}), ...(artifacts ? { artifacts } : {}) };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Command failed';
     return writeAttempted
