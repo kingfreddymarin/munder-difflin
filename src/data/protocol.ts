@@ -1,5 +1,6 @@
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
+import type { ParamountDiagnostics } from './paramount-api';
 import type { Access, Agent, CardStatus, IterationSettings, Snapshot, YoloSettings } from './types';
 
 export type Command =
@@ -17,8 +18,8 @@ export type Command =
   | { type: 'account.profile'; patch: Partial<Pick<Snapshot['me'], 'name' | 'workEmail' | 'timezone'>> }
   | { type: 'terminal.input'; agentId: string; text: string }
   | { type: 'layout.panels'; panels: string[] }
-  | { type: 'prereq.install'; id: string }
-  | { type: 'prereq.start'; id: string }
+  | { type: 'prereq.install'; id: string; confirm?: boolean }
+  | { type: 'prereq.start'; id: string; confirm?: boolean }
   | { type: 'setup.dismiss'; degraded: string[] };
 
 // Every event is attributed and correlated, which is what makes the audit log and
@@ -34,4 +35,10 @@ export interface DataProvider {
   snapshot(): Promise<Snapshot>;
   dispatch(command: Command): Promise<FloorEvent>;
   subscribe(listener: (event: FloorEvent) => void): () => void;
+  /** 'electron' is the real core through the preload; 'mock' is the in-browser fixtures. */
+  kind?: 'electron' | 'mock';
+  /** Asks for a fresh snapshot when the core says its data changed. */
+  onRefresh?(listener: () => void): () => void;
+  /** Redacted support bundle. Absent when the provider cannot produce one. */
+  diagnostics?(): Promise<ParamountDiagnostics>;
 }

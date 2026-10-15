@@ -27,6 +27,7 @@ export function createMockProvider(): DataProvider {
   let events = loadEvents();
   let seq = events.length;
   return {
+    kind: 'mock',
     async snapshot(): Promise<Snapshot> {
       return events.reduce(applyEvent, structuredClone(fixtures));
     },

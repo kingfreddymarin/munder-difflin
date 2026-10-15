@@ -1,7 +1,12 @@
+// The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
+// fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
+import { findBridge, requireBridge } from './bridge';
+import type { ParamountCommand, ParamountDiagnostics, ParamountRawSnapshot } from './electron-api';
+import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, Message, Snapshot } from './types';
 
-type RefreshProvider = DataProvider & { onRefresh: (listener: () => void) => () => void };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics'>> & { kind: 'electron' };
 
 const array = (value: unknown): Record<string, unknown>[] =>
   Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object') : [];
@@ -26,17 +31,33 @@ function status(value: string, breaker: string): Agent['status'] {
   return 'idle';
 }
 
-export function createElectronProvider(): RefreshProvider {
+export function createElectronProvider(): ElectronProvider {
   const listeners = new Set<(event: FloorEvent) => void>();
+  const refreshers = new Set<() => void>();
+  // Ids of events already applied, so the push of an event we dispatched is not applied twice.
+  const seen = new Set<string>();
   let lastSnapshot: Snapshot | null = null;
+  const emit = (event: FloorEvent) => {
+    if (seen.has(event.id)) return;
+    seen.add(event.id);
+    if (seen.size > 500) seen.delete(seen.values().next().value as string);
+    listeners.forEach((listener) => listener(event));
+  };
+  const refresh = () => refreshers.forEach((listener) => listener());
 
   return {
+    kind: 'electron',
     async snapshot() {
-      const bridge = window.cth;
-      if (!bridge) throw new Error('Electron preload is unavailable. Open Paramount in the desktop app.');
-      const native = object(await bridge.paramountSnapshot());
+      const bridge = requireBridge();
+      let raw: ParamountRawSnapshot;
+      try {
+        raw = await bridge.paramountSnapshot();
+      } catch (cause) {
+        throw toBackendError(cause, 'snapshot');
+      }
+      const native = object(raw);
       if (!object(native.registry).agents || !Array.isArray(object(native.tasks).tasks) || !Array.isArray(native.ptys) || !Array.isArray(native.messages)) {
-        throw new Error('The local core returned an incomplete snapshot.');
+        throw BackendError.local('INTERNAL', 'The local core returned an incomplete snapshot.', 'snapshot');
       }
       const registry = object(native.registry);
       const registryAgents = object(registry.agents);
@@ -92,7 +113,7 @@ export function createElectronProvider(): RefreshProvider {
       const snapshot: Snapshot = {
         prerequisites: [], setupDismissed: true, objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
-          connections: [], notify: [{ id: 'desktop', label: 'Desktop', on: config.notifications === true }], yolo: { on: false, autoOffHours: null, keepHardRules: true },
+          connections: [], notify: [{ id: 'desktop', label: 'Desktop', on: config.notifications === true }], yolo: { on: config.autoMode === true, autoOffHours: null, keepHardRules: true },
           iteration: { speed: 'balanced', heartbeatSec: 0, standupMin: 0, checkpointEverySteps: 0 } },
         agents, chats, messages,
         notifications: messages.filter((message) => message.kind === 'question' && !message.read).map((message) => ({
@@ -110,43 +131,66 @@ export function createElectronProvider(): RefreshProvider {
       return snapshot;
     },
     async dispatch(command: Command) {
-      const bridge = window.cth;
-      if (!bridge) throw new Error('The desktop core is disconnected.');
-      if (command.type === 'chat.send') {
-        const chat = lastSnapshot?.chats.find((item) => item.id === command.chatId);
-        const recipient = chat?.agentIds[0];
-        if (!recipient || !command.text.trim()) throw new Error('Choose a real agent and enter a message.');
-        const result = await bridge.hiveSend({ to: recipient, act: 'request', subject: 'Message from human', body: command.text.trim() }, 'human');
-        if (!result.ok) throw new Error(result.error || 'Message delivery failed.');
-      } else if (command.type === 'card.move') {
-        if (!['todo', 'doing', 'blocked', 'done'].includes(command.status)) throw new Error('This board status is not supported by the core.');
-        const result = await bridge.hivePatchTask(command.key, { status: command.status as 'todo' | 'doing' | 'blocked' | 'done' });
-        if (!result.ok) throw new Error(result.error || 'Could not move the task.');
-      } else if (command.type === 'terminal.input') {
-        const pty = lastSnapshot?.terminals.find((item) => item.agentId === command.agentId);
-        if (!pty?.ptyId) throw new Error('This agent has no live terminal.');
-        const written = await bridge.writePty(pty.ptyId, command.text);
-        if (!written.ok) throw new Error(written.error || 'Could not write to the terminal.');
-        const submitted = await bridge.writePty(pty.ptyId, '\r');
-        if (!submitted.ok) throw new Error(submitted.error || 'Could not submit terminal input.');
-      } else {
-        const result = await bridge.paramountDispatch(command);
-        if (!result.ok) throw new Error(result.error);
-        return result.event;
+      const bridge = requireBridge();
+      const operation = command.type;
+      try {
+        if (command.type === 'chat.send') {
+          const chat = lastSnapshot?.chats.find((item) => item.id === command.chatId);
+          const recipient = chat?.agentIds[0];
+          if (!recipient || !command.text.trim()) throw BackendError.local('INVALID_INPUT', 'Choose a real agent and enter a message.', operation);
+          checkOk(await bridge.hiveSend({ to: recipient, act: 'request', subject: 'Message from human', body: command.text.trim() }, 'human'), operation, 'Message delivery failed.');
+        } else if (command.type === 'card.move') {
+          if (!['todo', 'doing', 'blocked', 'done'].includes(command.status)) throw BackendError.local('UNSUPPORTED', `The core board has no "${command.status}" column; use todo, doing, blocked or done.`, operation);
+          checkOk(await bridge.hivePatchTask(command.key, { status: command.status }), operation, 'Could not move the task.');
+        } else if (command.type === 'terminal.input') {
+          const pty = lastSnapshot?.terminals.find((item) => item.agentId === command.agentId);
+          if (!pty?.ptyId) throw BackendError.local('NOT_FOUND', 'This agent has no live terminal.', operation);
+          checkOk(await bridge.writePty(pty.ptyId, command.text), operation, 'Could not write to the terminal.');
+          checkOk(await bridge.writePty(pty.ptyId, '\r'), operation, 'Could not submit terminal input.');
+        } else {
+          const result = await bridge.paramountDispatch(command as ParamountCommand);
+          if (isFailure(result)) {
+            // The command may have been applied; the snapshot is the only truth now.
+            if (result.code === 'UNCERTAIN_STATE') refresh();
+            throw BackendError.fromFailure(result, operation);
+          }
+          if (!result?.ok) throw BackendError.local('INTERNAL', 'The core answered without a result.', operation);
+          const event = { ...result.event, command } as FloorEvent;
+          emit(event);
+          return event;
+        }
+      } catch (cause) {
+        throw toBackendError(cause, operation);
       }
       const event: FloorEvent = { id: `local-${Date.now()}`, at: new Date().toISOString(), actor: 'you', command };
-      listeners.forEach((listener) => listener(event));
+      emit(event);
       return event;
+    },
+    async diagnostics(): Promise<ParamountDiagnostics> {
+      const bridge = requireBridge();
+      let result;
+      try {
+        result = await bridge.paramountDispatch({ type: 'diagnostics.bundle' });
+      } catch (cause) {
+        throw toBackendError(cause, 'diagnostics.bundle');
+      }
+      if (isFailure(result)) throw BackendError.fromFailure(result, 'diagnostics.bundle');
+      if (!result?.ok || !result.diagnostics) throw BackendError.local('INTERNAL', 'The core returned no diagnostics bundle.', 'diagnostics.bundle');
+      return result.diagnostics;
     },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
     onRefresh(listener) {
-      return window.cth?.onParamountEvent((update) => {
-        if ('kind' in update && update.kind === 'invalidate') listener();
-        else listener();
-      }) ?? (() => {});
+      refreshers.add(listener);
+      // Pushed events are applied in place; anything else (invalidate) means re-read the snapshot.
+      const off = findBridge()?.onParamountEvent((update) => {
+        if ('kind' in update) listener();
+        else emit(update as unknown as FloorEvent);
+      });
+      return () => { refreshers.delete(listener); off?.(); };
     },
   };
 }
+
