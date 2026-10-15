@@ -1,3 +1,6 @@
+// Paramount identity (name, userData, UI scheme) — must evaluate before any
+// other module reads userData, so it is the first import.
+import { paramountHome, paramountUiUrl, registerParamountProtocol } from './paramountShell';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
 import {
@@ -93,8 +96,6 @@ import {
   codexRemoteSocketFits,
   withCodexRemoteArgs
 } from '../shared/codexRemote';
-
-const isDev = !!process.env.ELECTRON_RENDERER_URL;
 
 // Keep the main process alive on an unexpected throw/rejection. The harness is a
 // multi-agent supervisor — a single stray throw (e.g. node-pty's ConPTY console
@@ -2331,7 +2332,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
     ...(geom && geom.x !== undefined && geom.y !== undefined ? { x: geom.x, y: geom.y } : {}),
     minWidth: MIN_WIN.width,
     minHeight: MIN_WIN.height,
-    title: isFloor ? 'Munder Difflin — Floor' : 'Munder Difflin',
+    title: isFloor ? 'Paramount — Floor' : 'Paramount',
     backgroundColor: '#FFF8E7',
     titleBarStyle: 'hiddenInset',
     show: false,
@@ -2464,11 +2465,8 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
     if (details.isMainFrame) rendererReadyForHires = false;
   });
 
-  if (isDev && process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL);
-  } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'));
-  }
+  // Paramount: the UI is the separate Paramount app, never src/renderer.
+  win.loadURL(paramountUiUrl());
 
   win.on('closed', () => {
     allWindows.delete(win);
@@ -5477,7 +5475,16 @@ app.whenReady().then(() => {
   // `autoUpdate` config flag). Download-in-background + restart-to-apply toast;
   // never restarts on its own. Falls back to a notify-only releases/latest
   // check where native updating isn't possible (win-portable, dev-ish builds).
-  initAutoUpdater(() => liveWebContents());
+  // Paramount: no auto-update feed (the publish feed is Munder Difflin's). The
+  // IPC surface is still registered so preload calls resolve instead of throwing.
+  initAutoUpdater(() => liveWebContents(), { feed: false });
+  registerParamountProtocol();
+  // Paramount owns its hive: default harnessHome to its own userData folder so it
+  // never lands in (or prompts toward) Munder Difflin's hive.
+  if (!readConfig().harnessHome) {
+    const home = paramountHome();
+    if (ensureHarnessHome(home).ok) writeConfig({ harnessHome: home });
+  }
   // Bootstrap the hive (if harnessHome is configured) and start the message router.
   bootstrapHiveServices();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a
