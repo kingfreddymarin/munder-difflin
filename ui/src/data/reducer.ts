@@ -148,6 +148,10 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
     case 'card.link':
       // Opening is a side effect in the core; the board's data does not change.
       return s;
+    default:
+      // The core also pushes events for its own commands (diagnostics.save, …) that change no
+      // floor data. Keep the state: returning undefined blanks the whole app to "Connecting…".
+      return s;
   }
 }
 
