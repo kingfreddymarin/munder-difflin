@@ -9,10 +9,11 @@ import type { Command, DataProvider } from './protocol';
 import { applyEvent } from './reducer';
 import { share } from './share';
 import { record } from '@/lib/perf';
+import { diagnosticsFile } from '@/lib/diagnostics-file';
 import type { Snapshot } from './types';
 
 export type FloorStatus = 'loading' | 'ready' | 'error' | 'disconnected';
-export type DiagnosticsState = { status: 'idle' | 'loading' | 'copied' | 'error'; error?: BackendError };
+export type DiagnosticsState = { status: 'idle' | 'loading' | 'copied' | 'saved' | 'error'; error?: BackendError };
 
 type Store = {
   provider: DataProvider;
@@ -247,7 +248,21 @@ export function useDiagnostics() {
       setState({ status: 'error', error: toBackendError(cause, 'diagnostics.bundle') });
     }
   }, [provider]);
-  return { ...state, available, copy };
+  const save = React.useCallback(async () => {
+    if (!provider.diagnostics) return;
+    setState({ status: 'loading' });
+    try {
+      const { name, text } = diagnosticsFile(await provider.diagnostics());
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const link = Object.assign(document.createElement('a'), { href: url, download: name });
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setState({ status: 'saved' });
+    } catch (cause) {
+      setState({ status: 'error', error: toBackendError(cause, 'diagnostics.bundle') });
+    }
+  }, [provider]);
+  return { ...state, available, copy, save };
 }
 
 export function CopyDiagnosticsButton({ size, variant = 'outline' }: { size?: 'sm'; variant?: 'outline' | 'ghost' }) {
@@ -257,6 +272,17 @@ export function CopyDiagnosticsButton({ size, variant = 'outline' }: { size?: 's
     <Button type="button" size={size} variant={variant} disabled={!diagnostics.available || diagnostics.status === 'loading'}
       title={diagnostics.available ? 'Copy a redacted support bundle (app, OS, config, recent log lines, crashes)' : 'Diagnostics need the desktop core; sample data has none.'}
       onClick={() => void diagnostics.copy()}>{label}</Button>
+    {diagnostics.error && <ErrorNotice error={diagnostics.error} />}
+  </span>;
+}
+
+export function ExportDiagnosticsButton() {
+  const diagnostics = useDiagnostics();
+  const label = diagnostics.status === 'loading' ? 'Collecting…' : diagnostics.status === 'saved' ? 'Diagnostics saved' : 'Export diagnostics';
+  return <span className="inline-flex flex-col gap-2">
+    <Button type="button" disabled={!diagnostics.available || diagnostics.status === 'loading'}
+      title={diagnostics.available ? 'Save the redacted support bundle as a JSON file' : 'Diagnostics need the desktop core; sample data has none.'}
+      onClick={() => void diagnostics.save()}>{label}</Button>
     {diagnostics.error && <ErrorNotice error={diagnostics.error} />}
   </span>;
 }

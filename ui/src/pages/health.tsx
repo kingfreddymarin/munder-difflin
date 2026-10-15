@@ -7,7 +7,7 @@ import { SeeAll } from '@/components/app/see-all';
 import { StatTile } from '@/components/app/stat-tile';
 import { clock } from '@/components/app/format';
 import { stateDot, stateTone } from '@/components/app/status';
-import { CopyDiagnosticsButton, useFloor, useSnapshotRefresh } from '@/data/store';
+import { CopyDiagnosticsButton, ExportDiagnosticsButton, useFloor, useSnapshotRefresh } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { Service } from '@/data/types';
@@ -49,6 +49,7 @@ export function HealthPage() {
           <span className={cn('text-xs', bad.length ? 'text-amber-300' : 'text-emerald-400')}>{bad.length ? `${bad.length} need attention` : `${services.length} reported services healthy`}{refreshedAt ? ` · checked ${clock(new Date(refreshedAt).toISOString())}` : ''}</span>
         </div>
         <Button onClick={refresh}><RefreshCw animateOnHover /> Refresh checks</Button>
+        <ExportDiagnosticsButton />
         <CopyDiagnosticsButton />
       </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
