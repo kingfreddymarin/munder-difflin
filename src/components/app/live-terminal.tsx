@@ -2,19 +2,30 @@ import * as React from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import { ErrorNotice } from '@/components/app/error-notice';
+import { findBridge } from '@/data/bridge';
+import { BackendError, checkOk, toBackendError } from '@/data/errors';
+
+type State = 'connecting' | 'live' | 'ended';
 
 export function LiveTerminal({ ptyId, label }: { ptyId: string; label: string }) {
   const host = React.useRef<HTMLDivElement>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  const [state, setState] = React.useState<State>('connecting');
+  const [error, setError] = React.useState<BackendError | null>(null);
+  // Shown once, beside the terminal: the preload cannot resize, so the PTY keeps its start size.
+  const [notice, setNotice] = React.useState<BackendError | null>(null);
 
   React.useEffect(() => {
-    const bridge = window.cth;
+    const bridge = findBridge();
     const node = host.current;
+    setNotice(null);
     if (!bridge || !node) {
-      setError('The desktop terminal is unavailable.');
+      setError(BackendError.local('DISCONNECTED', 'The desktop terminal is unavailable. Open Paramount in the desktop app.', 'pty.attach'));
       return;
     }
     setError(null);
+    setState('connecting');
+    const fail = (operation: string) => (cause: unknown) => setError(toBackendError(cause, operation));
     const terminal = new Terminal({
       cursorBlink: true, scrollback: 5000, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: 13, theme: { background: '#101419', foreground: '#e8edf2', cursor: '#82cafa' },
@@ -22,25 +33,31 @@ export function LiveTerminal({ ptyId, label }: { ptyId: string; label: string })
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(node);
+    const resizePty = bridge.resizePty?.bind(bridge);
+    if (!resizePty) setNotice(BackendError.local('UNSUPPORTED', 'This desktop build cannot resize terminals; the session keeps its starting size.', 'pty.resize'));
     const resize = () => {
       if (!node.clientWidth || !node.clientHeight) return;
       fit.fit();
-      void bridge.resizePty(ptyId, terminal.cols, terminal.rows).then((result) => {
-        if (!result.ok) setError(result.error || 'Terminal resize failed.');
-      }).catch(() => setError('The terminal connection was lost.'));
+      if (!resizePty) return;
+      resizePty(ptyId, terminal.cols, terminal.rows)
+        .then((result) => checkOk(result, 'pty.resize', 'Terminal resize failed.'))
+        .catch(fail('pty.resize'));
     };
     const observer = new ResizeObserver(resize);
     observer.observe(node);
     const frame = requestAnimationFrame(resize);
     const input = terminal.onData((data) => {
-      void bridge.writePty(ptyId, data).then((result) => {
-        if (!result.ok) setError(result.error || 'Could not send terminal input.');
-      }).catch(() => setError('The terminal connection was lost.'));
+      bridge.writePty(ptyId, data)
+        .then((result) => checkOk(result, 'pty.write', 'Could not send terminal input.'))
+        .catch(fail('pty.write'));
     });
-    const offData = bridge.onPtyData(ptyId, (data) => terminal.write(data));
-    const offExit = bridge.onPtyExit(ptyId, () => {
-      terminal.writeln('\r\n[Session ended]');
-      setError('This terminal session has ended.');
+    const offData = bridge.onPtyData(ptyId, (data) => {
+      setState('live');
+      terminal.write(data);
+    });
+    const offExit = bridge.onPtyExit(ptyId, (info) => {
+      terminal.writeln(`\r\n[Session ended · exit ${info.exitCode}]`);
+      setState('ended');
     });
     return () => {
       cancelAnimationFrame(frame);
@@ -53,7 +70,11 @@ export function LiveTerminal({ ptyId, label }: { ptyId: string; label: string })
   }, [ptyId]);
 
   return <div className="flex h-full min-h-0 flex-col bg-[#101419]">
-    {error && <p role="alert" className="border-b border-red-400/40 px-3 py-2 text-xs text-red-200">{error}</p>}
+    {error && <ErrorNotice error={error} className="m-2 text-red-100" />}
+    {notice && <ErrorNotice error={notice} className="m-2 text-amber-100" />}
+    {!error && state !== 'live' && <p role="status" className="px-3 py-2 text-xs text-slate-400">
+      {state === 'connecting' ? 'Attached. Waiting for terminal output…' : 'This terminal session has ended.'}
+    </p>}
     <div ref={host} role="region" aria-label={label} className="min-h-0 flex-1 p-2" />
   </div>;
 }
