@@ -194,3 +194,37 @@ export type ParamountHomeChatsCommand =
   | { type: 'home.layout'; layout: ParamountHomeLayout }
   /** Saves which update cards Chats hides, under `chats` in the snapshot's `preferences`. */
   | { type: 'chats.view'; hideUpdates?: boolean; hiddenIds?: string[] };
+
+// lane c-board
+/** A link a card carries to an external item (PR, build, run, work item).
+ *  The agent that created or found the item stores its real URL on the card;
+ *  `card.link` opens only https URLs that are stored on that card. */
+export interface ParamountCardRef {
+  kind: 'pr' | 'build' | 'run' | 'workitem';
+  system: 'github' | 'ado';
+  /** The item's own id as people say it, e.g. "23572". */
+  id: string;
+  url: string;
+}
+/** Optional board fields an agent may set on a hive task (tasks.json).
+ *  Evidence lives on Azure DevOps: a card's evidence is its ADO `workitem` refs. */
+export interface ParamountCardBoardFields {
+  /** Free labels the agents choose (project, area); the board filters on them. */
+  tags?: string[];
+  /** Workspace the card belongs to, e.g. "Varium" or "Studio". */
+  workspace?: string;
+  /** Absolute working directory; `card.open` opens it in Warp or VS Code. */
+  dir?: string;
+  refs?: ParamountCardRef[];
+}
+/** Persisted in paramount-preferences.json under `board`; read from the snapshot's `preferences.board`. */
+export interface ParamountBoardPreferences {
+  /** The human's column order. Columns not listed keep their default order after these. */
+  columns: ParamountCardStatus[];
+}
+export type ParamountOpenApp = 'warp' | 'vscode';
+/** Board commands, handled by src/main/paramount-board.ts. Send them through `paramountDispatch`. */
+export type ParamountBoardCommand =
+  | { type: 'board.columns'; order: ParamountCardStatus[] }
+  | { type: 'card.open'; key: string; app: ParamountOpenApp }
+  | { type: 'card.link'; key: string; url: string };

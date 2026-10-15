@@ -8,6 +8,7 @@ import type { ParamountHomeChatsCommand } from '../preload/paramount';
 import { normalizeWeekly } from '../shared/weeklySchedule';
 import { AGENT_SOURCES, discoverAgents, findAgents, toHireManifest, type AgentSourceRoots } from './agentSources';
 import type { HireManifest } from '../shared/hire';
+import { dispatchBoard, isBoardCommand, type ParamountBoardDeps } from './paramount-board';
 
 export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'message' | 'godId'>> {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -53,6 +54,8 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
     roots(): AgentSourceRoots;
     deliverHire(manifest: HireManifest): void;
   };
+  /** Board commands (paramount-board.ts); absent means unsupported. */
+  board?: ParamountBoardDeps;
 }
 
 export interface ParamountPrereqPlan {
@@ -120,6 +123,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
   const fail = (code: ParamountErrorCode, message: string, cause?: unknown): ParamountResult =>
     span.fail(code, message, cause, { commandType });
   if (!object(command) || !id(command.type)) return fail('INVALID_COMMAND', 'Invalid command');
+  if (isBoardCommand(command.type)) return dispatchBoard(command, deps, span);
   let writeAttempted = false;
   let diagnostics: ParamountDiagnostics | undefined;
   let prereq: ParamountPrereqReport | undefined;
