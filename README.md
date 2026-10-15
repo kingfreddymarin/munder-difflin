@@ -1,3 +1,11 @@
+# Paramount
+
+This repository contains the Paramount desktop source: the Electron core at the repository root and the React command center in [`ui/`](ui/). It is forked from [Munder Difflin](https://github.com/HarnessMD/munder-difflin); its original project documentation and attribution follow below.
+
+Current state: the source builds and an unsigned macOS arm64 DMG has been produced locally. Packaged runtime and visual smoke testing, independent review, and the remaining ticket archiving policy are still open. No release has been published.
+
+## Upstream project documentation
+
 <div align="center">
 
 <img src="./docs/logo.png" alt="Munder Difflin, the agent harness to run an office of your clones" width="180">
