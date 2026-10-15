@@ -121,7 +121,7 @@ export function createElectronProvider(): ElectronProvider {
         return {
         id, name, initials: name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase(),
         role: role(string(source.role).toLowerCase(), id === string(registry.godId)), status: status(string(source.status, string(local.status)), string(source.breaker)),
-        engine: string(local.provider, 'unknown'), model: string(local.model), level: 1, color: string(local.accent, 'sky'), doing: string(local.action),
+        engine: string(local.provider), model: string(local.model), level: Number(source.level) || 0, color: string(local.accent, 'sky'), doing: string(local.action),
         step: 0, steps: 0, tokensUsed: 0, tokensCap: 0,
         tokensIn: 0, tokensOut: 0, tokensCached: 0, contextPct: 0,
         bundle: '', skills: [], mcps: [], rules: [],
@@ -145,7 +145,7 @@ export function createElectronProvider(): ElectronProvider {
         key: string(task.id), title: string(task.title, 'Untitled task'),
         status: ['todo', 'doing', 'blocked', 'done'].includes(string(task.status)) ? string(task.status) as Card['status'] : 'todo',
         priority: Number(task.priority) <= 1 ? 'P1' : Number(task.priority) === 2 ? 'P2' : 'P3',
-        agentId: string(task.assignee), created: date(task.createdAt), createdBy: 'hive', updated: date(task.updatedAt ?? task.createdAt),
+        agentId: string(task.assignee), created: date(task.createdAt), createdBy: string(task.createdBy), updated: date(task.updatedAt ?? task.createdAt),
         description: string(task.description), dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.filter((id): id is string => typeof id === 'string').join(', ') : '',
         plan: [], doneMeans: [], links: [], evidence: [], tokens: 0, origin: 'hive', people: [],
       }));

@@ -18,21 +18,22 @@ export function AgentSummary({ agent, onOpenProfile }: { agent: Agent; onOpenPro
         <div className="flex flex-wrap items-center justify-center gap-1.5 text-xs">
           <Badge variant={roleMeta[agent.role].variant}>{roleMeta[agent.role].label}</Badge>
           <span className="text-muted-foreground">
-            {agent.engine} · {agent.model}
+            {[agent.engine, agent.model].filter(Boolean).join(' · ') || 'engine not reported'}
           </span>
         </div>
         <span className={`text-xs ${statusMeta[agent.status].text}`}>{statusMeta[agent.status].label}</span>
       </div>
       <div className="flex flex-col gap-3 rounded-lg border p-3">
         <span className="text-muted-foreground text-xs">Doing now</span>
-        <span className="text-sm">{agent.doing}</span>
+        <span className="text-sm">{agent.doing || '—'}</span>
         <StepMeter step={agent.step} steps={agent.steps} ticket={agent.ticket} />
       </div>
       <div className="rounded-lg border p-3">
-        <TokenMeter used={agent.tokensUsed} cap={agent.tokensCap} yolo={yolo} detail={`in ${agent.tokensIn}M · out ${agent.tokensOut}M · cached ${agent.tokensCached}M · context ${agent.contextPct}%`} />
+        <TokenMeter used={agent.tokensUsed} cap={agent.tokensCap} yolo={yolo} detail={agent.tokensIn || agent.tokensOut || agent.tokensCached || agent.contextPct
+          ? `in ${agent.tokensIn}M · out ${agent.tokensOut}M · cached ${agent.tokensCached}M · context ${agent.contextPct}%` : undefined} />
       </div>
       <div className="flex flex-col gap-2">
-        <span className="text-muted-foreground text-xs">Bundle · {agent.bundle}</span>
+        <span className="text-muted-foreground text-xs">Bundle · {agent.bundle || 'none reported'}</span>
         <div className="flex flex-wrap gap-1.5">
           {agent.skills.map((s) => (
             <Badge key={s} variant="secondary">{s}</Badge>
@@ -45,6 +46,7 @@ export function AgentSummary({ agent, onOpenProfile }: { agent: Agent; onOpenPro
       <Separator />
       <div className="flex flex-col gap-2">
         <span className="text-muted-foreground text-xs">Rules it follows</span>
+        {agent.rules.length === 0 && <span className="text-muted-foreground text-sm">None reported</span>}
         {agent.rules.map((r) => (
           <span key={r} className="border-l-2 pl-2 text-sm">{r}</span>
         ))}

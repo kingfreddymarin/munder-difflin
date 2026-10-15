@@ -61,7 +61,7 @@ export function CardDetail({ card }: { card: CardT }) {
         <span className="text-muted-foreground">from {card.origin}</span>
       </div>
       <dl className="grid grid-cols-[90px_1fr] gap-x-3 gap-y-1.5 text-sm">
-        <dt className="text-muted-foreground">Created</dt><dd>{stamp(card.created)} · by {card.createdBy}</dd>
+        <dt className="text-muted-foreground">Created</dt><dd>{stamp(card.created)}{card.createdBy ? ` · by ${card.createdBy}` : ''}</dd>
         <dt className="text-muted-foreground">Updated</dt><dd>{stamp(card.updated)}</dd>
         <dt className="text-muted-foreground">Task</dt><dd className="font-mono text-xs break-all">{card.task ?? 'hive only (no Studio task)'}</dd>
         <dt className="text-muted-foreground">Owner</dt>
