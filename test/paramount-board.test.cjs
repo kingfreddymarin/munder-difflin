@@ -78,7 +78,7 @@ test('card.open fails with a code and errorId when the card, dir or app is missi
     [{ key: 'NSC-31', app: 'warp' }, 'NOT_FOUND', {}],
     [{ key: 'NSC-32', app: 'vscode' }, 'NOT_FOUND', {}],
     [{ key: 'NSC-30', app: 'finder' }, 'INVALID_INPUT', {}],
-    [{ key: 'NSC-30', app: 'warp' }, 'UNSUPPORTED', { installed: false }],
+    [{ key: 'NSC-30', app: 'warp' }, 'NOT_FOUND', { installed: false }],
     [{ key: 'NSC-30', app: 'warp' }, 'UNSUPPORTED', { board: false }],
   ];
   for (const [command, code, options] of cases) {

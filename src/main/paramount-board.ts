@@ -116,7 +116,8 @@ export function dispatchBoard(command: Record<string, unknown>, deps: ParamountD
         if (!board.isDirectory(dir)) return fail('NOT_FOUND', `The card's working directory does not exist: ${dir}`);
         writeAttempted = true;
         const opened = board.openInApp(command.app as ParamountOpenApp, dir);
-        if (!opened.ok) return fail('UNSUPPORTED', opened.error);
+        // NOT_FOUND, not UNSUPPORTED: the UI learns UNSUPPORTED per command type and would then disable the other app too.
+        if (!opened.ok) return fail('NOT_FOUND', opened.error);
         break;
       }
       case 'card.link': {
