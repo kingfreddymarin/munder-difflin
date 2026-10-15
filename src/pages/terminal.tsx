@@ -11,6 +11,7 @@ import { statusMeta } from '@/components/app/status';
 import { useDispatch, useFloor } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
+import { LiveTerminal } from '@/components/app/live-terminal';
 
 export function TerminalPage() {
   const terminals = useFloor((s) => s.terminals);
@@ -26,8 +27,7 @@ export function TerminalPage() {
   const send = (value?: string) => {
     const v = (value ?? draft).trim();
     if (!v || !session) return;
-    dispatch({ type: 'terminal.input', agentId: session.agentId, text: v });
-    setDraft('');
+    void dispatch({ type: 'terminal.input', agentId: session.agentId, text: v }).then((ok) => { if (ok) setDraft(''); });
   };
 
   return (
@@ -48,14 +48,15 @@ export function TerminalPage() {
           );
         })}
       </nav>
+      {!session && <section className="flex items-center justify-center rounded-xl border p-6 text-sm text-muted-foreground" role="status">No live terminal is available. Start an agent to see its session here.</section>}
       {session && agent && (
         <section className="flex min-h-0 flex-col gap-3">
-          <Code code={text} className="min-h-0 flex-1 overflow-hidden rounded-xl border">
+          {session.ptyId ? <div className="min-h-0 flex-1 overflow-hidden rounded-xl border"><LiveTerminal key={session.ptyId} ptyId={session.ptyId} label={`${agent.name} live terminal`} /></div> : <Code code={text} className="min-h-0 flex-1 overflow-hidden rounded-xl border">
             <CodeHeader icon={Terminal} copyButton>
               {agent.name} · {session.cwd}
             </CodeHeader>
             <CodeBlock lang="bash" writing={false} className="min-h-0 flex-1" />
-          </Code>
+          </Code>}
           {session.pending && (
             <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
               <span className="flex-1 text-sm">{session.pending.prompt}</span>
@@ -64,10 +65,10 @@ export function TerminalPage() {
               ))}
             </div>
           )}
-          <div className="flex items-center gap-2">
+          {!session.ptyId && <div className="flex items-center gap-2">
             <Input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder={`Type into ${agent.name}'s session · priority, logged`} className="h-11 font-mono" aria-label="Terminal input" />
             <IconButton aria-label="Send to terminal" onClick={() => send()} className="size-11"><Send animateOnHover /></IconButton>
-          </div>
+          </div>}
         </section>
       )}
     </div>

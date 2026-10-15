@@ -2,6 +2,7 @@ import { ThemeProvider } from 'next-themes';
 import { TooltipProvider } from '@/components/animate-ui/components/animate/tooltip';
 import { FloorProvider } from '@/data/store';
 import { createMockProvider } from '@/data/mock-provider';
+import { createElectronProvider } from '@/data/electron-provider';
 import { RouterProvider, useRouter } from '@/app/router';
 import { AppShell } from '@/app/app-shell';
 import { mainNav, footerNav } from '@/config/navigation';
@@ -14,7 +15,7 @@ import { HealthPage } from '@/pages/health';
 import { SettingsPage } from '@/pages/settings';
 
 // Swap this for the WebSocket provider when the core is running; nothing else changes.
-const provider = createMockProvider();
+const provider = typeof window !== 'undefined' && window.cth ? createElectronProvider() : createMockProvider();
 
 const pages = { home: HomePage, chats: ChatsPage, board: BoardPage, team: TeamPage, terminal: TerminalPage, health: HealthPage, settings: SettingsPage };
 

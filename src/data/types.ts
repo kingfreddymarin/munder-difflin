@@ -181,6 +181,7 @@ export interface TerminalLine {
 }
 export interface TerminalSession {
   agentId: string;
+  ptyId?: string;
   cwd: string;
   lines: TerminalLine[];
   pending?: { prompt: string; options: string[] };

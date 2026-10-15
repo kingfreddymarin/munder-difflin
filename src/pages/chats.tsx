@@ -58,8 +58,7 @@ export function ChatsPage() {
   const send = () => {
     const text = draft.trim();
     if (!text || !chat) return;
-    dispatch({ type: 'chat.send', chatId: chat.id, text });
-    setDraft('');
+    void dispatch({ type: 'chat.send', chatId: chat.id, text }).then((ok) => { if (ok) setDraft(''); });
   };
 
   return (
