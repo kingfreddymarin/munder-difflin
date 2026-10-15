@@ -30,7 +30,8 @@ function Warnings({ warnings }: { warnings: ParamountSourceWarning[] }) {
   );
 }
 
-export function ImportAgentsSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+/** `onImported` gets the hire manifest the core built; the Team screen opens its Add-Agent form with it. */
+export function ImportAgentsSheet({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported?: (manifest: Record<string, unknown>, adjustments: string[]) => void }) {
   const api = useAgentImport();
   const [load, setLoad] = React.useState<Load>({ status: 'loading' });
   const [pending, setPending] = React.useState<Pending | null>(null);
@@ -50,7 +51,9 @@ export function ImportAgentsSheet({ open, onClose }: { open: boolean; onClose: (
     const key = keyOf(agent);
     setPending({ key, state: 'sending' });
     try {
-      setPending({ key, state: 'done', result: await api.importAgent(agent.source, agent.id) });
+      const result = await api.importAgent(agent.source, agent.id);
+      setPending({ key, state: 'done', result });
+      onImported?.(result.manifest, result.adjustments);
     } catch (cause) {
       setPending({ key, state: 'error', error: toBackendError(cause, 'agents.import') });
     }

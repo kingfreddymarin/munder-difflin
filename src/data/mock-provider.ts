@@ -48,7 +48,7 @@ export function createMockProvider(): DataProvider {
     async importAgent(source, id) {
       const agent = agentDiscovery.agents.find((item) => item.source === source && item.id === id);
       if (!agent) throw BackendError.local('NOT_FOUND', `No ${source} agent "${id}" in the sample data.`, 'agents.import');
-      return { agent: structuredClone(agent), manifest: { schema: 'munder-difflin/hire@1', name: agent.name, role: agent.description }, adjustments: [] };
+      return { agent: structuredClone(agent), manifest: { spec: 'munder-difflin/hire@1', name: agent.name, ...(agent.description ? { description: agent.description } : {}) }, adjustments: [] };
     },
     async teamModels() {
       const s = current();

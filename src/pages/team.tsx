@@ -11,7 +11,9 @@ import { SourcesPanel } from '@/features/team/sources-panel';
 import { AutomationsPanel } from '@/features/team/automations-panel';
 import { AgentSheet } from '@/features/team/agent-sheet';
 import { ImportAgentsSheet } from '@/features/team/import-agents-sheet';
-import { useAgentImport, useDispatch } from '@/data/store';
+import { HireSheet } from '@/features/team/hire-sheet';
+import { NewCardDialog } from '@/features/team/new-card-dialog';
+import { useAgentImport, useDispatch, useTeamApi } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { Screen } from '@/components/app/screen';
@@ -51,6 +53,10 @@ export function TeamPage() {
   const open = route.params.get('agent');
   const agentImport = useAgentImport();
   const [importing, setImporting] = React.useState(false);
+  const teamApi = useTeamApi();
+  // null = closed; otherwise which way the Add-Agent form opens (empty, or pre-filled from a bundle file).
+  const [hiring, setHiring] = React.useState<null | { bundle: boolean; manifest?: Record<string, unknown>; notes?: string[] }>(null);
+  const [creating, setCreating] = React.useState(false);
 
   const apply = (next: PanelId[]) => {
     setPanels(next);
@@ -79,8 +85,8 @@ export function TeamPage() {
 
   return (
     <Screen>
-      <div className="flex items-center gap-3">
-        <div className="flex flex-1 flex-col">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex min-w-48 flex-1 flex-col">
           <h1 className="text-xl font-semibold tracking-tight">Team</h1>
           <span className="text-muted-foreground text-xs">Agents, graph, activity, data sources and automations on one screen</span>
         </div>
@@ -108,7 +114,11 @@ export function TeamPage() {
         </Popover>
         <Button variant="outline" disabled={!agentImport} onClick={() => setImporting(true)}
           title={agentImport ? 'List agents defined in Claude Code, Codex and Munder on this machine' : 'Import needs the desktop core.'}>Import from Claude / Codex / Munder</Button>
-        <Button>Hire from a bundle</Button>
+        <Button variant="outline" onClick={() => setCreating(true)}>New card</Button>
+        <Button variant="outline" disabled={!teamApi} onClick={() => setHiring({ bundle: true })}
+          title={teamApi ? 'Pre-fill the Add-Agent form from a munder-difflin/hire@1 file' : 'Hiring needs the desktop core.'}>Hire from a bundle</Button>
+        <Button disabled={!teamApi} onClick={() => setHiring({ bundle: false })}
+          title={teamApi ? 'Add an agent: review the exact command, then start it in a terminal' : 'Hiring needs the desktop core.'}>Hire</Button>
       </div>
       <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3', gridFor[panels.length] ?? gridFor[5])}>
         {panels.map((id) => (
@@ -116,7 +126,9 @@ export function TeamPage() {
         ))}
       </div>
       <AgentSheet agentId={open} onClose={() => go('team')} />
-      <ImportAgentsSheet open={importing} onClose={() => setImporting(false)} />
+      <ImportAgentsSheet open={importing} onClose={() => setImporting(false)} onImported={(manifest, notes) => { setImporting(false); setHiring({ bundle: false, manifest, notes }); }} />
+      <HireSheet open={!!hiring} bundle={!!hiring?.bundle} manifest={hiring?.manifest} notes={hiring?.notes} onClose={() => setHiring(null)} />
+      <NewCardDialog open={creating} onClose={() => setCreating(false)} />
     </Screen>
   );
 }
