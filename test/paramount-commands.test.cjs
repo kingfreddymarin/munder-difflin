@@ -76,3 +76,38 @@ test('agent token cap converts UI millions to fork tokens', () => {
   assert.equal(state.agents.jim.cap, 2_500_000);
   assert.equal(dispatchParamount({ type: 'agent.update', agentId: 'jim', patch: { tokensCap: 0 } }, deps).ok, false);
 });
+
+test('question id rejects ambiguous suffixes and duplicate answer', () => {
+  const { state, deps } = fixture();
+  assert.equal(dispatchParamount({ type: 'question.answer', messageId: 'P-1:0.0', option: 'yes' }, deps).ok, false);
+  assert.equal(state.tasks[0].humanQA[0].a, undefined);
+  assert.equal(dispatchParamount({ type: 'question.answer', messageId: 'P-1:0', option: 'yes' }, deps).ok, true);
+  assert.equal(dispatchParamount({ type: 'question.answer', messageId: 'P-1:0', option: 'no' }, deps).ok, false);
+});
+
+test('agent update rejects inherited object names', () => {
+  const { state, deps } = fixture();
+  assert.equal(dispatchParamount({ type: 'agent.update', agentId: '__proto__', patch: { name: 'Intruder' } }, deps).ok, false);
+  assert.equal(state.events.length, 0);
+});
+
+test('failed audit append reports possible committed write', () => {
+  const { state, deps } = fixture();
+  deps.appendEvent = () => { throw new Error('disk full'); };
+  const result = dispatchParamount({ type: 'account.notify', id: 'desktop', on: false }, deps);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /may have been applied.*refresh the snapshot/);
+  assert.equal(state.notifications, false);
+});
+
+test('all commands outside the GAP adapter fail explicitly', () => {
+  const { deps } = fixture();
+  for (const type of [
+    'chat.send', 'card.move', 'terminal.input', 'layout.panels', 'access.set',
+    'floor.yolo', 'floor.iteration', 'account.connection', 'prereq.install', 'prereq.start'
+  ]) {
+    const result = dispatchParamount({ type }, deps);
+    assert.equal(result.ok, false, type);
+    assert.ok(result.error, type);
+  }
+});

@@ -1,17 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ScheduledMission } from './config';
-
-export interface ParamountEvent {
-  id: string;
-  at: string;
-  actor: 'you';
-  command: Record<string, unknown>;
-}
-export type ParamountUpdate = ParamountEvent | { kind: 'invalidate'; at: string; source: string };
-
-export type ParamountResult =
-  | { ok: true; event: ParamountEvent }
-  | { ok: false; error: string };
+import type { ParamountEvent, ParamountResult, ParamountCommand } from '../preload/paramount';
 
 export interface ParamountDeps {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -41,6 +30,7 @@ function fail(error: string): ParamountResult { return { ok: false, error }; }
 /** Only commands without a safe, direct preload equivalent are handled here. */
 export function dispatchParamount(command: unknown, deps: ParamountDeps): ParamountResult {
   if (!object(command) || !id(command.type)) return fail('Invalid command');
+  let writeAttempted = false;
   try {
     switch (command.type) {
       case 'question.answer':
@@ -54,10 +44,12 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps): Paramo
         const match = tasks.find((task) => messageId === task.id || messageId.startsWith(`${task.id}:`));
         if (!match) return fail('Question task not found');
         const suffix = messageId === match.id ? null : messageId.slice(match.id.length + 1);
-        const index = suffix === null ? (match.humanQA ?? []).findIndex((qa) => !qa.a) : Number(suffix);
+        const index = suffix === null ? (match.humanQA ?? []).findIndex((qa) => !qa.a)
+          : /^(0|[1-9]\d*)$/.test(suffix) ? Number(suffix) : -1;
         const qa = match.humanQA ?? [];
         if (!Number.isInteger(index) || index < 0 || index >= qa.length || qa[index].a) return fail('Question is not open');
         const next = qa.map((item, i) => i === index ? { ...item, a: option, answeredAt: new Date().toISOString() } : item);
+        writeAttempted = true;
         if (!deps.patchTask(match.id, { humanQA: next })) return fail('Question task changed; retry');
         break;
       }
@@ -65,26 +57,30 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps): Paramo
         if (!id(command.id) || typeof command.enabled !== 'boolean') return fail('Invalid automation toggle');
         const missions = deps.missions();
         if (!missions.some((m) => m.id === command.id)) return fail('Automation not found');
+        writeAttempted = true;
         deps.saveMissions(missions.map((m) => m.id === command.id ? { ...m, enabled: command.enabled as boolean } : m));
         break;
       }
       case 'agent.update': {
-        if (!id(command.agentId) || !object(command.patch) || !deps.agents()[command.agentId]) return fail('Agent not found');
+        if (!id(command.agentId) || !object(command.patch) || !Object.hasOwn(deps.agents(), command.agentId)) return fail('Agent not found');
         const keys = Object.keys(command.patch);
         if (keys.length !== 1) return fail('Update one supported agent field at a time');
         if (keys[0] === 'name' && text(command.patch.name)) {
+          writeAttempted = true;
           const result = deps.renameAgent(command.agentId, command.patch.name);
           if (!result.ok) return fail(result.error ?? 'Agent rename failed');
         } else if (keys[0] === 'tokensCap' && typeof command.patch.tokensCap === 'number' &&
           Number.isFinite(command.patch.tokensCap) && command.patch.tokensCap > 0 &&
           Number.isSafeInteger(command.patch.tokensCap * 1_000_000)) {
           // Paramount's Agent.tokensCap is in millions; fork config uses tokens.
+          writeAttempted = true;
           deps.setAgentTokenCap(command.agentId, command.patch.tokensCap * 1_000_000);
         } else return fail('Agent field is not supported by the fork');
         break;
       }
       case 'account.notify':
         if (command.id !== 'desktop' || typeof command.on !== 'boolean') return fail('Only desktop notifications are supported');
+        writeAttempted = true;
         deps.setNotifications(command.on);
         break;
       case 'account.profile': {
@@ -94,11 +90,13 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps): Paramo
         if (Object.keys(patch).length === 0 || Object.keys(patch).some((k) => !allowed.includes(k) || !text(patch[k]))) {
           return fail('Invalid account profile fields');
         }
+        writeAttempted = true;
         deps.savePreference('profile', patch);
         break;
       }
       case 'setup.dismiss':
-        if (!Array.isArray(command.degraded) || command.degraded.some((v) => !id(v))) return fail('Invalid degraded service list');
+        if (!Array.isArray(command.degraded) || command.degraded.length > 100 || command.degraded.some((v) => !id(v))) return fail('Invalid degraded service list');
+        writeAttempted = true;
         deps.savePreference('setup', { dismissed: true, degraded: command.degraded });
         break;
       case 'access.set':
@@ -113,11 +111,12 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps): Paramo
       default:
         return fail(`${command.type} uses an existing preload call or is unknown`);
     }
-    const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command };
+    const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as ParamountCommand };
     deps.appendEvent(event);
     deps.publish(event);
     return { ok: true, event };
   } catch (error) {
-    return fail(error instanceof Error ? error.message : 'Command failed');
+    const message = error instanceof Error ? error.message : 'Command failed';
+    return fail(writeAttempted ? `Command may have been applied; refresh the snapshot before retrying: ${message}` : message);
   }
 }

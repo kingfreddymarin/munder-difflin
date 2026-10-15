@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { AgentProvider } from '../shared/agentProvider';
-import type { ParamountResult, ParamountUpdate } from '../main/paramount';
+import type { ParamountCommand, ParamountPreloadAPI, ParamountRawSnapshot, ParamountResult, ParamountUpdate } from './paramount';
 import type { HireManifest } from '../shared/hire';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
@@ -751,9 +751,9 @@ const api = {
   // ─── Hive (multi-agent coordination) ─────────────────────────────────────
   /** Aggregate fork-native read model. Paramount's UI provider projects it to
    *  its own Snapshot; existing hive and PTY methods remain available directly. */
-  paramountSnapshot: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('paramount:snapshot'),
+  paramountSnapshot: (): Promise<ParamountRawSnapshot> => ipcRenderer.invoke('paramount:snapshot'),
   /** Validated commands lacking a direct fork preload equivalent. */
-  paramountDispatch: (command: Record<string, unknown>): Promise<ParamountResult> =>
+  paramountDispatch: (command: ParamountCommand): Promise<ParamountResult> =>
     ipcRenderer.invoke('paramount:dispatch', command),
   onParamountEvent: (cb: (event: ParamountUpdate) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, event: ParamountUpdate) => cb(event);
@@ -1438,6 +1438,6 @@ const api = {
   }): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('update:simulate', opts)
 };
 
-contextBridge.exposeInMainWorld('cth', api);
+contextBridge.exposeInMainWorld('cth', api satisfies ParamountPreloadAPI);
 
 export type CthApi = typeof api;

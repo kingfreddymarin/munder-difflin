@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
 import {
-  rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync,
+  rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync, appendFileSync,
   unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync, lstatSync,
   readlinkSync, symlinkSync
 } from 'node:fs';
@@ -3527,8 +3527,16 @@ ipcMain.handle('paramount:dispatch', (_evt, command: unknown) => dispatchParamou
   setAgentTokenCap: (id, cap) => { setAgentTokenCap(id, cap); },
   setNotifications: (on) => { writeConfig({ notifications: on }); },
   savePreference: saveParamountPreference,
-  appendEvent: (event) => hive.appendLog({ kind: 'paramount-command', ...event }),
-  publish: (event) => { for (const window of BrowserWindow.getAllWindows()) window.webContents.send('paramount:event', event); }
+  appendEvent: (event) => {
+    const root = hive.root();
+    if (!root) throw new Error('hive disabled (no harnessHome)');
+    appendFileSync(join(root, 'log.jsonl'), JSON.stringify({ ts: Date.now(), kind: 'paramount-command', ...event }) + '\n', { encoding: 'utf8', mode: 0o600 });
+  },
+  publish: (event) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', event);
+    }
+  }
 }));
 ipcMain.handle('hive:registry', () => hive.registry());
 ipcMain.handle('hive:renameAgent', (_evt, id: unknown, name: unknown) => {
