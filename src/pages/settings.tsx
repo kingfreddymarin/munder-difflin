@@ -15,6 +15,7 @@ import { PrereqList } from '@/components/app/prereq-list';
 import { Screen } from '@/components/app/screen';
 import { CoreSettings } from '@/features/settings/core-settings';
 import { ProviderSettings } from '@/features/settings/provider-settings';
+import { MemorySettings } from '@/features/settings/memory-settings';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 
 export function SettingsPage() {
@@ -47,12 +48,13 @@ export function SettingsPage() {
         <span className="text-muted-foreground text-xs">Changes sent to the desktop core are logged with a correlation ID.</span>
       </div>
       <Tabs value={tab} onValueChange={(v) => go('settings', { tab: v })} className="flex min-h-0 flex-1 flex-col gap-3">
-        <TabsList>
+        <TabsList className="h-auto max-w-full flex-wrap">
           <TabsTrigger value="setup">Setup</TabsTrigger>
           <TabsTrigger value="account">Account</TabsTrigger>
           <TabsTrigger value="connections">Connections</TabsTrigger>
           <TabsTrigger value="team">Team & models</TabsTrigger>
           <TabsTrigger value="providers">AI engines</TabsTrigger>
+          <TabsTrigger value="memory">Memory</TabsTrigger>
           <TabsTrigger value="autonomy">Autonomy & YOLO</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="audit">My changes</TabsTrigger>
@@ -96,6 +98,7 @@ export function SettingsPage() {
           </TabsContent>
           <TabsContent value="team"><CoreSettings /></TabsContent>
           <TabsContent value="providers"><ProviderSettings /></TabsContent>
+          <TabsContent value="memory"><MemorySettings /></TabsContent>
           <TabsContent value="autonomy">
             <div className="grid gap-3 lg:grid-cols-2">
               <Tile title="YOLO mode" hint="no limits, fast cycles" className="border-fuchsia-500/30">

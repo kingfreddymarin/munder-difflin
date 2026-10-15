@@ -28,11 +28,11 @@ const density: Record<HomeDensity, { gap: string; row: string }> = {
 };
 const ago = (ms: number, now: number) => { const s = Math.max(0, Math.round((now - ms) / 1000)); return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`; };
 
-function Stat({ label, value, decimals = 0, suffix }: { label: string; value: number; decimals?: number; suffix?: string }) {
+function Stat({ label, value, decimals = 0, suffix }: { label: string; value: number | string; decimals?: number; suffix?: string }) {
   return (
     <div className="flex flex-col rounded-lg border px-3 py-1.5">
       <span className="text-muted-foreground text-[11px]">{label}</span>
-      <span className="flex items-baseline gap-0.5 text-lg font-semibold"><SlidingNumber number={value} decimalPlaces={decimals} />{suffix}</span>
+      <span className="flex items-baseline gap-0.5 text-lg font-semibold">{typeof value === 'number' ? <SlidingNumber number={value} decimalPlaces={decimals} /> : value}{suffix}</span>
     </div>
   );
 }
@@ -46,6 +46,7 @@ export function HomePage() {
   const messages = useFloor((s) => s.messages);
   const activity = useFloor((s) => s.activity);
   const services = useFloor((s) => s.services);
+  const usageReported = useFloor((s) => s.usageReported !== false);
   const layout = useFloor((s) => s.homeLayout);
   const dispatch = useDispatch();
   const { go } = useRouter();
@@ -186,7 +187,7 @@ export function HomePage() {
           <span className="text-muted-foreground text-xs">{agents.filter((a) => a.status === 'working').length} of {agents.length} agents working · {asks.length} waiting on you</span>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Stat label="Tokens today" value={Number(tokens.toFixed(1))} decimals={1} suffix="M" />
+          <Stat label="Tokens today" value={usageReported ? Number(tokens.toFixed(1)) : '—'} decimals={1} suffix={usageReported ? 'M' : undefined} />
           <Stat label="Done" value={closed.length} />
           <Stat label="Blocked" value={cards.filter((c) => c.status === 'blocked').length} />
           <Button variant="outline" onClick={() => go('health')} className="h-12 gap-2">
