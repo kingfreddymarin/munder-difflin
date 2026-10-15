@@ -27,22 +27,57 @@ export type ParamountCommand =
   | { type: 'layout.panels'; panels: string[] }
   | { type: 'prereq.install'; id: string }
   | { type: 'prereq.start'; id: string }
-  | { type: 'setup.dismiss'; degraded: string[] };
+  | { type: 'setup.dismiss'; degraded: string[] }
+  /** Read-only: returns a redacted diagnostics bundle on the result. */
+  | { type: 'diagnostics.bundle'; logLines?: number };
 
 export interface ParamountEvent {
   id: string;
   at: string;
   actor: 'you';
   command: ParamountCommand;
+  /** The dispatch's correlation id; matches its `paramount-op` lines in log.jsonl. */
+  correlationId?: string;
 }
 export type ParamountUpdate = ParamountEvent | {
   kind: 'invalidate';
   at: string;
   source: string;
 };
+/** Stable failure codes; branch on these, not on message text. */
+export type ParamountErrorCode =
+  | 'INVALID_COMMAND' | 'INVALID_INPUT' | 'NOT_FOUND' | 'CONFLICT'
+  | 'UNSUPPORTED' | 'UNCERTAIN_STATE' | 'INTERNAL';
+/** Every failure carries an errorId. The same id is on a `paramount-error`
+ *  line in log.jsonl with the stack and context; show it to the user. */
+export interface ParamountFailure {
+  ok: false;
+  errorId: string;
+  code: ParamountErrorCode;
+  message: string;
+  /** Same text as `message`; kept for callers written before errorId. */
+  error: string;
+  correlationId: string;
+}
 export type ParamountResult =
-  | { ok: true; event: ParamountEvent }
-  | { ok: false; error: string };
+  | { ok: true; event: ParamountEvent; diagnostics?: ParamountDiagnostics }
+  | ParamountFailure;
+
+/** Redacted support bundle returned by `diagnostics.bundle`. */
+export interface ParamountDiagnostics {
+  generatedAt: string;
+  correlationId: string;
+  app: Record<string, unknown>;
+  os: Record<string, unknown>;
+  /** App config with secrets replaced by "[REDACTED]". */
+  config: unknown;
+  /** Newest log.jsonl lines, oldest first, redacted. */
+  logTail: unknown[];
+  /** Newest crash reports first, each capped at 16 KB, redacted. */
+  crashes: Array<{ file: string; bytes: number; modifiedAt: string; content: string }>;
+  /** Parts that could not be read; the bundle is still returned. */
+  errors: string[];
+}
 
 /** Fork-native data; the React DataProvider projects this into its own Snapshot. */
 export interface ParamountRawSnapshot {
@@ -59,6 +94,7 @@ export interface ParamountRawSnapshot {
 
 /** Only the preload calls Paramount's React adapter needs. */
 export interface ParamountPreloadAPI {
+  /** Rejects with an Error whose message starts with "[<errorId>] <code>:". */
   paramountSnapshot(): Promise<ParamountRawSnapshot>;
   /** GAP commands only. chat.send/card.move/terminal.input use the calls below. */
   paramountDispatch(command: ParamountCommand): Promise<ParamountResult>;
