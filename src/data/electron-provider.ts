@@ -19,7 +19,9 @@ const array = (value: unknown): Record<string, unknown>[] =>
   Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object') : [];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const string = (value: unknown, fallback = ''): string => typeof value === 'string' ? value : fallback;
-const date = (value: unknown): string => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : new Date().toISOString();
+// An unknown time stays '' (shown as '—'), never "now": an invented time is a hardcoded value and would also
+// make every refresh look changed.
+const date = (value: unknown): string => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : '';
 
 function role(value: string, isGod: boolean): Agent['role'] {
   if (isGod) return 'paramount';

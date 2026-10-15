@@ -7,6 +7,8 @@ import { ErrorNotice } from '@/components/app/error-notice';
 import { BackendError, toBackendError } from './errors';
 import type { Command, DataProvider } from './protocol';
 import { applyEvent } from './reducer';
+import { share } from './share';
+import { record } from '@/lib/perf';
 import type { Snapshot } from './types';
 
 export type FloorStatus = 'loading' | 'ready' | 'error' | 'disconnected';
@@ -38,14 +40,23 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
     let unsupported: ReadonlyMap<string, string> = new Map();
     let active = false;
     let refreshVersion = 0;
+    // One snapshot request at a time: a burst of invalidations becomes one request now and one after it.
+    let inFlight = false;
+    let again = false;
     const subs = new Set<() => void>();
     const emit = () => subs.forEach((f) => f());
     const refresh = () => {
+      if (inFlight) { again = true; return; }
+      inFlight = true;
       const version = ++refreshVersion;
       if (!state) { error = null; emit(); }
+      const started = performance.now();
       provider.snapshot().then((s) => {
         if (!active || version !== refreshVersion) return;
-        state = s;
+        record('snapshot', performance.now() - started);
+        const next = state ? share(state, s) : s;
+        if (next === state && !error) return;
+        state = next;
         error = null;
         emit();
       }).catch((cause: unknown) => {
@@ -53,6 +64,9 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
         state = null;
         error = toBackendError(cause, 'snapshot');
         emit();
+      }).finally(() => {
+        inFlight = false;
+        if (again && active) { again = false; refresh(); }
       });
     };
     return {
