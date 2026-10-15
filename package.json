@@ -22,10 +22,10 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test:focused": "node --test test/*.test.cjs",
     "check:links": "node tools/check-release-links.cjs",
-    "dist": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder",
-    "dist:mac": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --mac",
-    "dist:win": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --win",
-    "dist:linux": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --linux"
+    "dist": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --config electron-builder.config.cjs",
+    "dist:mac": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --config electron-builder.config.cjs --mac",
+    "dist:win": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --config electron-builder.config.cjs --win",
+    "dist:linux": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --config electron-builder.config.cjs --linux"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

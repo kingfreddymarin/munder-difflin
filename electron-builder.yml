@@ -28,9 +28,11 @@ files:
 extraResources:
   # The Paramount UI build (00-new/apps/paramount, `npm run build` there).
   # Served at runtime over paramount://app/ from <resources>/paramount-ui.
-  # Set by scripts/paramount-ui-dist.cjs (the dist scripts run electron-builder
-  # through it): default ../paramount/dist, override with PARAMOUNT_UI_DIST.
-  - from: ${env.PARAMOUNT_UI_DIST}
+  # Placeholder: electron-builder.config.cjs (the --config every dist script
+  # passes) replaces it with the absolute dir from scripts/paramount-ui-dist.cjs:
+  # default ../paramount/dist, override with PARAMOUNT_UI_DIST. A bare
+  # `electron-builder` (no --config) would skip it and ship no UI.
+  - from: PARAMOUNT_UI_DIST
     to: paramount-ui
   - from: resources/md-slack-reply.cjs
     to: md-slack-reply.cjs
