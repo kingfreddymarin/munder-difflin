@@ -9,6 +9,7 @@ import { normalizeWeekly } from '../shared/weeklySchedule';
 import { AGENT_SOURCES, discoverAgents, findAgents, toHireManifest, type AgentSourceRoots } from './agentSources';
 import type { HireManifest } from '../shared/hire';
 import { dispatchBoard, isBoardCommand, type ParamountBoardDeps } from './paramount-board';
+import { runShellCommand, type ParamountShellDeps } from './paramount-shell';
 
 export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'message' | 'godId'>> {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -56,6 +57,8 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   };
   /** Board commands (paramount-board.ts); absent means unsupported. */
   board?: ParamountBoardDeps;
+  /** Opens allow-listed links and folders (paramount-shell.ts); absent means unsupported. */
+  shell?: ParamountShellDeps;
 }
 
 export interface ParamountPrereqPlan {
@@ -118,7 +121,7 @@ function text(value: unknown): value is string {
 /** Only commands without a safe, direct preload equivalent are handled here.
  *  Every failure goes through `span.fail`, so it carries an errorId and code
  *  and is logged with its context under the span's correlation id. */
-export function dispatchParamount(command: unknown, deps: ParamountDeps, span: Span = createSpan('paramount.dispatch')): ParamountResult {
+export function dispatchParamount(command: unknown, deps: ParamountDeps, span: Span = createSpan('paramount.dispatch')): ParamountResult | Promise<ParamountResult> {
   const commandType = object(command) && typeof command.type === 'string' ? command.type.slice(0, 80) : undefined;
   const fail = (code: ParamountErrorCode, message: string, cause?: unknown): ParamountResult =>
     span.fail(code, message, cause, { commandType });
@@ -359,6 +362,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         break;
       }
       case 'ask.reply': case 'ask.dismiss': case 'home.layout': case 'chats.view': { const r = dispatchHomeChats(command as unknown as ParamountHomeChatsCommand, deps, fail, () => { writeAttempted = true; }); if (r) return r; break; }
+      case 'shell.openExternal': case 'shell.openIn': return runShellCommand(command, deps.shell, span.cid, fail);
       case 'layout.panels':
         return fail('UNSUPPORTED', 'Team panel layout is a renderer-local preference');
       default:

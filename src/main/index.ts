@@ -15,6 +15,7 @@ import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
 import { createBoardDeps } from './paramount-board';
+import { paramountShellDeps } from './paramount-shell';
 import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } from './autoModeExpiry';
 import { defaultMunderHive, type AgentSourceRoots } from './agentSources';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
@@ -3615,6 +3616,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   prereqInstall: { plan: paramountPrereqPlan, run: (plan) => paramountRunPrereqInstall(plan, evt.sender) },
   logStep: (step) => paramountLog(step),
   agentSources: { roots: paramountAgentRoots, deliverHire },
+  shell: paramountShellDeps((url) => shell.openExternal(url), (step) => paramountLog(step)),
   savePreference: saveParamountPreference,
   // lane b-home-chats: ask replies are mailed as the human; direct questions are looked up by id.
   send: (msg) => { const sent = hive.send(msg, 'human'); analytics.trackMessageSent('hive'); return { ok: !!sent?.id }; },
