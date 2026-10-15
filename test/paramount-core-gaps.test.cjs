@@ -397,13 +397,13 @@ test('an open service port makes prereq.start CONFLICT, and a closed one allows 
   const { port } = server.address();
   const plan = (portOpen) => (id) => ({ id, label: 'Skid', installed: true, running: portOpen, command: 'skid doctor' });
   try {
-    const open = await probePort(port);
+    const open = (await probePort(port)).ok;
     const a = fixture();
     a.deps.prereqStart.plan = plan(open);
     assertFailure(dispatchParamount({ type: 'prereq.start', id: 'skid', confirm: true }, a.deps), 'CONFLICT');
     assert.deepEqual(a.state.starts, []);
   } finally { await new Promise((r) => server.close(r)); }
-  const closed = await probePort(port);
+  const closed = (await probePort(port)).ok;
   const b = fixture();
   b.deps.prereqStart.plan = plan(closed);
   assert.equal(dispatchParamount({ type: 'prereq.start', id: 'skid' }, b.deps).ok, true);
