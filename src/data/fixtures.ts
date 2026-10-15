@@ -5,6 +5,9 @@ import type { Access, Snapshot } from './types';
 const t = (hhmm: string, day = '2026-10-14') => `${day}T${hhmm}:00-06:00`;
 
 export const fixtures: Snapshot = {
+  settings: { defaultModel: 'claude-sonnet-4-6', orchestratorMaySpawn: false, semanticMemory: true, embeddingModel: 'minilm', reflectEnabled: true,
+    maxTurns: 100, costCapTokens: 0, circuitBreaker: { enabled: true, hardStop: false, repeatedToolLimit: 8, errorStormLimit: 5, tokenVelocityPerMin: 60000 },
+    providerBaseUrls: { qwen: 'http://localhost:11434/v1' }, providerDefaultModels: { qwen: 'qwen3.5:9b' }, responseStyleBrief: '', claudeOutputStyle: 'off' },
   prerequisites: [
     { id: 'skid', name: 'Skidbladnir', level: 'required', state: 'installed-not-running', why: 'Local models for the jobs that should cost no budget tokens: turning terminal output into chat messages, condensing memory, drafting suggestions, triaging inbound requests. Paramount needs it running to do that work locally.', detail: '~/.nexus found · daemon not running · port 8000 closed', install: 'curl -fsSL https://raw.githubusercontent.com/kingfreddymarin/fjml-studio-nexus/main/install.sh | sh && skid models pull qwen-3.5-9b', start: 'skid doctor && skid run qwen-3.5-9b "ready"', docs: '02-products/lab/skidbladnir/README.md' },
     { id: 'git', name: 'git', level: 'required', state: 'ready', why: 'Worktrees per agent and the single committer.', detail: 'git 2.46' },
