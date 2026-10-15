@@ -30,7 +30,7 @@ export function newCorrelationId(): string {
  *  a matching key survive (`tokensCap: 5` is a budget, not a credential). */
 const SECRET_KEY = /token|secret|passw|apikey|api[_-]key|authorization|cookie|credential|private[_-]?key|signing|bearer/i;
 /** Secret shapes inside free text: provider keys, Slack and GitHub tokens,
- *  AWS ids, JWTs, bearer headers and `key=value` credentials in URLs. */
+ *  AWS ids, JWTs, bearer headers. Each match becomes `[REDACTED]`. */
 const SECRET_TEXT: RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{16,}/g,
   /\bxox[abposr]-[A-Za-z0-9-]{10,}/g,
@@ -39,21 +39,28 @@ const SECRET_TEXT: RegExp[] = [
   /\bgsk_[A-Za-z0-9]{20,}/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
-  /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
-  /([?&;\s"']|^)((?:access_?token|token|secret|api_?key|password|sig|signature)=)[^&\s"';]+/gi
+  /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi
 ];
+/** `key=value` and `"key": "value"` where the key ENDS in a secret word, with any
+ *  prefix: `MD_BROKER_TOKEN=`, `ANTHROPIC_API_KEY=`, `?api_key=`, `"apiKey":"…"`,
+ *  `Authorization: Bearer …`. Group 1 (key and separator) is kept so the line still reads. */
+const SECRET_ASSIGNMENT = /(\b[A-Za-z0-9_-]*?(?:token|secret|passw(?:or)?d|api[_-]?key|credential|signature|sig|authorization|private[_-]?key)["']?\s*[=:]\s*)("[^"\n]*"|'[^'\n]*'|(?:(?:Bearer|Basic)\s+)?[^\s"'&;,}]+)/gi;
+/** Numbers, booleans and null under a secret-looking key are budgets and flags,
+ *  not credentials (`"maxTokens": 4096`), matching the object rule below. */
+const PLAIN_VALUE = /^["']?(?:\d+(?:\.\d+)?|true|false|null)["']?$/i;
+/** Password in URL userinfo: `https://user:pass@host` keeps the user. */
+const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@/]+@/gi;
 export const REDACTED = '[REDACTED]';
 
 export function redactText(text: string): string {
   let out = text;
-  for (const pattern of SECRET_TEXT) {
-    out = out.replace(pattern, (match, ...groups) => {
-      // The key=value pattern keeps its separator and key so the line still reads.
-      if (pattern === SECRET_TEXT[SECRET_TEXT.length - 1]) return `${groups[0]}${groups[1]}${REDACTED}`;
-      return REDACTED;
-    });
-  }
-  return out;
+  for (const pattern of SECRET_TEXT) out = out.replace(pattern, REDACTED);
+  out = out.replace(URL_USERINFO, `$1${REDACTED}@`);
+  return out.replace(SECRET_ASSIGNMENT, (match, key: string, value: string) => {
+    if (PLAIN_VALUE.test(value)) return match;
+    const quote = value[0] === '"' || value[0] === "'" ? value[0] : '';
+    return `${key}${quote}${REDACTED}${quote}`;
+  });
 }
 
 /** Deep copy with secrets removed. Cycles and excessive depth are cut, never thrown. */
@@ -264,8 +271,11 @@ export function buildDiagnostics(input: DiagnosticsInput, cid: string): Paramoun
         for (const file of files.reverse()) {
           const p = join(dir, file);
           const st = statSync(p);
-          const raw = readFileSync(p, 'utf8');
-          crashes.push({ file, bytes: st.size, modifiedAt: st.mtime.toISOString(), content: raw.length > MAX_REPORT_BYTES ? raw.slice(-MAX_REPORT_BYTES) : raw });
+          // Agent-exit tails are raw PTY output written unredacted by hive.ts.
+          // Redact the whole file before the cut, so a secret split by the
+          // slice cannot slip past a pattern that needs its key.
+          const clean = redactText(readFileSync(p, 'utf8'));
+          crashes.push({ file, bytes: st.size, modifiedAt: st.mtime.toISOString(), content: clean.length > MAX_REPORT_BYTES ? clean.slice(-MAX_REPORT_BYTES) : clean });
         }
       }
     } catch (e) { errors.push(`crashes/: ${(e as Error).message}`); }
