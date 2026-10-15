@@ -38,7 +38,16 @@ export type ParamountCommand =
   /** Imports one discovered agent through the hire path: the Add-Agent form
    *  opens pre-filled and the human confirms the spawn. Pass the same
    *  `projectDir` used to discover a project agent. */
-  | { type: 'agents.import'; source: ParamountAgentSource; id: string; projectDir?: string };
+  | { type: 'agents.import'; source: ParamountAgentSource; id: string; projectDir?: string }
+  // lane a-shell
+  /** Opens an http(s) link in the default browser. Hosts: github.com,
+   *  dev.azure.com, *.visualstudio.com; anything else fails INVALID_INPUT. */
+  | { type: 'shell.openExternal'; url: string }
+  /** Opens an existing absolute directory in Warp or VS Code (macOS). */
+  | { type: 'shell.openIn'; app: ParamountOpenInApp; path: string };
+
+// lane a-shell
+export type ParamountOpenInApp = 'warp' | 'vscode';
 
 export interface ParamountEvent {
   id: string;

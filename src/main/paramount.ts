@@ -6,6 +6,7 @@ import { createSpan, type Span } from './paramountObservability';
 import { normalizeWeekly } from '../shared/weeklySchedule';
 import { AGENT_SOURCES, discoverAgents, findAgents, toHireManifest, type AgentSourceRoots } from './agentSources';
 import type { HireManifest } from '../shared/hire';
+import { runShellCommand, type ParamountShellDeps } from './paramount-shell';
 
 export interface ParamountDeps {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -51,6 +52,8 @@ export interface ParamountDeps {
     roots(): AgentSourceRoots;
     deliverHire(manifest: HireManifest): void;
   };
+  /** Opens allow-listed links and folders (paramount-shell.ts); absent means unsupported. */
+  shell?: ParamountShellDeps;
 }
 
 export interface ParamountPrereqPlan {
@@ -113,7 +116,7 @@ function text(value: unknown): value is string {
 /** Only commands without a safe, direct preload equivalent are handled here.
  *  Every failure goes through `span.fail`, so it carries an errorId and code
  *  and is logged with its context under the span's correlation id. */
-export function dispatchParamount(command: unknown, deps: ParamountDeps, span: Span = createSpan('paramount.dispatch')): ParamountResult {
+export function dispatchParamount(command: unknown, deps: ParamountDeps, span: Span = createSpan('paramount.dispatch')): ParamountResult | Promise<ParamountResult> {
   const commandType = object(command) && typeof command.type === 'string' ? command.type.slice(0, 80) : undefined;
   const fail = (code: ParamountErrorCode, message: string, cause?: unknown): ParamountResult =>
     span.fail(code, message, cause, { commandType });
@@ -352,6 +355,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         imported = { agent: { ...found.agent, warnings }, manifest: hire.manifest as unknown as Record<string, unknown>, adjustments: hire.adjustments };
         break;
       }
+      case 'shell.openExternal': case 'shell.openIn': return runShellCommand(command, deps.shell, span.cid, fail);
       case 'layout.panels':
         return fail('UNSUPPORTED', 'Team panel layout is a renderer-local preference');
       default:
