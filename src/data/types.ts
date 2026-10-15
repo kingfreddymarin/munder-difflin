@@ -60,7 +60,17 @@ export interface Message {
   meta?: string;
   rows?: { label: string; ok: boolean; detail: string }[];
   links?: { label: string; href: string }[];
+  /** How you replied to this ask: free text, a picked option, or "done" for a to-do only you could do. */
+  answerMode?: AskMode;
+  /** Set when you cleared the ask without answering it. */
+  dismissed?: boolean;
+  /** Only card asks (humanQA) can be dismissed; a direct message can only be replied to. */
+  dismissible?: boolean;
 }
+
+export type AskMode = 'answer' | 'decision' | 'done';
+/** Message kinds that are status updates rather than conversation; Chats can hide them. */
+export const UPDATE_KINDS: readonly MessageKind[] = ['build', 'route', 'context', 'suggestion'];
 
 export type NotificationKind = 'question' | 'approval' | 'suggestion' | 'alert';
 export interface Notification {
@@ -105,7 +115,7 @@ export interface Card {
   people: string[];
 }
 
-export type ActivityKind = 'message' | 'tool' | 'edit' | 'ticket' | 'breaker' | 'question';
+export type ActivityKind = 'message' | 'tool' | 'edit' | 'ticket' | 'breaker' | 'question' | 'lifecycle';
 export interface ActivityEvent {
   id: string;
   at: string;
@@ -281,4 +291,20 @@ export interface Snapshot {
   log: LogEvent[];
   terminals: TerminalSession[];
   audit: AuditEntry[];
+  /** Home tile sizes, order, hidden tiles and spacing; saved by the core (home.layout). */
+  homeLayout?: HomeLayout;
+  /** Which update cards Chats hides; saved by the core (chats.view). */
+  chatView?: ChatView;
+}
+
+export type HomeDensity = 'compact' | 'comfortable' | 'spacious';
+export type TileSize = 'sm' | 'md' | 'lg';
+export interface HomeLayout {
+  density?: HomeDensity;
+  order?: string[];
+  tiles?: Record<string, { size?: TileSize; hidden?: boolean }>;
+}
+export interface ChatView {
+  hideUpdates?: boolean;
+  hiddenIds?: string[];
 }

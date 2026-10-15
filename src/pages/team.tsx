@@ -49,7 +49,8 @@ export function TeamPage() {
   const [panels, setPanels] = React.useState<PanelId[]>(load);
   const open = route.params.get('agent');
   const agentImport = useAgentImport();
-  const [importing, setImporting] = React.useState(false);
+  // `?import=1` (Home's "Import agents") opens the import sheet directly.
+  const [importing, setImporting] = React.useState(() => route.params.get('import') === '1');
 
   const apply = (next: PanelId[]) => {
     setPanels(next);
@@ -114,7 +115,7 @@ export function TeamPage() {
           <Tile key={id} title={PANELS[id].title} hint={PANELS[id].hint}>{body(id)}</Tile>
         ))}
       </div>
-      <AgentSheet agentId={open} onClose={() => go('team')} />
+      <AgentSheet agentId={open} tab={route.params.get('tab')} onClose={() => go('team')} />
       <ImportAgentsSheet open={importing} onClose={() => setImporting(false)} />
     </div>
   );

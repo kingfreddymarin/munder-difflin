@@ -19,7 +19,8 @@ import { cn } from '@/lib/utils';
 const tones = ['Concise', 'Detailed', 'Friendly', 'Formal'];
 const autonomies = ['Read only', 'Ask for merges', 'Ask for anything risky', 'Full within budget'];
 
-export function AgentSheet({ agentId, onClose }: { agentId: string | null; onClose: () => void }) {
+/** `tab` opens a given tab first (Chats' avatar click opens `profile`, the agent's settings). */
+export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; onClose: () => void; tab?: string | null }) {
   const agent = useFloor((s) => s.agents.find((a) => a.id === agentId));
   const cards = useFloor((s) => s.cards);
   const activity = useFloor((s) => s.activity);
@@ -49,7 +50,7 @@ export function AgentSheet({ agentId, onClose }: { agentId: string | null; onClo
               <SheetTitle>{agent.name}</SheetTitle>
               <SheetDescription>{agent.doing}</SheetDescription>
             </SheetHeader>
-            <Tabs defaultValue="overview" className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-4">
+            <Tabs key={`${agentId}:${tab ?? ''}`} defaultValue={tab ?? 'overview'} className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-4">
               <TabsList className="w-full">
                 <TabsTrigger value="overview">Overview</TabsTrigger>
                 <TabsTrigger value="tasks">Tasks</TabsTrigger>

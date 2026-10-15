@@ -19,6 +19,8 @@ type Store = {
   getActionError: () => BackendError | null;
   getPending: () => number;
   getUnsupported: () => ReadonlyMap<string, string>;
+  /** When the last snapshot arrived (ms); 0 before the first. */
+  getRefreshedAt: () => number;
   clearActionError: () => void;
   retry: () => void;
   start: () => () => void;
@@ -38,6 +40,7 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
     let unsupported: ReadonlyMap<string, string> = new Map();
     let active = false;
     let refreshVersion = 0;
+    let refreshedAt = 0;
     const subs = new Set<() => void>();
     const emit = () => subs.forEach((f) => f());
     const refresh = () => {
@@ -47,6 +50,7 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
         if (!active || version !== refreshVersion) return;
         state = s;
         error = null;
+        refreshedAt = Date.now();
         emit();
       }).catch((cause: unknown) => {
         if (!active || version !== refreshVersion) return;
@@ -62,6 +66,7 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
       getActionError: () => actionError,
       getPending: () => pending,
       getUnsupported: () => unsupported,
+      getRefreshedAt: () => refreshedAt,
       clearActionError: () => { actionError = null; emit(); },
       retry: refresh,
       start: () => {
@@ -139,6 +144,24 @@ export function useDispatch() {
 
 export function useAgent(id: string | undefined) {
   return useFloor((s) => s.agents.find((a) => a.id === id));
+}
+
+/**
+ * Re-reads the snapshot every `ms` while the window is visible, for views that must stay live
+ * (Home's agent activity). The core only pushes invalidations for mail and spawns, not for every
+ * log line, so this is what keeps activity current. Mock data never changes, so it does not poll.
+ * Returns when the last snapshot arrived.
+ */
+export function useLiveRefresh(ms: number) {
+  const store = useStore();
+  React.useEffect(() => {
+    if (store.provider.kind !== 'electron') return;
+    const tick = () => { if (document.visibilityState === 'visible') store.retry(); };
+    const timer = window.setInterval(tick, ms);
+    document.addEventListener('visibilitychange', tick);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
+  }, [store, ms]);
+  return React.useSyncExternalStore(store.subscribe, store.getRefreshedAt);
 }
 
 /** Why the core cannot run this command (known up front or learned from an UNSUPPORTED answer), else null. */
