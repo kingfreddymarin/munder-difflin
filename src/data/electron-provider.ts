@@ -6,7 +6,7 @@ import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, Message, Snapshot } from './types';
 
-type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent'>> & { kind: 'electron' };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn'>> & { kind: 'electron' };
 
 const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
 
@@ -53,6 +53,19 @@ async function query<K extends ResultPayload>(command: ParamountCommand, payload
   const value = result?.ok ? result[payload] : undefined;
   if (!value) throw BackendError.local('INTERNAL', missing, command.type);
   return value as NonNullable<Extract<ParamountResult, { ok: true }>[K]>;
+}
+
+/** Sends a command that only acts outside the floor (no snapshot change); any failure becomes a BackendError. */
+async function act(command: ParamountCommand): Promise<void> {
+  const bridge = requireBridge();
+  let result: ParamountResult;
+  try {
+    result = await bridge.paramountDispatch(command);
+  } catch (cause) {
+    throw toBackendError(cause, command.type);
+  }
+  if (isFailure(result)) throw BackendError.fromFailure(result, command.type);
+  if (!result?.ok) throw BackendError.local('INTERNAL', 'The core answered without a result.', command.type);
 }
 
 export function createElectronProvider(): ElectronProvider {
@@ -200,6 +213,12 @@ export function createElectronProvider(): ElectronProvider {
     },
     importAgent(source, id, projectDir): Promise<ParamountAgentImport> {
       return query({ type: 'agents.import', source, id, ...(projectDir ? { projectDir } : {}) }, 'imported', 'The core returned no import result.');
+    },
+    openExternal(url) {
+      return act({ type: 'shell.openExternal', url });
+    },
+    openIn(app, path) {
+      return act({ type: 'shell.openIn', app, path });
     },
     subscribe(listener) {
       listeners.add(listener);

@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import type { Card as CardT, CardStatus } from '@/data/types';
 import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { AgentAvatar } from './agent-avatar';
+import { ExternalLink } from './external-link';
 import { stamp } from './format';
 
 export const columns: { id: CardStatus; label: string; dot: string }[] = [
@@ -108,7 +109,7 @@ export function CardDetail({ card }: { card: CardT }) {
         ))}
       </section>
       {card.links.length > 0 && (
-        <div className="flex flex-wrap gap-3 text-sm">{card.links.map((l) => <a key={l.label} href={l.href} className="text-primary hover:underline">{l.label} ↗</a>)}</div>
+        <div className="flex flex-wrap gap-3 text-sm">{card.links.map((l) => <ExternalLink key={l.label} href={l.href}>{l.label}</ExternalLink>)}</div>
       )}
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground flex-1 text-xs">{card.tokens}M tokens spent on this card</span>

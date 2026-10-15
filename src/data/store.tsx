@@ -156,6 +156,15 @@ export function useAgentImport() {
     : null, [provider]);
 }
 
+/** The provider's link and folder openers; each is null when the provider cannot do it (the control then says why). */
+export function useOpeners() {
+  const { provider } = useStore();
+  return React.useMemo(() => ({
+    openExternal: provider.openExternal?.bind(provider) ?? null,
+    openIn: provider.openIn?.bind(provider) ?? null,
+  }), [provider]);
+}
+
 /** Fetches the redacted `diagnostics.bundle` and puts it on the clipboard. */
 export function useDiagnostics() {
   const { provider } = useStore();

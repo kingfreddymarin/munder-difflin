@@ -48,6 +48,15 @@ export function createMockProvider(): DataProvider {
       if (!agent) throw BackendError.local('NOT_FOUND', `No ${source} agent "${id}" in the sample data.`, 'agents.import');
       return { agent: structuredClone(agent), manifest: { schema: 'munder-difflin/hire@1', name: agent.name, role: agent.description }, adjustments: [] };
     },
+    async openExternal(url) {
+      // The browser preview has no allow-list of its own; it only refuses what is not a web link.
+      if (!/^https?:\/\//i.test(url)) throw BackendError.local('INVALID_INPUT', `Only http and https links open; refused "${url}".`, 'shell.openExternal');
+      // With noopener, window.open always returns null, so there is no success signal to check.
+      window.open(url, '_blank', 'noopener,noreferrer');
+    },
+    async openIn() {
+      throw BackendError.local('UNSUPPORTED', 'Opening a folder in Warp or VS Code needs the desktop core; sample data has none.', 'shell.openIn');
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

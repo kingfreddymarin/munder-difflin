@@ -6,6 +6,7 @@ import { Paperclip } from '@/components/animate-ui/icons/paperclip';
 import { cn } from '@/lib/utils';
 import type { Agent, Message } from '@/data/types';
 import { useDispatch } from '@/data/store';
+import { ExternalLink } from './external-link';
 import { clock } from './format';
 
 export function MessageItem({ m, agents, showNames }: { m: Message; agents: Agent[]; showNames: boolean }) {
@@ -82,9 +83,7 @@ export function MessageItem({ m, agents, showNames }: { m: Message; agents: Agen
       {m.links && (
         <div className="flex flex-wrap gap-3 text-sm">
           {m.links.map((l) => (
-            <a key={l.label} href={l.href} className="text-primary hover:underline">
-              {l.label} ↗
-            </a>
+            <ExternalLink key={l.label} href={l.href}>{l.label}</ExternalLink>
           ))}
         </div>
       )}
