@@ -1,19 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
+// Compile the provider and its relative imports, then add the `.js` extension Node's ESM loader needs.
 const outputDir = mkdtempSync(join(tmpdir(), 'paramount-provider-test-'));
 execFileSync('node_modules/.bin/tsc', [
   '--ignoreConfig', '--outDir', outputDir, '--target', 'ES2022', '--module', 'ESNext', '--moduleResolution', 'Bundler',
   '--skipLibCheck', 'src/data/electron-api.d.ts', 'src/data/electron-provider.ts',
 ]);
-const compiled = readFileSync(join(outputDir, 'electron-provider.js'));
+for (const file of readdirSync(outputDir).filter((name) => name.endsWith('.js'))) {
+  const path = join(outputDir, file);
+  writeFileSync(path, readFileSync(path, 'utf8').replace(/from '(\.\/[^']+)'/g, "from '$1.js'"));
+}
+const { createElectronProvider } = await import(pathToFileURL(join(outputDir, 'electron-provider.js')).href);
+const { BackendError, toBackendError } = await import(pathToFileURL(join(outputDir, 'errors.js')).href);
 rmSync(outputDir, { recursive: true });
-const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`;
-const { createElectronProvider } = await import(moduleUrl);
 
 function nativeSnapshot() {
   return {
@@ -31,7 +36,9 @@ function bridge(snapshot = nativeSnapshot()) {
   return {
     sent,
     paramountSnapshot: async () => snapshot,
-    paramountDispatch: async () => ({ ok: false, error: 'Unsupported command' }),
+    paramountDispatch: async (command) => command.type === 'diagnostics.bundle'
+      ? { ok: true, event: { id: 'e1', at: '', actor: 'you', command }, diagnostics: { generatedAt: 'now', correlationId: 'c1', app: {}, os: {}, config: {}, logTail: [], crashes: [], errors: [] } }
+      : { ok: false, errorId: 'err-7', code: 'UNSUPPORTED', message: 'Unsupported command', error: 'Unsupported command', correlationId: 'c7' },
     onParamountEvent: (listener) => { notify = listener; return () => { notify = () => {}; }; },
     emit: (event) => notify(event),
     hiveSend: async (message, from) => { sent.push({ message, from }); return { ok: true }; },
@@ -77,4 +84,35 @@ test('push invalidation triggers a fresh snapshot request', async () => {
   off();
   api.emit({ kind: 'invalidate', source: 'hive', at: new Date().toISOString() });
   assert.equal(count, 1);
+});
+
+test('core failures keep their errorId and code', async () => {
+  const api = bridge();
+  globalThis.window = { cth: api };
+  const provider = createElectronProvider();
+  const failure = await provider.dispatch({ type: 'floor.yolo', patch: { on: true } }).catch((error) => error);
+  assert.ok(failure instanceof BackendError);
+  assert.deepEqual([failure.errorId, failure.code, failure.operation], ['err-7', 'UNSUPPORTED', 'floor.yolo']);
+});
+
+test('a missing bridge is DISCONNECTED with a ui- errorId', async () => {
+  globalThis.window = {};
+  const failure = await createElectronProvider().snapshot().catch((error) => error);
+  assert.equal(failure.code, 'DISCONNECTED');
+  assert.match(failure.errorId, /^ui-/);
+});
+
+test('prefers window.paramount and parses rejected snapshots', async () => {
+  const api = bridge();
+  api.paramountSnapshot = async () => { throw new Error("Error invoking remote method 'x': Error: [err-9] INTERNAL: disk full"); };
+  globalThis.window = { paramount: api, cth: bridge() };
+  const failure = await createElectronProvider().snapshot().catch((error) => error);
+  assert.deepEqual([failure.errorId, failure.code, failure.message], ['err-9', 'INTERNAL', 'disk full']);
+  assert.equal(toBackendError('plain').code, 'INTERNAL');
+});
+
+test('diagnostics calls diagnostics.bundle', async () => {
+  globalThis.window = { cth: bridge() };
+  const bundle = await createElectronProvider().diagnostics();
+  assert.equal(bundle.correlationId, 'c1');
 });

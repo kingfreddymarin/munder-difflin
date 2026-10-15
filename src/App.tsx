@@ -3,6 +3,7 @@ import { TooltipProvider } from '@/components/animate-ui/components/animate/tool
 import { FloorProvider } from '@/data/store';
 import { createMockProvider } from '@/data/mock-provider';
 import { createElectronProvider } from '@/data/electron-provider';
+import { findBridge } from '@/data/bridge';
 import { RouterProvider, useRouter } from '@/app/router';
 import { AppShell } from '@/app/app-shell';
 import { mainNav, footerNav } from '@/config/navigation';
@@ -14,8 +15,8 @@ import { TerminalPage } from '@/pages/terminal';
 import { HealthPage } from '@/pages/health';
 import { SettingsPage } from '@/pages/settings';
 
-// Swap this for the WebSocket provider when the core is running; nothing else changes.
-const provider = typeof window !== 'undefined' && window.cth ? createElectronProvider() : createMockProvider();
+// The real core when the Electron preload is present (window.paramount, or the fork's window.cth); fixtures otherwise.
+const provider = findBridge() ? createElectronProvider() : createMockProvider();
 
 const pages = { home: HomePage, chats: ChatsPage, board: BoardPage, team: TeamPage, terminal: TerminalPage, health: HealthPage, settings: SettingsPage };
 
