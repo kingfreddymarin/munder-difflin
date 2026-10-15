@@ -107,3 +107,20 @@
     font-family: var(--font-sans);
   }
 }
+
+/* Window chrome. The desktop window uses titleBarStyle 'hiddenInset': there is no OS title bar, so the
+   app marks its own drag regions. Controls inside a drag region must opt out or they stop taking clicks. */
+@custom-variant desktop-mac (&:where([data-desktop='mac'] *));
+
+@utility app-drag {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+@utility app-no-drag {
+  -webkit-app-region: no-drag;
+}
+@layer base {
+  .app-drag :is(button, a, input, textarea, select, label, [role='button'], [role='tab'], [role='menuitem'], [role='switch'], [contenteditable='true']) {
+    -webkit-app-region: no-drag;
+  }
+}
