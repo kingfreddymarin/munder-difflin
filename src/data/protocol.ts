@@ -1,6 +1,6 @@
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
-import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics } from './paramount-api';
+import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountHirePlan, ParamountTeamModels } from './paramount-api';
 import type { Access, Agent, CardStatus, IterationSettings, Snapshot, YoloSettings } from './types';
 
 export type Command =
@@ -8,6 +8,8 @@ export type Command =
   | { type: 'question.answer'; messageId: string; option: string }
   | { type: 'notification.act'; notificationId: string; action: string }
   | { type: 'card.move'; key: string; status: CardStatus }
+  /** `key` is not sent: the core picks it and the provider puts it on the event. */
+  | { type: 'card.create'; title: string; description?: string; assignee?: string; priority?: 1 | 2 | 3; status?: 'todo' | 'blocked'; key?: string }
   | { type: 'automation.toggle'; id: string; enabled: boolean }
   | { type: 'access.set'; agentId: string; sourceId: string; access: Access }
   | { type: 'agent.update'; agentId: string; patch: Partial<Pick<Agent, 'name' | 'color' | 'model' | 'engine' | 'tokensCap' | 'persona' | 'tone' | 'autonomy' | 'yolo'>> }
@@ -47,4 +49,8 @@ export interface DataProvider {
   discoverAgents?(options?: { sources?: ParamountAgentSource[]; projectDir?: string }): Promise<ParamountAgentDiscovery>;
   /** Imports one discovered agent through the hire path; the human confirms the spawn in the Add-Agent form. */
   importAgent?(source: ParamountAgentSource, id: string, projectDir?: string): Promise<ParamountAgentImport>;
+  /** Models per engine, the default model and each agent's pick (`team.models`). */
+  teamModels?(): Promise<ParamountTeamModels>;
+  /** The Add-Agent hire: without `confirm` it returns the spawn plan for review; with it the agent starts in a visible terminal. */
+  hire?(manifest: Record<string, unknown>, options?: { cwd?: string; confirm?: boolean }): Promise<ParamountHirePlan>;
 }

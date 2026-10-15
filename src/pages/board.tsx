@@ -15,6 +15,7 @@ import { useFloor } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { Card as CardT } from '@/data/types';
+import { NewCardDialog } from '@/features/team/new-card-dialog';
 
 function BoardCard({ card, onOpen }: { card: CardT; onOpen: () => void }) {
   const agent = useFloor((s) => s.agents.find((a) => a.id === card.agentId));
@@ -44,13 +45,14 @@ export function BoardPage() {
   const { route, go } = useRouter();
   const [view, setView] = React.useState('columns');
   const [agent, setAgent] = React.useState('all');
+  const [creating, setCreating] = React.useState(false);
   const open = cards.find((c) => c.key === route.params.get('card'));
   const visible = React.useMemo(() => cards.filter((c) => agent === 'all' || c.agentId === agent), [cards, agent]);
   const openCard = (key: string) => go('board', { card: key });
 
   return (
     <>
-      <PageHeader title="Board" description="The single list of work. Agents read their card’s plan every turn and tick steps as they go." actions={<Button>New card</Button>} />
+      <PageHeader title="Board" description="The single list of work. Agents read their card’s plan every turn and tick steps as they go." actions={<Button onClick={() => setCreating(true)}>New card</Button>} />
       <div className="flex flex-wrap items-center gap-3">
         <Tabs value={view} onValueChange={setView}>
           <TabsList>
@@ -111,6 +113,7 @@ export function BoardPage() {
           )}
         </DialogContent>
       </Dialog>
+      <NewCardDialog open={creating} onClose={() => setCreating(false)} />
     </>
   );
 }

@@ -156,6 +156,14 @@ export function useAgentImport() {
     : null, [provider]);
 }
 
+/** The provider's Team calls (model catalog, Add-Agent hire), or null when it has none. */
+export function useTeamApi() {
+  const { provider } = useStore();
+  return React.useMemo(() => provider.teamModels && provider.hire
+    ? { models: provider.teamModels.bind(provider), hire: provider.hire.bind(provider) }
+    : null, [provider]);
+}
+
 /** Fetches the redacted `diagnostics.bundle` and puts it on the clipboard. */
 export function useDiagnostics() {
   const { provider } = useStore();

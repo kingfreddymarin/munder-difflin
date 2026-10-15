@@ -3,7 +3,7 @@
 import { BackendError } from './errors';
 import { agentDiscovery, fixtures } from './fixtures';
 import type { Command, DataProvider, FloorEvent } from './protocol';
-import { applyEvent } from './reducer';
+import { applyEvent, nextCardKey } from './reducer';
 import type { Snapshot } from './types';
 
 const KEY = 'paramount.mock.events.v1';
@@ -27,12 +27,14 @@ export function createMockProvider(): DataProvider {
   const listeners = new Set<(e: FloorEvent) => void>();
   let events = loadEvents();
   let seq = events.length;
+  const current = () => events.reduce(applyEvent, structuredClone(fixtures));
   return {
     kind: 'mock',
     async snapshot(): Promise<Snapshot> {
-      return events.reduce(applyEvent, structuredClone(fixtures));
+      return current();
     },
-    async dispatch(command: Command) {
+    async dispatch(input: Command) {
+      const command: Command = input.type === 'card.create' ? { ...input, key: nextCardKey(current().cards.map((card) => card.key)) } : input;
       const event: FloorEvent = { id: `ev-${Date.now()}-${++seq}`, at: new Date().toISOString(), actor: 'you', command };
       events = [...events, event];
       saveEvents(events);
@@ -47,6 +49,28 @@ export function createMockProvider(): DataProvider {
       const agent = agentDiscovery.agents.find((item) => item.source === source && item.id === id);
       if (!agent) throw BackendError.local('NOT_FOUND', `No ${source} agent "${id}" in the sample data.`, 'agents.import');
       return { agent: structuredClone(agent), manifest: { schema: 'munder-difflin/hire@1', name: agent.name, role: agent.description }, adjustments: [] };
+    },
+    async teamModels() {
+      const s = current();
+      const byName = new Map(s.engines.map((engine) => [engine.name, engine.id]));
+      return {
+        engines: s.engines.map((engine) => ({ id: engine.id, label: engine.name, models: engine.models.map((model) => ({ id: model, label: model })) })),
+        defaultModel: s.engines[0]?.defaultModel,
+        agents: Object.fromEntries(s.agents.map((agent) => [agent.id, { engine: byName.get(agent.engine) ?? agent.engine, model: agent.model || undefined }])),
+      };
+    },
+    async hire(manifest, options = {}) {
+      const name = typeof manifest.name === 'string' ? manifest.name.trim() : '';
+      if (!name) throw BackendError.local('INVALID_INPUT', 'The hire form is not valid: "name" is required', 'agent.hire');
+      if (options.confirm) throw BackendError.local('UNSUPPORTED', 'Sample data cannot start an agent; connect the desktop core to hire.', 'agent.hire');
+      const engine = typeof manifest.provider === 'string' ? manifest.provider : 'claude';
+      const model = typeof manifest.model === 'string' && manifest.model ? manifest.model : undefined;
+      return {
+        agentId: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name, engine, ...(model ? { model } : {}),
+        ...(typeof manifest.description === 'string' ? { role: manifest.description } : {}),
+        cwd: options.cwd ?? '(sample folder)', isolate: manifest.isolate === true,
+        command: [engine, ...(model ? ['--model', model] : [])].join(' '), engineInstalled: true, confirmed: false, consentRequired: [], ignored: [],
+      };
     },
     subscribe(listener) {
       listeners.add(listener);
