@@ -60,6 +60,10 @@ export interface Message {
   meta?: string;
   rows?: { label: string; ok: boolean; detail: string }[];
   links?: { label: string; href: string }[];
+  /** Recipient agent id when one agent wrote to another (lane e-terminal: agent-to-agent view). */
+  to?: string;
+  /** Hive act: request, inform, query, done… */
+  act?: string;
 }
 
 export type NotificationKind = 'question' | 'approval' | 'suggestion' | 'alert';

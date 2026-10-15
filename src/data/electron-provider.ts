@@ -1,12 +1,12 @@
 // The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
 import { findBridge, requireBridge } from './bridge';
-import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountRawSnapshot, ParamountResult } from './electron-api';
+import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountArtifactMap, ParamountCommand, ParamountDiagnostics, ParamountRawSnapshot, ParamountResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, Message, Snapshot } from './types';
 
-type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent'>> & { kind: 'electron' };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'artifacts' | 'openIn'>> & { kind: 'electron' };
 
 const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
 
@@ -38,7 +38,7 @@ function status(value: string, breaker: string): Agent['status'] {
   return 'idle';
 }
 
-type ResultPayload = 'diagnostics' | 'discovery' | 'imported';
+type ResultPayload = 'diagnostics' | 'discovery' | 'imported' | 'artifacts';
 
 /** Sends a command whose answer is a payload on the result rather than a floor event. */
 async function query<K extends ResultPayload>(command: ParamountCommand, payload: K, missing: string): Promise<NonNullable<Extract<ParamountResult, { ok: true }>[K]>> {
@@ -117,7 +117,7 @@ export function createElectronProvider(): ElectronProvider {
         id: string(item.id), chatId: `agent:${string(item.owner)}`, from: string(item.from) === 'human' ? 'you' : string(item.from),
         at: date(item.created_at), kind: item.requires_reply ? 'question' : 'text',
         text: [string(item.subject), string(item.body)].filter(Boolean).join('\n\n'),
-        read: item.archived === true,
+        read: item.archived === true, to: string(item.to) || undefined, act: string(item.act) || undefined,
       }));
       const questions: Message[] = tasks.flatMap((task) => array(task.humanQA).map((item, index) => ({
         id: `${string(task.id)}:${index}`, chatId: `agent:${agentIds.has(string(task.assignee)) ? string(task.assignee) : string(registry.godId)}`,
@@ -200,6 +200,20 @@ export function createElectronProvider(): ElectronProvider {
     },
     importAgent(source, id, projectDir): Promise<ParamountAgentImport> {
       return query({ type: 'agents.import', source, id, ...(projectDir ? { projectDir } : {}) }, 'imported', 'The core returned no import result.');
+    },
+    artifacts(agentId): Promise<ParamountArtifactMap> {
+      return query({ type: 'terminal.artifacts', agentId }, 'artifacts', 'The core returned no artifact map.');
+    },
+    async openIn(app, path) {
+      const operation = 'shell.openIn';
+      let result: ParamountResult;
+      try {
+        result = await requireBridge().paramountDispatch({ type: 'shell.openIn', app, path });
+      } catch (cause) {
+        throw toBackendError(cause, operation);
+      }
+      if (isFailure(result)) throw BackendError.fromFailure(result, operation);
+      if (!result?.ok) throw BackendError.local('INTERNAL', 'The core answered without a result.', operation);
     },
     subscribe(listener) {
       listeners.add(listener);

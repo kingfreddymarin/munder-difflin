@@ -4,6 +4,7 @@ import { BackendError } from './errors';
 import { agentDiscovery, fixtures } from './fixtures';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import { applyEvent } from './reducer';
+import { artifactMaps } from './terminal-fixtures';
 import type { Snapshot } from './types';
 
 const KEY = 'paramount.mock.events.v1';
@@ -47,6 +48,14 @@ export function createMockProvider(): DataProvider {
       const agent = agentDiscovery.agents.find((item) => item.source === source && item.id === id);
       if (!agent) throw BackendError.local('NOT_FOUND', `No ${source} agent "${id}" in the sample data.`, 'agents.import');
       return { agent: structuredClone(agent), manifest: { schema: 'munder-difflin/hire@1', name: agent.name, role: agent.description }, adjustments: [] };
+    },
+    async artifacts(agentId) {
+      const map = artifactMaps[agentId];
+      if (!map) throw BackendError.local('NOT_FOUND', `No sample artifacts for "${agentId}".`, 'terminal.artifacts');
+      return structuredClone(map);
+    },
+    async openIn() {
+      throw BackendError.local('UNSUPPORTED', 'The browser preview cannot open Warp or VS Code; run the desktop app.', 'shell.openIn');
     },
     subscribe(listener) {
       listeners.add(listener);

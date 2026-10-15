@@ -1,6 +1,6 @@
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
-import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics } from './paramount-api';
+import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountArtifactMap, ParamountDiagnostics, ParamountOpenInApp } from './paramount-api';
 import type { Access, Agent, CardStatus, IterationSettings, Snapshot, YoloSettings } from './types';
 
 export type Command =
@@ -47,4 +47,8 @@ export interface DataProvider {
   discoverAgents?(options?: { sources?: ParamountAgentSource[]; projectDir?: string }): Promise<ParamountAgentDiscovery>;
   /** Imports one discovered agent through the hire path; the human confirms the spawn in the Add-Agent form. */
   importAgent?(source: ParamountAgentSource, id: string, projectDir?: string): Promise<ParamountAgentImport>;
+  /** Lane e-terminal: what one agent touched (git changes/commits in its cwd, paths and links it sent). Read-only. */
+  artifacts?(agentId: string): Promise<ParamountArtifactMap>;
+  /** Opens an existing absolute directory in Warp or VS Code (lane a-shell's `shell.openIn`). */
+  openIn?(app: ParamountOpenInApp, path: string): Promise<void>;
 }
