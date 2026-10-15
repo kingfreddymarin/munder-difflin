@@ -10,6 +10,7 @@ import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
+import { dispatchParamount } from './paramount';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
@@ -238,9 +239,21 @@ const hive = new HiveManager(
   (channel, payload) => {
     const wc = liveWebContents();
     if (!wc) return false;
-    try { wc.send(channel, payload); return true; } catch { return false; }
+    try {
+      wc.send(channel, payload);
+      if (channel === 'hive:message' || channel === 'hive:agentSpawned' || channel === 'hive:agentArchived') {
+        broadcastParamountInvalidation(channel);
+      }
+      return true;
+    } catch { return false; }
   }
 );
+function broadcastParamountInvalidation(source: string): void {
+  const update = { kind: 'invalidate' as const, at: new Date().toISOString(), source };
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', update);
+  }
+}
 // #7C — operator control state (pause/gate/steer/halt), read by the HookServer
 // when deciding hook returns.
 const control = new ControlRegistry();
@@ -3476,6 +3489,47 @@ ipcMain.handle('roster:read', () => roster.read());
 ipcMain.handle('roster:write', (_evt, snap: unknown) => roster.write(snap));
 
 // ─── IPC: hive (multi-agent coordination) ───────────────────────────────────
+/** Paramount UI preferences that have no existing fork owner. Kept beside the
+ *  hive, written atomically; no account secret or access grant is stored here. */
+function paramountPreferences(): Record<string, unknown> {
+  const root = hive.root();
+  if (!root) return {};
+  const path = join(root, 'paramount-preferences.json');
+  if (!existsSync(path)) return {};
+  const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Paramount preferences are corrupt');
+  return parsed as Record<string, unknown>;
+}
+function saveParamountPreference(key: 'profile' | 'setup', value: Record<string, unknown>): void {
+  const root = hive.root();
+  if (!root) throw new Error('hive disabled (no harnessHome)');
+  hive.ensureHive();
+  const path = join(root, 'paramount-preferences.json');
+  const current = paramountPreferences();
+  const next = { ...current, [key]: { ...(current[key] as Record<string, unknown> | undefined), ...value } };
+  const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+  renameSync(tmp, path);
+}
+ipcMain.handle('paramount:snapshot', () => ({
+  registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
+  log: hive.logTail(500), roster: roster.read(),
+  config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode },
+  missions: readConfig().missions ?? [], ptys: ptyManager.list(), preferences: paramountPreferences()
+}));
+ipcMain.handle('paramount:dispatch', (_evt, command: unknown) => dispatchParamount(command, {
+  tasks: () => hive.tasks() as { tasks?: HiveTask[] },
+  patchTask: (id, patch) => hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>),
+  missions: () => readConfig().missions ?? [],
+  saveMissions: (missions) => { writeConfig({ missions }); syncMissions(); },
+  agents: () => hive.registry().agents,
+  renameAgent: (id, name) => hive.renameAgent(id, name),
+  setAgentTokenCap: (id, cap) => { setAgentTokenCap(id, cap); },
+  setNotifications: (on) => { writeConfig({ notifications: on }); },
+  savePreference: saveParamountPreference,
+  appendEvent: (event) => hive.appendLog({ kind: 'paramount-command', ...event }),
+  publish: (event) => { for (const window of BrowserWindow.getAllWindows()) window.webContents.send('paramount:event', event); }
+}));
 ipcMain.handle('hive:registry', () => hive.registry());
 ipcMain.handle('hive:renameAgent', (_evt, id: unknown, name: unknown) => {
   if (typeof id !== 'string' || typeof name !== 'string') {
@@ -3524,7 +3578,9 @@ ipcMain.handle('hive:patchTask', (_evt, id: unknown, patch: unknown) => {
     return { ok: false, error: 'invalid task patch' };
   }
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
-  return { ok: hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>) };
+  const ok = hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>);
+  if (ok) broadcastParamountInvalidation('hive:patchTask');
+  return { ok };
 });
 ipcMain.handle('hive:deleteTask', (_evt, id: unknown) => {
   if (typeof id !== 'string' || !id) return { ok: false, error: 'invalid task id' };
@@ -5473,6 +5529,7 @@ onConfigWritten((config) => {
     if (w.isDestroyed() || w.webContents.isDestroyed()) continue;
     w.webContents.send('config:changed', config);
   }
+  broadcastParamountInvalidation('config:changed');
 });
 
 app.on('window-all-closed', () => {
