@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { isAbsolute } from 'node:path';
 import type { ScheduledMission } from './config';
-import type { ParamountDiagnostics, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand, ParamountPrereqReport } from '../preload/paramount';
+import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand, ParamountPrereqReport, ParamountSourceWarning } from '../preload/paramount';
 import { createSpan, type Span } from './paramountObservability';
+import { AGENT_SOURCES, discoverAgents, findAgents, toHireManifest, type AgentSourceRoots } from './agentSources';
+import type { HireManifest } from '../shared/hire';
 
 export interface ParamountDeps {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -41,6 +44,12 @@ export interface ParamountDeps {
   };
   /** One audit line per step of a prerequisite action, tagged with the correlation id. */
   logStep?(step: Record<string, unknown>): void;
+  /** Read-only agent discovery (agentSources.ts). `roots` resolves the source
+   *  dirs; `deliverHire` opens the Add-Agent form pre-filled and never spawns. */
+  agentSources?: {
+    roots(): AgentSourceRoots;
+    deliverHire(manifest: HireManifest): void;
+  };
 }
 
 export interface ParamountPrereqPlan {
@@ -90,6 +99,13 @@ function id(value: unknown): value is string {
 function onlyKeys(command: Record<string, unknown>, allowed: string[]): boolean {
   return Object.keys(command).every((key) => allowed.includes(key));
 }
+function agentSource(value: unknown): value is ParamountAgentSource {
+  return typeof value === 'string' && (AGENT_SOURCES as readonly string[]).includes(value);
+}
+/** projectDir is optional; when given it must be an absolute path. */
+function projectDir(value: unknown): value is string | undefined {
+  return value === undefined || (id(value) && value.length <= 4096 && isAbsolute(value));
+}
 function text(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= 10_000;
 }
@@ -104,6 +120,13 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
   let writeAttempted = false;
   let diagnostics: ParamountDiagnostics | undefined;
   let prereq: ParamountPrereqReport | undefined;
+  let discovery: ParamountAgentDiscovery | undefined;
+  let imported: ParamountAgentImport | undefined;
+  // Every unreadable or malformed source file is logged under its own errorId,
+  // the same one returned to the caller in `warnings`.
+  const logWarnings = (warnings: ParamountSourceWarning[]) => {
+    for (const w of warnings) deps.logStep?.({ kind: 'paramount-agent-source', cid: span.cid, errorId: w.errorId, path: w.path, message: w.message });
+  };
   try {
     switch (command.type) {
       case 'question.answer':
@@ -293,6 +316,37 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         prereq = { ...report, ptyId: started.ptyId };
         break;
       }
+      case 'agents.discover': {
+        const sources = command.sources;
+        if (!onlyKeys(command, ['type', 'sources', 'projectDir']) || !projectDir(command.projectDir)
+          || (sources !== undefined && (!Array.isArray(sources) || sources.length > AGENT_SOURCES.length || !sources.every(agentSource)))) {
+          return fail('INVALID_INPUT', `Invalid agent discovery; sources is a list of ${AGENT_SOURCES.join(', ')} and projectDir an absolute path`);
+        }
+        if (!deps.agentSources) return fail('UNSUPPORTED', 'Agent discovery is not available in this build');
+        discovery = discoverAgents(deps.agentSources.roots(), { sources: sources as ParamountAgentSource[] | undefined, projectDir: command.projectDir as string | undefined });
+        logWarnings([...discovery.warnings, ...discovery.agents.flatMap((a) => a.warnings)]);
+        break;
+      }
+      case 'agents.import': {
+        if (!onlyKeys(command, ['type', 'source', 'id', 'projectDir']) || !agentSource(command.source) || !id(command.id) || !projectDir(command.projectDir)) {
+          return fail('INVALID_INPUT', `Invalid agent import; source is one of ${AGENT_SOURCES.join(', ')}, id comes from agents.discover`);
+        }
+        if (!deps.agentSources) return fail('UNSUPPORTED', 'Agent import is not available in this build');
+        const scan = findAgents(deps.agentSources.roots(), { sources: [command.source], projectDir: command.projectDir as string | undefined });
+        const found = scan.found.find((f) => f.agent.id === command.id);
+        if (!found) {
+          logWarnings(scan.warnings);
+          return fail('NOT_FOUND', `No ${command.source} agent "${command.id}"; run agents.discover again (pass the same projectDir for project agents)`);
+        }
+        const warnings: ParamountSourceWarning[] = [...found.agent.warnings];
+        const hire = toHireManifest(found, warnings);
+        logWarnings(warnings);
+        if (!hire.ok || !hire.manifest) return fail('INVALID_INPUT', `Agent cannot be expressed as a hire manifest: ${hire.errors.join('; ')}`);
+        writeAttempted = true;
+        deps.agentSources.deliverHire(hire.manifest);
+        imported = { agent: { ...found.agent, warnings }, manifest: hire.manifest as unknown as Record<string, unknown>, adjustments: hire.adjustments };
+        break;
+      }
       case 'layout.panels':
         return fail('UNSUPPORTED', 'Team panel layout is a renderer-local preference');
       default:
@@ -301,7 +355,8 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
     const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as ParamountCommand, correlationId: span.cid };
     deps.appendEvent(event);
     deps.publish(event);
-    return { ok: true, event, ...(diagnostics ? { diagnostics } : {}), ...(prereq ? { prereq } : {}) };
+    return { ok: true, event, ...(diagnostics ? { diagnostics } : {}), ...(prereq ? { prereq } : {}),
+      ...(discovery ? { discovery } : {}), ...(imported ? { imported } : {}) };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Command failed';
     return writeAttempted
