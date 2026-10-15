@@ -38,6 +38,12 @@ function bridge(snapshot = nativeSnapshot()) {
     paramountSnapshot: async () => snapshot,
     paramountDispatch: async (command) => command.type === 'diagnostics.bundle'
       ? { ok: true, event: { id: 'e1', at: '', actor: 'you', command }, diagnostics: { generatedAt: 'now', correlationId: 'c1', app: {}, os: {}, config: {}, logTail: [], crashes: [], errors: [] } }
+      : command.type === 'agents.discover'
+      ? { ok: true, event: { id: 'e2', at: '', actor: 'you', command }, discovery: { agents: [{ source: 'claude', id: 'rev', name: 'Reviewer', description: '', instructionsPath: 'x', origin: 'user', warnings: [] }], warnings: [], roots: { claude: [], codex: [], munder: [] } } }
+      : command.type === 'agents.import' && command.id === 'rev'
+      ? { ok: true, event: { id: 'e3', at: '', actor: 'you', command }, imported: { agent: { id: 'rev' }, manifest: {}, adjustments: [] } }
+      : command.type === 'agents.import'
+      ? { ok: false, errorId: 'err-404', code: 'NOT_FOUND', message: 'No such agent', error: 'No such agent', correlationId: 'c8' }
       : { ok: false, errorId: 'err-7', code: 'UNSUPPORTED', message: 'Unsupported command', error: 'Unsupported command', correlationId: 'c7' },
     onParamountEvent: (listener) => { notify = listener; return () => { notify = () => {}; }; },
     emit: (event) => notify(event),
@@ -115,4 +121,23 @@ test('diagnostics calls diagnostics.bundle', async () => {
   globalThis.window = { cth: bridge() };
   const bundle = await createElectronProvider().diagnostics();
   assert.equal(bundle.correlationId, 'c1');
+});
+
+test('agents.discover and agents.import return their payloads and keep core errorIds', async () => {
+  globalThis.window = { cth: bridge() };
+  const provider = createElectronProvider();
+  const discovery = await provider.discoverAgents({ sources: ['claude'] });
+  assert.equal(discovery.agents[0].id, 'rev');
+  const imported = await provider.importAgent('claude', 'rev');
+  assert.equal(imported.agent.id, 'rev');
+  const failure = await provider.importAgent('claude', 'nope').catch((error) => error);
+  assert.deepEqual([failure.errorId, failure.code, failure.operation], ['err-404', 'NOT_FOUND', 'agents.import']);
+});
+
+test('a result without its payload is an INTERNAL error, not undefined', async () => {
+  const api = bridge();
+  api.paramountDispatch = async (command) => ({ ok: true, event: { id: 'e', at: '', actor: 'you', command } });
+  globalThis.window = { cth: api };
+  const failure = await createElectronProvider().discoverAgents().catch((error) => error);
+  assert.deepEqual([failure.code, failure.operation], ['INTERNAL', 'agents.discover']);
 });

@@ -1,6 +1,7 @@
 // In-browser stand-in for the core. Same interface as the real WebSocket provider:
 // commands in, events out. Events are kept in localStorage so your changes survive a reload.
-import { fixtures } from './fixtures';
+import { BackendError } from './errors';
+import { agentDiscovery, fixtures } from './fixtures';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import { applyEvent } from './reducer';
 import type { Snapshot } from './types';
@@ -37,6 +38,15 @@ export function createMockProvider(): DataProvider {
       saveEvents(events);
       listeners.forEach((l) => l(event));
       return event;
+    },
+    async discoverAgents(options = {}) {
+      const wanted = options.sources;
+      return { ...structuredClone(agentDiscovery), agents: agentDiscovery.agents.filter((agent) => !wanted || wanted.includes(agent.source)) };
+    },
+    async importAgent(source, id) {
+      const agent = agentDiscovery.agents.find((item) => item.source === source && item.id === id);
+      if (!agent) throw BackendError.local('NOT_FOUND', `No ${source} agent "${id}" in the sample data.`, 'agents.import');
+      return { agent: structuredClone(agent), manifest: { schema: 'munder-difflin/hire@1', name: agent.name, role: agent.description }, adjustments: [] };
     },
     subscribe(listener) {
       listeners.add(listener);

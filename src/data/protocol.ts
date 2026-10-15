@@ -1,6 +1,6 @@
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
-import type { ParamountDiagnostics } from './paramount-api';
+import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics } from './paramount-api';
 import type { Access, Agent, CardStatus, IterationSettings, Snapshot, YoloSettings } from './types';
 
 export type Command =
@@ -43,4 +43,8 @@ export interface DataProvider {
   unsupported?(command: Command): string | null;
   /** Redacted support bundle. Absent when the provider cannot produce one. */
   diagnostics?(): Promise<ParamountDiagnostics>;
+  /** Read-only list of agents defined in Claude Code, Codex and Munder setups. Absent when the provider cannot scan disk. */
+  discoverAgents?(options?: { sources?: ParamountAgentSource[]; projectDir?: string }): Promise<ParamountAgentDiscovery>;
+  /** Imports one discovered agent through the hire path; the human confirms the spawn in the Add-Agent form. */
+  importAgent?(source: ParamountAgentSource, id: string, projectDir?: string): Promise<ParamountAgentImport>;
 }

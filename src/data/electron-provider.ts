@@ -1,12 +1,12 @@
 // The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
 import { findBridge, requireBridge } from './bridge';
-import type { ParamountCommand, ParamountDiagnostics, ParamountRawSnapshot } from './electron-api';
+import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountRawSnapshot, ParamountResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, Message, Snapshot } from './types';
 
-type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported'>> & { kind: 'electron' };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent'>> & { kind: 'electron' };
 
 const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
 
@@ -36,6 +36,23 @@ function status(value: string, breaker: string): Agent['status'] {
   if (value === 'blocked' || value === 'waiting') return 'waiting';
   if (value === 'crashed' || value === 'error') return 'crashed';
   return 'idle';
+}
+
+type ResultPayload = 'diagnostics' | 'discovery' | 'imported';
+
+/** Sends a command whose answer is a payload on the result rather than a floor event. */
+async function query<K extends ResultPayload>(command: ParamountCommand, payload: K, missing: string): Promise<NonNullable<Extract<ParamountResult, { ok: true }>[K]>> {
+  const bridge = requireBridge();
+  let result: ParamountResult;
+  try {
+    result = await bridge.paramountDispatch(command);
+  } catch (cause) {
+    throw toBackendError(cause, command.type);
+  }
+  if (isFailure(result)) throw BackendError.fromFailure(result, command.type);
+  const value = result?.ok ? result[payload] : undefined;
+  if (!value) throw BackendError.local('INTERNAL', missing, command.type);
+  return value as NonNullable<Extract<ParamountResult, { ok: true }>[K]>;
 }
 
 export function createElectronProvider(): ElectronProvider {
@@ -175,17 +192,14 @@ export function createElectronProvider(): ElectronProvider {
       emit(event);
       return event;
     },
-    async diagnostics(): Promise<ParamountDiagnostics> {
-      const bridge = requireBridge();
-      let result;
-      try {
-        result = await bridge.paramountDispatch({ type: 'diagnostics.bundle' });
-      } catch (cause) {
-        throw toBackendError(cause, 'diagnostics.bundle');
-      }
-      if (isFailure(result)) throw BackendError.fromFailure(result, 'diagnostics.bundle');
-      if (!result?.ok || !result.diagnostics) throw BackendError.local('INTERNAL', 'The core returned no diagnostics bundle.', 'diagnostics.bundle');
-      return result.diagnostics;
+    diagnostics(): Promise<ParamountDiagnostics> {
+      return query({ type: 'diagnostics.bundle' }, 'diagnostics', 'The core returned no diagnostics bundle.');
+    },
+    discoverAgents(options = {}): Promise<ParamountAgentDiscovery> {
+      return query({ type: 'agents.discover', ...options }, 'discovery', 'The core returned no agent list.');
+    },
+    importAgent(source, id, projectDir): Promise<ParamountAgentImport> {
+      return query({ type: 'agents.import', source, id, ...(projectDir ? { projectDir } : {}) }, 'imported', 'The core returned no import result.');
     },
     subscribe(listener) {
       listeners.add(listener);

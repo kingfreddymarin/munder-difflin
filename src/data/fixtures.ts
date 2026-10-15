@@ -1,4 +1,5 @@
 // Sample data for the mock provider. A real provider reads the hive, the engines' transcripts and az.
+import type { ParamountAgentDiscovery } from './paramount-api';
 import type { Access, Snapshot } from './types';
 
 const t = (hhmm: string, day = '2026-10-14') => `${day}T${hhmm}:00-06:00`;
@@ -200,4 +201,19 @@ export const fixtures: Snapshot = {
   audit: [
     { id: 'au1', at: t('23:31'), action: 'Sent a priority message', target: 'Paramount', detail: 'Get the Compute Fabric macOS DMG to signed parity…', contextFor: ['pm'] },
   ],
+};
+
+// What `agents.discover` returns on a machine with one agent per source and one unreadable file.
+export const agentDiscovery: ParamountAgentDiscovery = {
+  agents: [
+    { source: 'claude', id: 'code-reviewer', name: 'Code reviewer', description: 'Reviews diffs for correctness and test gaps before a PR goes up.',
+      model: 'opus', tools: ['Read', 'Grep', 'Bash'], instructionsPath: '~/.claude/agents/code-reviewer.md', origin: 'user', warnings: [] },
+    { source: 'codex', id: 'release-notes', name: 'Release notes', description: 'Turns merged PRs into customer-facing release notes.',
+      model: 'gpt-5-codex', instructionsPath: '~/.codex/prompts/release-notes.md', origin: 'user',
+      warnings: [{ errorId: 'src-3f9a1c', path: '~/.codex/prompts/release-notes.md', message: 'Front matter has an unknown key "temperature"; it was ignored.' }] },
+    { source: 'munder', id: 'qa-regression', name: 'QA Regression', description: 'Builds regression suites that keep fixed failures from returning.',
+      instructionsPath: '~/Library/Application Support/Munder Difflin/hive/agents/qa-regression/CLAUDE.md', origin: 'user', warnings: [] },
+  ],
+  warnings: [{ errorId: 'src-7b20e4', path: '~/.claude/agents/broken.md', message: 'Could not parse front matter: unexpected end of YAML.' }],
+  roots: { claude: ['~/.claude/agents'], codex: ['~/.codex'], munder: ['~/Library/Application Support/Munder Difflin/hive'] },
 };
