@@ -27,7 +27,8 @@ export type ParamountCommand =
   | { type: 'layout.panels'; panels: string[] }
   /** Read-only unless `confirm: true`; then opens a visible installer terminal. */
   | { type: 'prereq.install'; id: string; confirm?: boolean }
-  | { type: 'prereq.start'; id: string }
+  /** Read-only unless `confirm: true`; then runs the vetted start command in a visible terminal. */
+  | { type: 'prereq.start'; id: string; confirm?: boolean }
   | { type: 'setup.dismiss'; degraded: string[] }
   /** Read-only: returns a redacted diagnostics bundle on the result. */
   | { type: 'diagnostics.bundle'; logLines?: number };
@@ -69,7 +70,7 @@ export interface ParamountPrereqReport {
   id: string;
   label: string;
   installed: boolean;
-  kind: 'npm' | 'node-then-npm' | 'native' | 'manual';
+  kind: 'npm' | 'node-then-npm' | 'native' | 'manual' | 'start';
   /** The exact trusted command the installer terminal runs. */
   command: string;
   confirmed: boolean;

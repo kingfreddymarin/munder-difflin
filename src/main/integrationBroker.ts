@@ -26,6 +26,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { isReadMethod } from './accessMatrix';
 import {
   type IntegrationRecord,
   buildAuthHeaders,
@@ -63,6 +64,11 @@ export interface IntegrationBrokerDeps {
   getRecord: (id: string) => IntegrationRecord | undefined;
   /** Decrypt a secret by ref (injected — the secret store). Main-internal. */
   getSecret: (secretRef: string | undefined) => string | undefined;
+  /** Access level for a worker on an integration (Paramount access matrix). Absent = rw. */
+  access?: (workerId: string, integrationId: string) => 'rw' | 'r' | 'none';
+  /** Called once per access denial. Receives ids and the method only: never a body,
+   *  header, query or secret. */
+  onDeny?: (denial: { errorId: string; workerId: string; integrationId: string; level: 'r' | 'none'; method: string }) => void;
 }
 
 /** True for IPv4 loopback (127.0.0.0/8) and IPv6 ::1 (incl. v4-mapped). Mirrors slack.ts. */
@@ -189,6 +195,15 @@ export class IntegrationBroker {
     // 4) Authorize against this worker's capability.
     if (!cap.allowedIds.has(integrationId)) {
       return IntegrationBroker.sendError(res, 403, 'forbidden', 'integration not in this worker capability');
+    }
+    // 4b) Access matrix: 'none' denies, 'r' allows read methods only. Checked on every
+    //     request, so a grant change takes effect without respawning the worker.
+    const level = this.deps.access?.(cap.workerId, integrationId) ?? 'rw';
+    const method = (req.method ?? 'GET').toUpperCase();
+    if (level === 'none' || (level === 'r' && !isReadMethod(method))) {
+      const errorId = randomBytes(6).toString('hex');
+      try { this.deps.onDeny?.({ errorId, workerId: cap.workerId, integrationId, level, method }); } catch { /* logging must not break the deny */ }
+      return IntegrationBroker.sendError(res, 403, 'access_denied', `access ${level === 'none' ? 'denied' : 'is read-only'} for this integration (errorId ${errorId})`);
     }
     // 5) Resolve the record (still enabled?).
     const rec = this.deps.getRecord(integrationId);

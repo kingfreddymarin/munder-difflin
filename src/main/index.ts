@@ -13,8 +13,8 @@ import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
-import { dispatchParamount, type ParamountPrereqPlan } from './paramount';
-import { buildDiagnostics, installCrashCapture, redact, traced, type LogSink } from './paramountObservability';
+import { autoModeExpired, dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
+import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
@@ -64,6 +64,7 @@ import { CostLedgerTotals } from './costLifetime';
 import { analytics, isRendererMessageSurface } from './analytics';
 import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
+import { accessFor, withAccess } from './accessMatrix';
 import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
@@ -412,7 +413,10 @@ const liveWorkers = new Map<string, WorkerRec>();
  *  granted a per-worker capability token at spawn (revoked in teardownPty). */
 const integrationBroker = new IntegrationBroker({
   getRecord: integrations.getRecord,
-  getSecret: integrations.getSecret
+  getSecret: integrations.getSecret,
+  // Paramount access matrix, keyed by agent id (a god-hired worker's pty id is its agent id).
+  access: (workerId, integrationId) => accessFor(readConfig().accessMatrix, ptyToAgent.get(workerId) ?? workerId, integrationId),
+  onDeny: (d) => paramountLog({ kind: 'paramount-access-denied', errorId: d.errorId, agentId: ptyToAgent.get(d.workerId) ?? d.workerId, sourceId: d.integrationId, level: d.level, method: d.method })
 });
 
 /** BYOK backend model-providers whose API keys the non-Claude CLI engines
@@ -3508,6 +3512,47 @@ function paramountRunPrereqInstall(plan: ParamountPrereqPlan, sender: Electron.W
   const res = ptyManager.spawn({ id: ptyId, cwd: homedir(), command: bin, shellScript: buildMissingCliScript(bin, provider, npmAvailable, process.platform, null) }, sender);
   return res.ok ? { ok: true, ptyId } : { ok: false, error: res.error };
 }
+/** Service prerequisites with a vetted start command (the same constant the Paramount
+ *  prerequisite definition shows). Nothing else can be started from Paramount. */
+const PARAMOUNT_STARTABLE: Record<string, { label: string; bin: string; command: string }> = {
+  skid: { label: 'Skidbladnir', bin: 'skid', command: 'skid doctor && skid run qwen-3.5-9b "ready"' }
+};
+function paramountStartPlan(prereqId: string): ParamountPrereqStartPlan | null {
+  if (!Object.hasOwn(PARAMOUNT_STARTABLE, prereqId)) return null;
+  const def = PARAMOUNT_STARTABLE[prereqId];
+  // "Running" = a start terminal this app opened is still alive. A daemon started
+  // outside the app is not detected here (no synchronous probe).
+  const running = ptyManager.list().some((p) => p.id.startsWith(`prereq-start-${prereqId}-`));
+  return { id: prereqId, label: def.label, installed: ptyManager.isCommandAvailable(def.bin), running, command: def.command };
+}
+function paramountRunPrereqStart(plan: ParamountPrereqStartPlan, sender: Electron.WebContents): { ok: boolean; ptyId?: string; error?: string } {
+  const def = PARAMOUNT_STARTABLE[plan.id];
+  const ptyId = `prereq-start-${plan.id}-${randomBytes(4).toString('hex')}`;
+  const res = ptyManager.spawn({ id: ptyId, cwd: homedir(), command: def.bin, shellScript: def.command }, sender);
+  return res.ok ? { ok: true, ptyId } : { ok: false, error: res.error };
+}
+/** Timed YOLO: when the persisted expiry passes, autoMode turns off with a log line.
+ *  Called at boot (so an expiry that passed while the app was closed still fires)
+ *  and after every floor.yolo write. */
+let autoModeExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+function armAutoModeExpiry(): void {
+  if (autoModeExpiryTimer) { clearTimeout(autoModeExpiryTimer); autoModeExpiryTimer = null; }
+  const cfg = readConfig();
+  if (!cfg.autoModeExpiresAt) return;
+  if (autoModeExpired(cfg.autoModeExpiresAt, Date.now())) {
+    try {
+      writeConfig({ autoMode: false, autoModeExpiresAt: undefined });
+      paramountLog({ kind: 'paramount-yolo-expired', expiredAt: cfg.autoModeExpiresAt });
+    } catch (e) {
+      const errorId = newErrorId();
+      paramountLog({ kind: 'paramount-error', errorId, code: 'UNCERTAIN_STATE', op: 'yolo-expiry', message: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+  const wait = Math.min(Date.parse(cfg.autoModeExpiresAt) - Date.now(), 2_000_000_000);
+  autoModeExpiryTimer = setTimeout(armAutoModeExpiry, wait);
+  autoModeExpiryTimer.unref?.();
+}
 /** Connect = enable a registered integration that already holds its credential;
  *  disconnect = disable it (the stored secret stays). Secrets never pass through here. */
 function paramountSetIntegrationConnected(connectionId: string, connected: boolean): 'ok' | 'not_found' | 'needs_secret' {
@@ -3525,7 +3570,7 @@ const paramountLog: LogSink = (event) => hive.appendLog(event);
 ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, () => ({
   registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
   log: hive.logTail(500), roster: roster.read(),
-  config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode },
+  config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode, autoModeExpiresAt: readConfig().autoModeExpiresAt, accessMatrix: readConfig().accessMatrix ?? {} },
   missions: readConfig().missions ?? [], ptys: ptyManager.list(), preferences: paramountPreferences()
 }), { rethrow: true }));
 ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramount.dispatch', paramountLog, {
@@ -3541,7 +3586,9 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   renameAgent: (id, name) => hive.renameAgent(id, name),
   setAgentTokenCap: (id, cap) => { setAgentTokenCap(id, cap); },
   setNotifications: (on) => { writeConfig({ notifications: on }); },
-  setFloorAutoMode: (on) => { writeConfig({ autoMode: on }); },
+  setFloorAutoMode: (on, expiresAt) => { writeConfig({ autoMode: on, autoModeExpiresAt: on ? expiresAt : undefined }); armAutoModeExpiry(); },
+  setAccess: (agentId, sourceId, access) => { writeConfig({ accessMatrix: withAccess(readConfig().accessMatrix, agentId, sourceId, access) }); },
+  prereqStart: { plan: paramountStartPlan, run: (plan) => paramountRunPrereqStart(plan, evt.sender) },
   setIntegrationConnected: paramountSetIntegrationConnected,
   prereqInstall: { plan: paramountPrereqPlan, run: (plan) => paramountRunPrereqInstall(plan, evt.sender) },
   logStep: (step) => paramountLog(step),
@@ -5517,12 +5564,14 @@ app.whenReady().then(() => {
   }
   // Bootstrap the hive (if harnessHome is configured) and start the message router.
   bootstrapHiveServices();
+  // A timed YOLO window that ended while the app was closed turns autoMode off now.
+  armAutoModeExpiry();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a
   // locked/idle/slept Mac stops firing schedules and can wedge PTYs. On wake we
   // re-arm the scheduler (catching up missed missions ONCE) + beats + keep-awake,
   // then health-check terminals. App-lifetime listeners — powerMonitor outlives
   // every window, so there is nothing to tear down on quit.
-  powerMonitor.on('resume', () => onSystemResume('resume'));
+  powerMonitor.on('resume', () => { onSystemResume('resume'); armAutoModeExpiry(); });
   powerMonitor.on('unlock-screen', () => onSystemResume('unlock-screen'));
   powerMonitor.on('suspend', () => { lastSuspendAt = Date.now(); console.log('[power] suspend — system sleeping'); });
   powerMonitor.on('lock-screen', () => { lastSuspendAt = Date.now(); console.log('[power] lock-screen'); });
