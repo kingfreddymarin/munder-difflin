@@ -1,0 +1,8 @@
+/* Munder's terminal face, bundled (SIL OFL, see assets/fonts/LICENSE.txt) so a session looks the same in both apps. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('../../../assets/fonts/jetbrains-mono-latin-var.woff2') format('woff2');
+}
