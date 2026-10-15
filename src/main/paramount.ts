@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ScheduledMission } from './config';
 import type { ParamountDiagnostics, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand, ParamountPrereqReport } from '../preload/paramount';
 import { createSpan, type Span } from './paramountObservability';
+import { normalizeWeekly } from '../shared/weeklySchedule';
 
 export interface ParamountDeps {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -222,6 +223,10 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         const standup = patch.standupMin === undefined ? undefined : missions.find((m) => m.id === STANDUP_MISSION_ID);
         if (patch.heartbeatSec !== undefined && !beat) return fail('NOT_FOUND', 'Heartbeat mission not found');
         if (patch.standupMin !== undefined && !standup) return fail('NOT_FOUND', 'Ops standup mission not found');
+        // A valid weekly schedule replaces intervalMs in the scheduler (heartbeats excepted),
+        // so changing the interval would report ok while the cadence stays the same.
+        const weekly = [beat, standup].find((m) => m && m.kind !== 'heartbeat' && normalizeWeekly(m.weekly));
+        if (weekly) return fail('UNSUPPORTED', `Mission "${weekly.label}" runs on a weekly schedule; change its days and time in Missions instead`);
         // One write for both cadences, so a partial update never reaches the scheduler.
         writeAttempted = true;
         deps.saveMissions(missions.map((m) =>

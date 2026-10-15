@@ -108,3 +108,39 @@ test('probePort: an invalid port resolves { ok: false, code } instead of rejecti
     assert.deepEqual(await probePort(port), { ok: false, code: 'INVALID_PORT' }, `port ${port}`);
   }
 });
+
+const { dispatchParamount } = loadTs('src/main/paramount.ts');
+function iterationFixture(standupWeekly) {
+  const state = {
+    writes: 0, events: [],
+    missions: [
+      { id: 'heartbeat', label: 'Floor heartbeat', kind: 'heartbeat', intervalMs: 120_000, enabled: true, weekly: { days: [1], minute: 540 } },
+      { id: 'ops-standup', label: 'Standup', intervalMs: 3_600_000, enabled: true, ...(standupWeekly ? { weekly: standupWeekly } : {}) }
+    ]
+  };
+  const deps = {
+    tasks: () => ({ tasks: [] }), patchTask: () => true, agents: () => ({}), renameAgent: () => ({ ok: true }),
+    setAgentTokenCap: () => {}, setNotifications: () => {}, savePreference: () => {}, publish: () => {},
+    missions: () => state.missions,
+    saveMissions: (m) => { state.writes += 1; state.missions = m; },
+    appendEvent: (e) => { state.events.push(e); }
+  };
+  return { state, deps };
+}
+
+test('floor.iteration on a weekly-scheduled mission fails UNSUPPORTED with an errorId and writes nothing', () => {
+  const { state, deps } = iterationFixture({ days: [1, 3], minute: 540 });
+  const result = dispatchParamount({ type: 'floor.iteration', patch: { heartbeatSec: 60, standupMin: 30 } }, deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'UNSUPPORTED');
+  assert.match(result.errorId, /\S/);
+  assert.match(result.message, /weekly/);
+  assert.equal(state.writes, 0);
+});
+
+test('floor.iteration ignores weekly on heartbeat missions and an invalid weekly (scheduler uses intervalMs)', () => {
+  const { state, deps } = iterationFixture({ days: [], minute: 540 });
+  const result = dispatchParamount({ type: 'floor.iteration', patch: { heartbeatSec: 60, standupMin: 30 } }, deps);
+  assert.equal(result.ok, true, result.message);
+  assert.deepEqual(state.missions.map((m) => m.intervalMs), [60_000, 1_800_000]);
+});
