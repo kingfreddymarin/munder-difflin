@@ -8,7 +8,7 @@
 // setName/setPath below land before any other module can read userData.
 import { app, net, protocol } from 'electron';
 import { join, resolve, sep } from 'node:path';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export const PARAMOUNT_NAME = 'Paramount';
@@ -22,7 +22,11 @@ const DEFAULT_DEV_URL = 'http://127.0.0.1:5173';
 app.setName(PARAMOUNT_NAME);
 // ~/Library/Application Support/Paramount on macOS. Config, the window DB and
 // (by default) the hive all live under here, apart from Munder Difflin's.
-app.setPath('userData', join(app.getPath('appData'), PARAMOUNT_NAME));
+// setPath throws for a missing directory, so create it first: on a clean
+// profile it does not exist yet and the shell would die before any window.
+const userDataDir = join(app.getPath('appData'), PARAMOUNT_NAME);
+mkdirSync(userDataDir, { recursive: true });
+app.setPath('userData', userDataDir);
 
 protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
