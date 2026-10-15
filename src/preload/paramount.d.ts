@@ -267,3 +267,58 @@ export interface ParamountArtifactMap {
   /** Sources that could not be read; each errorId is on a `paramount-terminal` line in log.jsonl. */
   warnings: Array<{ errorId: string; source: string; message: string }>;
 }
+
+// lane d-team
+/** Team-screen commands, sent through `paramountDispatch` like any other command. */
+export type ParamountTeamCommand =
+  /** Adds one card to the hive task ledger. Its key is the next number of the
+   *  ledger's most used key prefix (NSC-68 → NSC-69). */
+  | { type: 'card.create'; title: string; description?: string; assignee?: string;
+      priority?: 1 | 2 | 3; status?: 'todo' | 'blocked' }
+  /** Read-only: models per engine, the harness default model and each agent's pick. */
+  | { type: 'team.models' }
+  /** The Add-Agent form. Read-only unless `confirm: true`: without it the core
+   *  validates the hire manifest and returns the exact spawn plan for review;
+   *  with it the agent starts in a visible terminal. Nothing spawns unconfirmed. */
+  | { type: 'agent.hire'; manifest: Record<string, unknown>; cwd?: string; confirm?: boolean };
+/** `agent.update` with `{ model }` (and optionally the agent's own `engine`) is
+ *  handled by the team module: the pick is saved and used at the agent's next
+ *  start. An empty model clears the pick so the default applies again. */
+
+export interface ParamountTeamModel {
+  /** Absent = no --model flag (the CLI's own default). */
+  id?: string;
+  label: string;
+}
+export interface ParamountTeamModels {
+  /** Engines that take a model, each with the models this build offers. */
+  engines: Array<{ id: string; label: string; models: ParamountTeamModel[] }>;
+  /** The harness default (config.defaultModel), a Claude model id; mark it "· default". */
+  defaultModel?: string;
+  /** Model chosen per agent in Paramount; an agent missing here runs the default. */
+  agents: Record<string, { engine: string; model?: string }>;
+}
+export interface ParamountHirePlan {
+  agentId: string;
+  name: string;
+  role?: string;
+  engine: string;
+  model?: string;
+  cwd: string;
+  isolate: boolean;
+  /** The exact command line the terminal runs. */
+  command: string;
+  /** False when the engine CLI is not installed; a confirmed hire is then refused. */
+  engineInstalled: boolean;
+  confirmed: boolean;
+  /** MCP servers that need explicit consent; a hire never enables them. */
+  consentRequired: string[];
+  /** Fields of the manifest this build does not apply. */
+  ignored: string[];
+}
+/** The ok-result of a team command carries one of these payloads. */
+export type ParamountTeamResult = Extract<ParamountResult, { ok: true }> & {
+  card?: { key: string };
+  models?: ParamountTeamModels;
+  hire?: ParamountHirePlan;
+};

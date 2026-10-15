@@ -12,6 +12,7 @@ import { dispatchBoard, isBoardCommand, type ParamountBoardDeps } from './paramo
 import { runShellCommand, type ParamountShellDeps } from './paramount-shell';
 import { runTerminalCommand, type ParamountTerminalDeps } from './paramount-terminal';
 import type { ParamountArtifactMap } from '../preload/paramount';
+import { dispatchTeam, type ParamountTeamDeps } from './paramount-team';
 
 export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'message' | 'godId'>> {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -63,6 +64,8 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   shell?: ParamountShellDeps;
   /** Artifact map behind each agent's terminal (paramount-terminal.ts); absent means unsupported. */
   terminal?: ParamountTerminalDeps;
+  /** Team screen: new cards, per-agent models, the Add-Agent hire form (paramount-team.ts). */
+  team?: ParamountTeamDeps;
 }
 
 export interface ParamountPrereqPlan {
@@ -131,6 +134,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
     span.fail(code, message, cause, { commandType });
   if (!object(command) || !id(command.type)) return fail('INVALID_COMMAND', 'Invalid command');
   if (isBoardCommand(command.type)) return dispatchBoard(command, deps, span);
+  const team = dispatchTeam(command, deps, span); if (team) return team;
   let writeAttempted = false;
   let diagnostics: ParamountDiagnostics | undefined;
   let prereq: ParamountPrereqReport | undefined;
