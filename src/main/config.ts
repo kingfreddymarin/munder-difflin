@@ -591,7 +591,19 @@ function migrateTriggersV1(cfg: HarnessConfig): HarnessConfig {
   }
 }
 
+/** Timed-YOLO fail safe (autoModeExpiry.ts): set when the expiry passed but the
+ *  write turning autoMode off failed. While set every read reports autoMode off;
+ *  the next successful writeConfig (which persists the forced-off value) clears it. */
+let autoModeForcedOff = false;
+export function setAutoModeForcedOff(on: boolean): void { autoModeForcedOff = on; }
+
 export function readConfig(): HarnessConfig {
+  const cfg = readConfigFromDisk();
+  if (autoModeForcedOff) cfg.autoMode = false;
+  return cfg;
+}
+
+function readConfigFromDisk(): HarnessConfig {
   const p = configPath();
   // No file yet = a first run with nothing to migrate; the defaults ARE the
   // post-migration shape. Deliberately does not persist — a bare read must not
@@ -700,7 +712,9 @@ export function writeConfig(patch: Partial<HarnessConfig>): HarnessConfig {
     next.harnessHome = home;
     next.recentHives = recentHives;
   }
-  return persistConfig(next);
+  const saved = persistConfig(next);
+  autoModeForcedOff = false;
+  return saved;
 }
 
 /** Set or clear one agent's token ceiling against the latest config on disk.

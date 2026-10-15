@@ -8,6 +8,12 @@ copyright: Copyright © 2026 Chaitanya Giri
 # munderdifflin:// scheme, no notarize hook: the mac build is unsigned.
 publish: null
 
+# Kept from upstream: inert while publish is null (no latest*.yml is written),
+# but it stamps the toast's "What's new" list if an update feed is ever turned
+# back on, and test/release-notes.test.cjs guards it.
+releaseInfo:
+  releaseNotesFile: build/release-notes.md
+
 # electron-vite emits the app into out/; package exactly that plus what the
 # runtime needs. node-pty is native, so keep it out of the asar.
 directories:
