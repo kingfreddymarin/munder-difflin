@@ -71,8 +71,8 @@ import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
-import { fetchHireManifest, readHireManifestFiles } from './hire';
-import { parseHireDeepLink, type HireManifest } from '../shared/hire';
+import { readHireManifestFiles } from './hire';
+import type { HireManifest } from '../shared/hire';
 import { ClosingTimeController } from './closingTime';
 import {
   argsWithAutoModeFlag,
@@ -2207,7 +2207,9 @@ function floorCascade(): WindowBounds | null {
   return clampBounds({ x: b.x + OFFSET, y: b.y + OFFSET, width: b.width, height: b.height });
 }
 
-// ─── Shareable hires: munderdifflin:// deep link + file import ──────────────
+// ─── Shareable hires: file import ───────────────────────────────────────────
+// Paramount never registers or handles munderdifflin:// — those deep links
+// belong to the installed Munder Difflin app.
 // A hire manifest NEVER auto-spawns: it is validated, then handed to the
 // renderer, which pre-fills the Add-Agent modal for human review. See
 // src/shared/hire.ts for the spec + security model.
@@ -2233,54 +2235,19 @@ function deliverHire(manifest: HireManifest): void {
   }
 }
 
-async function handleHireLink(link: string): Promise<void> {
-  const src = parseHireDeepLink(link);
-  if (!src) { console.warn('[hire] ignoring malformed deep link'); return; }
-  const res = await fetchHireManifest(src);
-  if (!res.ok) {
-    console.error('[hire] deep link rejected:', res.error);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('hire:error', { error: res.error });
-    }
-    return;
-  }
-  deliverHire(res.manifest);
-  analytics.trackFeature('hire_install');
-}
-
-// Register the protocol. In dev (electron .) Windows needs the explicit
-// exe+args form or the registration points at electron.exe with no entry.
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient('munderdifflin', process.execPath, [resolve(process.argv[1])]);
-  }
-} else {
-  app.setAsDefaultProtocolClient('munderdifflin');
-}
-
-// Deep links on Windows/Linux arrive as the argv of a SECOND process — take the
-// single-instance lock and forward them to the running instance. (macOS gets
-// the 'open-url' event instead.) The lock also rules out two harnesses fighting
-// over the same hive, which was previously possible but never useful.
+// The single-instance lock rules out two harnesses fighting over the same hive.
 const gotInstanceLock = app.requestSingleInstanceLock();
 if (!gotInstanceLock) {
   allowQuit = true;
   app.quit();
 } else {
-  app.on('second-instance', (_evt, argv) => {
+  app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
-    const link = argv.find((a) => a.startsWith('munderdifflin://'));
-    if (link) void handleHireLink(link);
   });
 }
-
-app.on('open-url', (evt, url) => {
-  evt.preventDefault();
-  void handleHireLink(url);
-});
 
 // IPC: the renderer signals readiness and PULLS anything queued (deep links
 // that arrived before the window/subscription existed, incl. cold starts).
@@ -2466,6 +2433,8 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   });
 
   // Paramount: the UI is the separate Paramount app, never src/renderer.
+  // Floors run on their own partition, so the scheme is registered per session.
+  registerParamountProtocol(wc.session);
   win.loadURL(paramountUiUrl());
 
   win.on('closed', () => {
@@ -5457,10 +5426,6 @@ app.whenReady().then(() => {
   // is already fresh on disk by the time a modal is opened, and a failure is
   // silent by construction (the baked catalog is the floor).
   void loadModelCatalog(MODEL_CATALOG_CACHE()).catch(() => { /* never fatal */ });
-
-  // A cold-start deep link (Windows/Linux) rides in on OUR argv.
-  const startupHireLink = process.argv.find((a) => a.startsWith('munderdifflin://'));
-  if (startupHireLink) void handleHireLink(startupHireLink);
 
   // Hand every spawned agent the path to the Slack reply discovery file via the
   // inherited env (pty merges process.env). The path is stable whether or not the
