@@ -3485,7 +3485,7 @@ function paramountPreferences(): Record<string, unknown> {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Paramount preferences are corrupt');
   return parsed as Record<string, unknown>;
 }
-function saveParamountPreference(key: 'profile' | 'setup', value: Record<string, unknown>): void {
+function saveParamountPreference(key: 'profile' | 'setup' | 'home' | 'chats', value: Record<string, unknown>): void {
   const root = hive.root();
   if (!root) throw new Error('hive disabled (no harnessHome)');
   hive.ensureHive();
@@ -3615,6 +3615,10 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   logStep: (step) => paramountLog(step),
   agentSources: { roots: paramountAgentRoots, deliverHire },
   savePreference: saveParamountPreference,
+  // lane b-home-chats: ask replies are mailed as the human; direct questions are looked up by id.
+  send: (msg) => { const sent = hive.send(msg, 'human'); analytics.trackMessageSent('hive'); return { ok: !!sent?.id }; },
+  message: (id) => hive.voiceMessages({ id, limit: 1 })[0] ?? null,
+  godId: () => hive.registry().godId ?? undefined,
   appendEvent: (event) => {
     const root = hive.root();
     if (!root) throw new Error('hive disabled (no harnessHome)');

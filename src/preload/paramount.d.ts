@@ -38,7 +38,8 @@ export type ParamountCommand =
   /** Imports one discovered agent through the hire path: the Add-Agent form
    *  opens pre-filled and the human confirms the spawn. Pass the same
    *  `projectDir` used to discover a project agent. */
-  | { type: 'agents.import'; source: ParamountAgentSource; id: string; projectDir?: string };
+  | { type: 'agents.import'; source: ParamountAgentSource; id: string; projectDir?: string }
+  | ParamountHomeChatsCommand;
 
 export interface ParamountEvent {
   id: string;
@@ -170,3 +171,26 @@ export interface ParamountPreloadAPI {
   onPtyData(id: string, cb: (data: string) => void): () => void;
   onPtyExit(id: string, cb: (info: { exitCode: number; signal?: number }) => void): () => void;
 }
+
+// lane b-home-chats
+/** How the human replied to an ask: free text, a picked option, or "done" for a to-do only they could do. */
+export type ParamountAskMode = 'answer' | 'decision' | 'done';
+
+export interface ParamountHomeLayout {
+  density?: 'compact' | 'comfortable' | 'spacious';
+  /** Tile ids, first shown first. */
+  order?: string[];
+  tiles?: Record<string, { size?: 'sm' | 'md' | 'lg'; hidden?: boolean }>;
+}
+
+export type ParamountHomeChatsCommand =
+  /** Answers an open ask (Munder's ASK ME). `messageId` is `<task id>:<humanQA index>` for a card's ask:
+   *  the reply lands on the card as `a` (with `mode`) and is mailed to god and to the asking agent.
+   *  Any other id is a hive message sent to the human; the reply is mailed back with `in_reply_to`. */
+  | { type: 'ask.reply'; messageId: string; mode: ParamountAskMode; text: string }
+  /** Clears a card's open ask off ASK ME without answering; the question stays on the card. */
+  | { type: 'ask.dismiss'; messageId: string }
+  /** Saves the Home layout under `home` in the snapshot's `preferences`. */
+  | { type: 'home.layout'; layout: ParamountHomeLayout }
+  /** Saves which update cards Chats hides, under `chats` in the snapshot's `preferences`. */
+  | { type: 'chats.view'; hideUpdates?: boolean; hiddenIds?: string[] };
