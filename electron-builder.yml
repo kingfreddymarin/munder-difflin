@@ -28,7 +28,9 @@ files:
 extraResources:
   # The Paramount UI build (00-new/apps/paramount, `npm run build` there).
   # Served at runtime over paramount://app/ from <resources>/paramount-ui.
-  - from: ../../paramount/dist
+  # Set by scripts/paramount-ui-dist.cjs (the dist scripts run electron-builder
+  # through it): default ../paramount/dist, override with PARAMOUNT_UI_DIST.
+  - from: ${env.PARAMOUNT_UI_DIST}
     to: paramount-ui
   - from: resources/md-slack-reply.cjs
     to: md-slack-reply.cjs
@@ -72,10 +74,10 @@ mac:
   notarize: false
   target:
     - target: dmg
-  artifactName: Paramount-${version}-mac-${arch}.${ext}
 
 dmg:
   title: Paramount ${version}
+  artifactName: Paramount-${version}-${arch}.dmg
 
 # ---- Windows ----
 win:
