@@ -17,7 +17,7 @@ export function AgentsPanel({ onOpen }: { onOpen: (id: string) => void }) {
               <span className="truncate font-medium">{a.name}</span>
               <span className={cn('ml-auto text-[11px]', statusMeta[a.status].text)}>{statusMeta[a.status].label}</span>
             </span>
-            <Progress value={yolo || a.yolo ? 100 : Math.round((a.tokensUsed / a.tokensCap) * 100)} className={cn('h-1', yolo || a.yolo ? '[&_[data-slot=progress-indicator]]:bg-fuchsia-400' : budgetTone(a.tokensUsed, a.tokensCap))} />
+            <Progress value={yolo || a.yolo ? 100 : (a.tokensCap > 0 ? Math.round((a.tokensUsed / a.tokensCap) * 100) : 0)} className={cn('h-1', yolo || a.yolo ? '[&_[data-slot=progress-indicator]]:bg-fuchsia-400' : budgetTone(a.tokensUsed, a.tokensCap))} />
           </span>
         </button>
       ))}

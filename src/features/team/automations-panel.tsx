@@ -10,6 +10,7 @@ export function AutomationsPanel() {
   const dispatch = useDispatch();
   return (
     <div className="flex min-h-0 flex-col gap-1.5">
+      {automations.length === 0 && <span className="text-muted-foreground text-sm">No automations reported.</span>}
       {automations.map((a) => (
         <div key={a.id} className="flex items-center gap-3 rounded-lg border px-2.5 py-2">
           <HoverCard>

@@ -4,15 +4,25 @@ import { statusMeta } from '@/components/app/status';
 import { useFloor } from '@/data/store';
 import { cn } from '@/lib/utils';
 
+/** Segments are shares of today, so the axis runs from local midnight to now, with its midpoint in between. */
+function dayAxis(now = new Date()): [string, string] {
+  const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);
+  const mid = new Date((midnight.getTime() + now.getTime()) / 2);
+  const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return [hhmm(midnight), hhmm(mid)];
+}
+
 export function ActivityPanel({ onOpen }: { onOpen: (id: string) => void }) {
   const agents = useFloor((s) => s.agents);
   const timelines = useFloor((s) => s.timelines);
+  const [start, middle] = dayAxis();
   return (
     <div className="flex min-h-0 flex-col gap-1.5">
       <div className="text-muted-foreground flex items-center gap-2 pl-[140px] text-[10px]">
-        <span className="flex-1">12:00</span><span className="flex-1 text-center">18:00</span><span>now</span>
+        <span className="flex-1">{start}</span><span className="flex-1 text-center">{middle}</span><span>now</span>
         <span className="w-28 text-right">msgs · tools · done</span>
       </div>
+      {timelines.length === 0 && <span className="text-muted-foreground text-sm">No activity reported today.</span>}
       {timelines.map((t) => {
         const a = agents.find((x) => x.id === t.agentId);
         if (!a) return null;
