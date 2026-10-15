@@ -13,6 +13,10 @@ import { runShellCommand, type ParamountShellDeps } from './paramount-shell';
 import { runTerminalCommand, type ParamountTerminalDeps } from './paramount-terminal';
 import type { ParamountArtifactMap } from '../preload/paramount';
 import { dispatchTeam, type ParamountTeamDeps } from './paramount-team';
+import { AGENT_PROVIDER_PRESETS } from '../shared/agentProvider';
+
+const BYOK_ENDPOINT_ENGINES = ['opencode', 'crush', 'pi', 'qwen'];
+const MODEL_DEFAULT_ENGINES = AGENT_PROVIDER_PRESETS.filter((preset) => preset.supportsModel && preset.id !== 'claude').map((preset) => preset.id as string);
 
 export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'message' | 'godId'>> {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -221,7 +225,10 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         const textFields = ['defaultModel'];
         const nonnegative = ['costCapTokens'];
         const providerField = (key === 'providerBaseUrls' || key === 'providerDefaultModels') && object(value) && Object.keys(value).length === 1 && Object.entries(value).every(([provider, entry]) => {
-          if (!['opencode', 'crush', 'pi', 'qwen'].includes(provider) || typeof entry !== 'string' || entry.length > 500 || /[\r\n\0]/.test(entry)) return false;
+          // Endpoints exist only for the BYOK engines; a default model fits every
+          // non-Claude engine that takes one (Claude's default is defaultModel).
+          const engines = key === 'providerBaseUrls' ? BYOK_ENDPOINT_ENGINES : MODEL_DEFAULT_ENGINES;
+          if (!engines.includes(provider) || typeof entry !== 'string' || entry.length > 500 || /[\r\n\0]/.test(entry)) return false;
           if (key === 'providerDefaultModels' || !entry) return true;
           try { const url = new URL(entry); return url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)); } catch { return false; }
         });

@@ -5,6 +5,7 @@ import { Switch } from '@/components/animate-ui/components/radix/switch';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { useDispatch, useFloor, useTeamApi } from '@/data/store';
 import type { ParamountTeamModels } from '@/data/paramount-api';
+import { defaultModelRows } from '@/lib/default-models';
 
 const number = (value: unknown) => typeof value === 'number' ? String(value) : '';
 const boolean = (value: unknown) => value === true;
@@ -39,10 +40,14 @@ export function CoreSettings() {
   const breakerNumber = (key: string, label: string) => <div className="grid gap-1.5" key={key}><label className="text-sm" htmlFor={`breaker-${key}`}>{label}</label><div className="flex gap-2"><Input id={`breaker-${key}`} type="number" min={1} max={1000000} value={drafts[key] ?? number(breaker[key])} onChange={(e) => setDrafts({ ...drafts, [key]: e.target.value })} /><Button variant="outline" disabled={!Number.isSafeInteger(Number(drafts[key])) || Number(drafts[key]) < 1 || Number(drafts[key]) > 1000000} onClick={() => { save('circuitBreaker', { [key]: Number(drafts[key]) }); setDrafts((d) => { const next = { ...d }; delete next[key]; return next; }); }}>Save</Button></div></div>;
   return <div className="grid gap-3 lg:grid-cols-2">
     <Tile title="Agents & models" hint="applies to future agents">
-      <label className="text-sm" htmlFor="core-default-model">Default agent model</label>
-      {catalog ? <select id="core-default-model" className="bg-background w-full rounded-md border px-3 py-2 text-sm" value={String(settings.defaultModel ?? '')} onChange={(e) => save('defaultModel', e.target.value)}>
-        <option value="">CLI default</option>{catalog.engines.filter((engine) => engine.id === 'claude').flatMap((engine) => engine.models.filter((model) => model.id).map((model) => <option key={`${engine.id}:${model.id}`} value={model.id}>{model.label}{model.id === settings.defaultModel ? ' · default' : ''}</option>))}
-      </select> : <span className="text-muted-foreground text-xs">{catalogError || 'Loading model list…'}</span>}
+      <span className="text-sm">Default agent model</span>
+      <span className="text-muted-foreground text-xs">New agents on each engine start on this model unless picked per agent. Claude's is the harness default.</span>
+      {catalog ? defaultModelRows(catalog, settings).map((row) => <div key={row.engine} className="grid gap-1">
+        <label className="text-muted-foreground text-xs" htmlFor={`core-default-model-${row.engine}`}>{row.label}</label>
+        <select id={`core-default-model-${row.engine}`} className="bg-background w-full rounded-md border px-3 py-2 text-sm" value={row.value} onChange={(e) => { void dispatch({ type: 'settings.update', patch: row.patch(e.target.value) }); }}>
+          <option value="">CLI default</option>{row.options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+        </select>
+      </div>) : <span className="text-muted-foreground text-xs">{catalogError || 'Loading model list…'}</span>}
       {toggle('orchestratorMaySpawn', 'Orchestrator may add agents', 'Off leaves spawn requests queued for your decision.')}
       <span className="text-muted-foreground text-xs">{agents.length} active agents · individual models are set on each Team card.</span>
     </Tile>
