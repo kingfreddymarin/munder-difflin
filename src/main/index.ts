@@ -13,13 +13,14 @@ import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
-import { autoModeExpired, dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
+import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
+import { createAutoModeExpiry } from './autoModeExpiry';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
-  readConfig, writeConfig, setAgentTokenCap, resetConfig, onConfigWritten, ensureHarnessHome, ensureClaudePermissionsAccepted,
+  readConfig, writeConfig, setAutoModeForcedOff, setAgentTokenCap, resetConfig, onConfigWritten, ensureHarnessHome, ensureClaudePermissionsAccepted,
   modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
@@ -3542,27 +3543,17 @@ function paramountRunPrereqStart(plan: ParamountPrereqStartPlan, sender: Electro
   return res.ok ? { ok: true, ptyId } : { ok: false, error: res.error };
 }
 /** Timed YOLO: when the persisted expiry passes, autoMode turns off with a log line.
- *  Called at boot (so an expiry that passed while the app was closed still fires)
- *  and after every floor.yolo write. */
-let autoModeExpiryTimer: ReturnType<typeof setTimeout> | null = null;
-function armAutoModeExpiry(): void {
-  if (autoModeExpiryTimer) { clearTimeout(autoModeExpiryTimer); autoModeExpiryTimer = null; }
-  const cfg = readConfig();
-  if (!cfg.autoModeExpiresAt) return;
-  if (autoModeExpired(cfg.autoModeExpiresAt, Date.now())) {
-    try {
-      writeConfig({ autoMode: false, autoModeExpiresAt: undefined });
-      paramountLog({ kind: 'paramount-yolo-expired', expiredAt: cfg.autoModeExpiresAt });
-    } catch (e) {
-      const errorId = newErrorId();
-      paramountLog({ kind: 'paramount-error', errorId, code: 'UNCERTAIN_STATE', op: 'yolo-expiry', message: e instanceof Error ? e.message : String(e) });
-    }
-    return;
-  }
-  const wait = Math.min(Date.parse(cfg.autoModeExpiresAt) - Date.now(), 2_000_000_000);
-  autoModeExpiryTimer = setTimeout(armAutoModeExpiry, wait);
-  autoModeExpiryTimer.unref?.();
-}
+ *  Armed at boot (so an expiry that passed while the app was closed still fires),
+ *  on resume and after every write that touches autoMode. A failed write forces
+ *  autoMode off in memory and retries with backoff (autoModeExpiry.ts). */
+const autoModeExpiry = createAutoModeExpiry({
+  read: readConfig,
+  write: (patch) => { writeConfig(patch); },
+  forceOff: setAutoModeForcedOff,
+  log: (event) => paramountLog(event),
+  newErrorId
+});
+function armAutoModeExpiry(): void { autoModeExpiry.arm(); }
 /** Connect = enable a registered integration that already holds its credential;
  *  disconnect = disable it (the stored secret stays). Secrets never pass through here. */
 function paramountSetIntegrationConnected(connectionId: string, connected: boolean): 'ok' | 'not_found' | 'needs_secret' {
