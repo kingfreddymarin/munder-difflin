@@ -363,8 +363,12 @@ its first newline.
 - **Copying from a terminal is clean.** The Edit menu was intercepting ⌘C before the terminal saw it.
 - **Agent terminals are UTF-8.** They ran with no locale at all.`;
 
-export function initAutoUpdater(getWebContents: () => WebContents | null): void {
+export function initAutoUpdater(
+  getWebContents: () => WebContents | null,
+  opts: { feed?: boolean } = {}
+): void {
   sendTo = getWebContents;
+  const feed = opts.feed !== false;
 
   // IPC surface is registered unconditionally so the renderer can always call it.
   ipcMain.handle('update:restartAndInstall', async () => {
@@ -438,6 +442,9 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
   // DevTools paste. The renderer pulls `update:current` on mount, so emitting
   // before the window exists is fine. Same hard gate as `update:simulate`.
   const previewPath = process.env.MD_DROP_PREVIEW;
+  // feed:false (the Paramount shell) registers the IPC surface above and stops:
+  // no release-page fetch, no update polling.
+  if (!feed) return;
   if (!app.isPackaged && previewPath) {
     try {
       const notes = readFileSync(previewPath, 'utf8');
