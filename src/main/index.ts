@@ -14,6 +14,9 @@ import { homedir, release as osRelease, type as osType, totalmem, freemem } from
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
+import { agentModelPick, type ParamountTeamDeps } from './paramount-team';
+import bakedModelCatalog from '../shared/modelCatalog.json';
+import { parseModelCatalog } from '../shared/modelCatalogPayload';
 import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } from './autoModeExpiry';
 import { defaultMunderHive, type AgentSourceRoots } from './agentSources';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
@@ -2839,7 +2842,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     if (!args.includes('--model')) {
       const m = opts.hive.isGod
         ? modelForRole(opts.hive, cfg)
-        : cfg.defaultModel ?? modelForRole(opts.hive, cfg);
+        : paramountModelPick(opts.hive.id) ?? cfg.defaultModel ?? modelForRole(opts.hive, cfg);
       if (m) args.push('--model', m);
     }
     // Name the Remote Control session after the agent (Michael, Jim, Dev1…) so it
@@ -3590,6 +3593,43 @@ function paramountAgentRoots(): AgentSourceRoots {
     ...(munder.warning ? { munderHiveWarning: munder.warning } : {})
   };
 }
+/** A model picked for this agent in Paramount's Team screen, used at its next start. */
+function paramountModelPick(agentId: string): string | undefined {
+  try { return agentModelPick(hive.root(), agentId); } catch (e) {
+    paramountLog({ kind: 'paramount-error', errorId: newErrorId(), code: 'INTERNAL', message: `agent model picks unreadable; using the default model: ${e instanceof Error ? e.message : String(e)}`, agentId });
+    return undefined;
+  }
+}
+/** Team screen (paramount-team.ts): cards, model catalog and the Add-Agent hire. */
+function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
+  return {
+    hiveRoot: () => hive.root(),
+    addTask: (task) => hive.enabled() && hive.addTask(task as HiveTask),
+    modelCatalog: () => {
+      try {
+        const cached = JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown };
+        const remote = parseModelCatalog(cached?.catalog);
+        if (remote) return remote;
+      } catch { /* no cached remote copy; the baked one applies */ }
+      return parseModelCatalog(bakedModelCatalog) ?? { version: 1, providers: {} };
+    },
+    appVersion: app.getVersion(),
+    defaultModel: () => readConfig().defaultModel,
+    defaultCommand: () => readConfig().defaultCommand,
+    autoMode: () => !!readConfig().autoMode,
+    defaultCwd: () => readConfig().registeredRepos?.[0] ?? null,
+    isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
+    commandAvailable: (bin) => (isSafeCommandName(bin) || isAbsolute(bin)) && ptyManager.isCommandAvailable(bin),
+    spawnHire: async ({ plan, bin, args, provider, goal, tokenCap, capabilities }) => {
+      const meta: AgentMeta = { id: plan.agentId, name: plan.name, provider: provider as AgentProvider, ...(plan.role ? { role: plan.role } : {}), ...(capabilities ? { capabilities } : {}), cwd: plan.cwd };
+      const res = await spawnAgentCore({ id: plan.agentId, cwd: plan.cwd, command: bin, args, cols: 120, rows: 32, hive: meta, isolate: plan.isolate, provider: provider as AgentProvider }, sender);
+      if (!res.ok) return { ok: false, error: res.error };
+      if (tokenCap) setAgentTokenCap(plan.agentId, tokenCap);
+      if (goal) hive.send({ to: plan.agentId, act: 'request', subject: 'Your goal', body: goal, requires_reply: false }, 'human');
+      return { ok: true };
+    }
+  };
+}
 ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramount.dispatch', paramountLog, {
   sender: evt.sender.id,
   commandType: command && typeof command === 'object' && typeof (command as { type?: unknown }).type === 'string'
@@ -3614,6 +3654,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   prereqInstall: { plan: paramountPrereqPlan, run: (plan) => paramountRunPrereqInstall(plan, evt.sender) },
   logStep: (step) => paramountLog(step),
   agentSources: { roots: paramountAgentRoots, deliverHire },
+  team: paramountTeamDeps(evt.sender),
   savePreference: saveParamountPreference,
   appendEvent: (event) => {
     const root = hive.root();

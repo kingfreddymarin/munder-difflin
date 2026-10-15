@@ -6,6 +6,7 @@ import { createSpan, type Span } from './paramountObservability';
 import { normalizeWeekly } from '../shared/weeklySchedule';
 import { AGENT_SOURCES, discoverAgents, findAgents, toHireManifest, type AgentSourceRoots } from './agentSources';
 import type { HireManifest } from '../shared/hire';
+import { dispatchTeam, type ParamountTeamDeps } from './paramount-team';
 
 export interface ParamountDeps {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
@@ -51,6 +52,8 @@ export interface ParamountDeps {
     roots(): AgentSourceRoots;
     deliverHire(manifest: HireManifest): void;
   };
+  /** Team screen: new cards, per-agent models, the Add-Agent hire form (paramount-team.ts). */
+  team?: ParamountTeamDeps;
 }
 
 export interface ParamountPrereqPlan {
@@ -113,11 +116,12 @@ function text(value: unknown): value is string {
 /** Only commands without a safe, direct preload equivalent are handled here.
  *  Every failure goes through `span.fail`, so it carries an errorId and code
  *  and is logged with its context under the span's correlation id. */
-export function dispatchParamount(command: unknown, deps: ParamountDeps, span: Span = createSpan('paramount.dispatch')): ParamountResult {
+export function dispatchParamount(command: unknown, deps: ParamountDeps, span: Span = createSpan('paramount.dispatch')): ParamountResult | Promise<ParamountResult> {
   const commandType = object(command) && typeof command.type === 'string' ? command.type.slice(0, 80) : undefined;
   const fail = (code: ParamountErrorCode, message: string, cause?: unknown): ParamountResult =>
     span.fail(code, message, cause, { commandType });
   if (!object(command) || !id(command.type)) return fail('INVALID_COMMAND', 'Invalid command');
+  const team = dispatchTeam(command, deps, span); if (team) return team;
   let writeAttempted = false;
   let diagnostics: ParamountDiagnostics | undefined;
   let prereq: ParamountPrereqReport | undefined;
