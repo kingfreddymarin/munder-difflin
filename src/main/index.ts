@@ -8,6 +8,7 @@ import {
   unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync, lstatSync,
   readlinkSync, symlinkSync
 } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
@@ -3709,7 +3710,16 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
     // unredacted config from ever being held in the bundle object.
     config: redact(readConfig()),
     logLines
-  }, cid)
+  }, cid),
+  // A real save dialog, so a cancel is reported as canceled rather than saved.
+  saveDiagnostics: async ({ name, text }) => {
+    const owner = BrowserWindow.fromWebContents(evt.sender);
+    const options = { title: 'Export diagnostics', defaultPath: join(app.getPath('downloads'), name), filters: [{ name: 'JSON', extensions: ['json'] }] };
+    const picked = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+    if (picked.canceled || !picked.filePath) return { canceled: true };
+    await writeFile(picked.filePath, text, { encoding: 'utf8', mode: 0o600 });
+    return { canceled: false, path: picked.filePath };
+  }
 }, span);
 }));
 ipcMain.handle('hive:registry', () => hive.registry());

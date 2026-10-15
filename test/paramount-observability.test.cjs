@@ -113,7 +113,11 @@ test('every dispatch failure path returns a code and errorId', () => {
     [{ type: 'access.set', agentId: 'jim', sourceId: 'ado', access: 'rw' }, 'UNSUPPORTED'],
     [{ type: 'layout.panels', panels: [] }, 'UNSUPPORTED'],
     [{ type: 'diagnostics.bundle' }, 'UNSUPPORTED'],
-    [{ type: 'diagnostics.bundle', logLines: 0 }, 'INVALID_INPUT']
+    [{ type: 'diagnostics.bundle', logLines: 0 }, 'INVALID_INPUT'],
+    [{ type: 'diagnostics.save', name: 'x.json' }, 'UNSUPPORTED'],
+    [{ type: 'diagnostics.save', name: '../x.json' }, 'INVALID_INPUT'],
+    [{ type: 'diagnostics.save', name: 'x.txt' }, 'INVALID_INPUT'],
+    [{ type: 'diagnostics.save', name: 'x.json', path: '/tmp/x.json' }, 'INVALID_INPUT']
   ];
   for (const [command, code] of cases) {
     const result = dispatchParamount(command, deps());
@@ -252,6 +256,52 @@ test('diagnostics.bundle returns logs, crashes, app, OS and redacted config', ()
   assertNoSecret(d, 'diagnostics bundle');
   assert.equal(audited.length, 1, 'bundle export is audited');
   assertNoSecret(audited, 'audit event');
+});
+
+// ─── (4b) diagnostics.save: the core writes the redacted file; cancel is not "saved" ─
+test('diagnostics.save writes the redacted bundle through the save dep and audits the save', async () => {
+  const audited = [];
+  const writes = [];
+  const config = { slackBotToken: SECRETS.slack, notifications: true };
+  const result = await dispatchParamount({ type: 'diagnostics.save', name: 'paramount-diagnostics-20261015-070509.json' }, deps({
+    appendEvent: (e) => audited.push(e),
+    diagnostics: ({ logLines, cid }) => obs.buildDiagnostics({ root: null, app: {}, os: {}, config, logLines }, cid),
+    saveDiagnostics: async (file) => { writes.push(file); return { canceled: false, path: `/picked/${file.name}` }; }
+  }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.saved, { canceled: false, path: '/picked/paramount-diagnostics-20261015-070509.json' });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].name, 'paramount-diagnostics-20261015-070509.json');
+  const written = JSON.parse(writes[0].text);
+  assert.equal(written.config.slackBotToken, obs.REDACTED);
+  assert.equal(written.correlationId, result.event.correlationId);
+  assert.ok(writes[0].text.endsWith('\n'));
+  assertNoSecret(writes[0].text, 'saved diagnostics file');
+  assert.equal(audited.length, 1, 'a real save is audited');
+});
+
+test('diagnostics.save reports a canceled dialog as canceled and records nothing', async () => {
+  const audited = [];
+  const published = [];
+  const result = await dispatchParamount({ type: 'diagnostics.save', name: 'paramount-diagnostics.json' }, deps({
+    appendEvent: (e) => audited.push(e), publish: (e) => published.push(e),
+    diagnostics: ({ cid }) => obs.buildDiagnostics({ root: null, app: {}, os: {}, config: {} }, cid),
+    saveDiagnostics: async () => ({ canceled: true })
+  }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.saved, { canceled: true });
+  assert.equal(audited.length, 0);
+  assert.equal(published.length, 0);
+});
+
+test('diagnostics.save turns a failed write into UNCERTAIN_STATE with an errorId', async () => {
+  const result = await dispatchParamount({ type: 'diagnostics.save', name: 'paramount-diagnostics.json' }, deps({
+    diagnostics: ({ cid }) => obs.buildDiagnostics({ root: null, app: {}, os: {}, config: {} }, cid),
+    saveDiagnostics: async () => { throw new Error('EACCES'); }
+  }));
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'UNCERTAIN_STATE');
+  assert.match(result.errorId, /\S/);
 });
 
 test('diagnostics with no hive root reports the gap instead of failing', () => {

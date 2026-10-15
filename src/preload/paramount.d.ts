@@ -33,6 +33,10 @@ export type ParamountCommand =
   | { type: 'setup.dismiss'; degraded: string[] }
   /** Read-only: returns a redacted diagnostics bundle on the result. */
   | { type: 'diagnostics.bundle'; logLines?: number }
+  /** Saves the same redacted bundle as a JSON file through the core's save dialog.
+   *  `name` is the suggested file name. The result's `saved` says whether the
+   *  human picked a path or canceled; nothing is written on cancel. */
+  | { type: 'diagnostics.save'; name: string; logLines?: number }
   /** Read-only: lists agents defined in Claude Code, Codex and Munder setups.
    *  `projectDir` adds that project's `.claude/agents` and `AGENTS.md`. */
   | { type: 'agents.discover'; sources?: ParamountAgentSource[]; projectDir?: string }
@@ -84,7 +88,8 @@ export interface ParamountFailure {
 }
 export type ParamountResult =
   | { ok: true; event: ParamountEvent; diagnostics?: ParamountDiagnostics; prereq?: ParamountPrereqReport;
-      discovery?: ParamountAgentDiscovery; imported?: ParamountAgentImport; artifacts?: ParamountArtifactMap }
+      discovery?: ParamountAgentDiscovery; imported?: ParamountAgentImport; artifacts?: ParamountArtifactMap;
+      saved?: ParamountDiagnosticsSave }
   | ParamountFailure;
 
 /** What `prereq.install` would run (confirmed=false) or started (confirmed=true). */
@@ -141,6 +146,9 @@ export interface ParamountAgentImport {
   /** Fields that were dropped or shortened to fit the hire manifest limits. */
   adjustments: string[];
 }
+
+/** Outcome of `diagnostics.save`: the written path, or canceled with nothing written. */
+export type ParamountDiagnosticsSave = { canceled: true } | { canceled: false; path: string };
 
 /** Redacted support bundle returned by `diagnostics.bundle`. */
 export interface ParamountDiagnostics {

@@ -9,11 +9,11 @@ import type { Command, DataProvider } from './protocol';
 import { applyEvent } from './reducer';
 import { share } from './share';
 import { record } from '@/lib/perf';
-import { diagnosticsFile } from '@/lib/diagnostics-file';
+import { exportDiagnostics } from '@/lib/diagnostics-file';
 import type { Snapshot } from './types';
 
 export type FloorStatus = 'loading' | 'ready' | 'error' | 'disconnected';
-export type DiagnosticsState = { status: 'idle' | 'loading' | 'copied' | 'saved' | 'error'; error?: BackendError };
+export type DiagnosticsState = { status: 'idle' | 'loading' | 'copied' | 'saved' | 'canceled' | 'error'; error?: BackendError; path?: string };
 
 type Store = {
   provider: DataProvider;
@@ -249,20 +249,17 @@ export function useDiagnostics() {
     }
   }, [provider]);
   const save = React.useCallback(async () => {
-    if (!provider.diagnostics) return;
+    if (!provider.saveDiagnostics) return;
+    const saveDiagnostics = provider.saveDiagnostics.bind(provider);
     setState({ status: 'loading' });
     try {
-      const { name, text } = diagnosticsFile(await provider.diagnostics());
-      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
-      const link = Object.assign(document.createElement('a'), { href: url, download: name });
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
-      setState({ status: 'saved' });
+      const result = await exportDiagnostics(saveDiagnostics);
+      setState(result.status === 'saved' ? { status: 'saved', path: result.path } : { status: 'canceled' });
     } catch (cause) {
-      setState({ status: 'error', error: toBackendError(cause, 'diagnostics.bundle') });
+      setState({ status: 'error', error: toBackendError(cause, 'diagnostics.save') });
     }
   }, [provider]);
-  return { ...state, available, copy, save };
+  return { ...state, available, canSave: !!provider.saveDiagnostics, copy, save };
 }
 
 export function CopyDiagnosticsButton({ size, variant = 'outline' }: { size?: 'sm'; variant?: 'outline' | 'ghost' }) {
@@ -278,11 +275,13 @@ export function CopyDiagnosticsButton({ size, variant = 'outline' }: { size?: 's
 
 export function ExportDiagnosticsButton() {
   const diagnostics = useDiagnostics();
-  const label = diagnostics.status === 'loading' ? 'Collecting…' : diagnostics.status === 'saved' ? 'Diagnostics saved' : 'Export diagnostics';
+  const label = diagnostics.status === 'loading' ? 'Saving…' : diagnostics.status === 'saved' ? 'Diagnostics saved' : 'Export diagnostics';
   return <span className="inline-flex flex-col gap-2">
-    <Button type="button" disabled={!diagnostics.available || diagnostics.status === 'loading'}
-      title={diagnostics.available ? 'Save the redacted support bundle as a JSON file' : 'Diagnostics need the desktop core; sample data has none.'}
+    <Button type="button" disabled={!diagnostics.canSave || diagnostics.status === 'loading'}
+      title={diagnostics.canSave ? 'Save the redacted support bundle as a JSON file' : 'Diagnostics need the desktop core; sample data has none.'}
       onClick={() => void diagnostics.save()}>{label}</Button>
+    {diagnostics.status === 'saved' && diagnostics.path && <span role="status" className="text-muted-foreground text-xs break-all">Saved to {diagnostics.path}</span>}
+    {diagnostics.status === 'canceled' && <span role="status" className="text-muted-foreground text-xs">Export canceled; nothing was saved.</span>}
     {diagnostics.error && <ErrorNotice error={diagnostics.error} />}
   </span>;
 }

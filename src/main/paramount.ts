@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { HarnessConfig, ScheduledMission } from './config';
-import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand, ParamountPrereqReport, ParamountSourceWarning } from '../preload/paramount';
+import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand, ParamountPrereqReport, ParamountSourceWarning } from '../preload/paramount';
 import { createSpan, type Span } from './paramountObservability';
 import { dispatchHomeChats, type HomeChatsDeps } from './paramount-home-chats';
 import type { ParamountHomeChatsCommand } from '../preload/paramount';
@@ -15,6 +15,7 @@ import type { ParamountArtifactMap } from '../preload/paramount';
 import { dispatchTeam, type ParamountTeamDeps } from './paramount-team';
 import { AGENT_PROVIDER_PRESETS } from '../shared/agentProvider';
 
+const DIAGNOSTICS_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/;
 const BYOK_ENDPOINT_ENGINES = ['opencode', 'crush', 'pi', 'qwen'];
 const MODEL_DEFAULT_ENGINES = AGENT_PROVIDER_PRESETS.filter((preset) => preset.supportsModel && preset.id !== 'claude').map((preset) => preset.id as string);
 
@@ -33,6 +34,8 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   publish(event: ParamountEvent): void;
   /** Redacted support bundle for `diagnostics.bundle`; absent means unsupported. */
   diagnostics?(options: { logLines?: number; cid: string }): ParamountDiagnostics;
+  /** Asks where to save `text` (suggesting `name`) and writes it there; absent means unsupported. */
+  saveDiagnostics?(file: { name: string; text: string }): Promise<ParamountDiagnosticsSave>;
   /** Floor-wide YOLO: persisted as config `autoMode` (new agents spawn with the
    *  engine's bypass-permissions stance). Absent means unsupported. */
   setFloorAutoMode?(on: boolean, expiresAt?: string): void;
@@ -261,6 +264,22 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         if (!deps.diagnostics) return fail('UNSUPPORTED', 'Diagnostics are not available in this build');
         diagnostics = deps.diagnostics({ logLines: command.logLines as number | undefined, cid: span.cid });
         break;
+      }
+      case 'diagnostics.save': {
+        if (!onlyKeys(command, ['type', 'name', 'logLines'])) return fail('INVALID_INPUT', 'diagnostics.save accepts name and logLines');
+        if (typeof command.name !== 'string' || !DIAGNOSTICS_FILE_NAME.test(command.name)) return fail('INVALID_INPUT', 'name must be a plain .json file name');
+        if (command.logLines !== undefined && (typeof command.logLines !== 'number' || !Number.isInteger(command.logLines) ||
+          command.logLines < 1 || command.logLines > 2000)) return fail('INVALID_INPUT', 'logLines must be an integer from 1 to 2000');
+        if (!deps.diagnostics || !deps.saveDiagnostics) return fail('UNSUPPORTED', 'Saving diagnostics is not available in this build');
+        // The core builds and redacts the bundle itself; the renderer only names the file.
+        const text = `${JSON.stringify(deps.diagnostics({ logLines: command.logLines as number | undefined, cid: span.cid }), null, 2)}\n`;
+        writeAttempted = true;
+        return deps.saveDiagnostics({ name: command.name, text }).then((saved): ParamountResult => {
+          const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as ParamountCommand, correlationId: span.cid };
+          // A cancel writes nothing, so only a real save is recorded on the floor.
+          if (!saved.canceled) { deps.appendEvent(event); deps.publish(event); }
+          return { ok: true, event, saved };
+        }, (error: unknown) => fail('UNCERTAIN_STATE', `The file may be partly written: ${error instanceof Error ? error.message : 'save failed'}`, error));
       }
       case 'access.set': {
         if (!id(command.agentId) || !id(command.sourceId) || !['rw', 'r', 'none'].includes(command.access as string)

@@ -13,7 +13,7 @@ execFileSync('node_modules/.bin/tsc', [
   '--skipLibCheck', 'src/lib/diagnostics-file.ts',
 ]);
 const file = readdirSync(outputDir, { recursive: true }).find((name) => String(name).endsWith('diagnostics-file.js'));
-const { diagnosticsFile } = await import(pathToFileURL(join(outputDir, String(file))).href);
+const { diagnosticsFile, exportDiagnostics } = await import(pathToFileURL(join(outputDir, String(file))).href);
 
 test('diagnosticsFile names the export by local time and keeps the bundle as pretty JSON', () => {
   const bundle = { app: { version: '0.4.6' }, log: ['a', 'b'] };
@@ -21,4 +21,20 @@ test('diagnosticsFile names the export by local time and keeps the bundle as pre
   assert.equal(name, 'paramount-diagnostics-20261015-070509.json');
   assert.deepEqual(JSON.parse(text), bundle);
   assert.ok(text.endsWith('\n'));
+});
+
+test('exportDiagnostics reports a canceled save dialog as canceled, not saved', async () => {
+  const names = [];
+  const result = await exportDiagnostics(async (name) => { names.push(name); return { canceled: true }; }, new Date(2026, 9, 15, 7, 5, 9));
+  assert.deepEqual(result, { status: 'canceled' });
+  assert.deepEqual(names, ['paramount-diagnostics-20261015-070509.json']);
+});
+
+test('exportDiagnostics reports the path the core wrote', async () => {
+  const result = await exportDiagnostics(async () => ({ canceled: false, path: '/tmp/x/paramount-diagnostics.json' }));
+  assert.deepEqual(result, { status: 'saved', path: '/tmp/x/paramount-diagnostics.json' });
+});
+
+test('exportDiagnostics passes a core failure through for the error notice', async () => {
+  await assert.rejects(exportDiagnostics(async () => { throw new Error('disk full'); }), /disk full/);
 });

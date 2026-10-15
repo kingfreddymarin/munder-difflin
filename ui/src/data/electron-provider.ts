@@ -1,13 +1,13 @@
 // The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
 import { findBridge, requireBridge } from './bridge';
-import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
+import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import { askOptions, cardAsks, logActivity } from './projection';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, CardRef, CardStatus, Message, Snapshot } from './types';
 
-type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn' | 'teamModels' | 'hire' | 'artifacts'>> & { kind: 'electron' };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'saveDiagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn' | 'teamModels' | 'hire' | 'artifacts'>> & { kind: 'electron' };
 
 const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
 /** Agent fields the core's agent.update accepts (name, budget; model via the Team module). */
@@ -66,7 +66,7 @@ function status(value: string, breaker: string): Agent['status'] {
 }
 
 type OkResult = Extract<ParamountResult, { ok: true }> & Omit<ParamountTeamResult, 'ok' | 'event'>;
-type ResultPayload = 'diagnostics' | 'discovery' | 'imported' | 'models' | 'hire' | 'artifacts';
+type ResultPayload = 'diagnostics' | 'saved' | 'discovery' | 'imported' | 'models' | 'hire' | 'artifacts';
 
 /** Sends a command whose answer is a payload on the result rather than a floor event. */
 async function query<K extends ResultPayload>(command: ParamountCommand | ParamountTeamCommand, payload: K, missing: string): Promise<NonNullable<OkResult[K]>> {
@@ -282,6 +282,9 @@ export function createElectronProvider(): ElectronProvider {
     },
     diagnostics(): Promise<ParamountDiagnostics> {
       return query({ type: 'diagnostics.bundle' }, 'diagnostics', 'The core returned no diagnostics bundle.');
+    },
+    saveDiagnostics(name: string): Promise<ParamountDiagnosticsSave> {
+      return query({ type: 'diagnostics.save', name }, 'saved', 'The core did not say whether the file was saved.');
     },
     discoverAgents(options = {}): Promise<ParamountAgentDiscovery> {
       return query({ type: 'agents.discover', ...options }, 'discovery', 'The core returned no agent list.');
