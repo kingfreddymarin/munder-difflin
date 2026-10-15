@@ -5,7 +5,7 @@ import type { Access, Snapshot } from './types';
 const t = (hhmm: string, day = '2026-10-14') => `${day}T${hhmm}:00-06:00`;
 
 export const fixtures: Snapshot = {
-  settings: { defaultModel: 'claude-sonnet-4-6', orchestratorMaySpawn: false, semanticMemory: true, embeddingModel: 'minilm', reflectEnabled: true,
+  settings: { defaultModel: 'claude-sonnet-4-6', ticketKeyPrefix: 'NSC', orchestratorMaySpawn: false, semanticMemory: true, embeddingModel: 'minilm', reflectEnabled: true,
     maxTurns: 100, costCapTokens: 0, circuitBreaker: { enabled: true, hardStop: false, repeatedToolLimit: 8, errorStormLimit: 5, tokenVelocityPerMin: 60000 },
     providerBaseUrls: { qwen: 'http://localhost:11434/v1' }, providerDefaultModels: { qwen: 'qwen3.5:9b' }, responseStyleBrief: '', claudeOutputStyle: 'off' },
   prerequisites: [
