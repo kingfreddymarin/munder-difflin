@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build the unsigned Paramount DMG.
 #
-# Needs the Paramount UI built first (cd ../paramount && npm run build): its
+# Needs the Paramount UI built first (cd ui && npm ci && npm run build): its
 # dist/ is bundled via electron-builder extraResources. The dir comes from
-# scripts/paramount-ui-dist.cjs: ../paramount/dist, or PARAMOUNT_UI_DIST. Extra args go straight to
+# scripts/paramount-ui-dist.cjs: ui/dist, or PARAMOUNT_UI_DIST. Extra args go straight to
 # electron-builder, e.g. `scripts/build-dmg.sh --arm64` or `--universal`.
 # Output: dist/Paramount-<version>-<arch>.dmg
 set -euo pipefail

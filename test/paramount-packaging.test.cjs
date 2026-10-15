@@ -1,6 +1,5 @@
-// Paramount packaging: the bundled UI must come from the sibling app
-// 00-new/apps/paramount/dist when packaging from the main checkout
-// 00-new/apps/munder-difflin (review finding 2), overridable by PARAMOUNT_UI_DIST.
+// Paramount packaging: the bundled UI comes from ui/dist (the UI subtree in this
+// repo; review finding 2), overridable by PARAMOUNT_UI_DIST.
 const { test } = require('node:test')
 const assert = require('node:assert')
 const fs = require('node:fs')
@@ -10,20 +9,16 @@ const { spawnSync } = require('node:child_process')
 const yaml = require('js-yaml')
 
 const ROOT = path.join(__dirname, '..')
-// node_modules is shared with the main checkout, so its real parent is that checkout.
-const MAIN = path.dirname(fs.realpathSync(path.join(ROOT, 'node_modules')))
 const { resolveParamountUiDist } = require('../scripts/paramount-ui-dist.cjs')
 
-test('default UI dist from the main checkout is 00-new/apps/paramount/dist', () => {
-  const dist = resolveParamountUiDist(MAIN, {})
-  assert.ok(dist.endsWith(path.join('00-new', 'apps', 'paramount', 'dist')), dist)
-  assert.strictEqual(dist, path.resolve(MAIN, '..', 'paramount', 'dist'))
+test('default UI dist is ui/dist in this repo', () => {
+  assert.strictEqual(resolveParamountUiDist(ROOT, {}), path.resolve(ROOT, 'ui', 'dist'))
 })
 
 test('PARAMOUNT_UI_DIST overrides the default', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-ui-'))
-  assert.strictEqual(resolveParamountUiDist(MAIN, { PARAMOUNT_UI_DIST: dir }), dir)
-  assert.strictEqual(resolveParamountUiDist(MAIN, { PARAMOUNT_UI_DIST: '' }), path.resolve(MAIN, '..', 'paramount', 'dist'))
+  assert.strictEqual(resolveParamountUiDist(ROOT, { PARAMOUNT_UI_DIST: dir }), dir)
+  assert.strictEqual(resolveParamountUiDist(ROOT, { PARAMOUNT_UI_DIST: '' }), path.resolve(ROOT, 'ui', 'dist'))
 })
 
 test('resolver CLI fails clearly when index.html is missing', () => {
@@ -41,6 +36,17 @@ test('resolver CLI fails clearly when index.html is missing', () => {
   })
   assert.strictEqual(ok.status, 0, ok.stderr)
   assert.strictEqual(ok.stdout.trim(), dir)
+})
+
+test('wrapper exits non-zero with a message when the command cannot be spawned', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-ui-'))
+  fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html>')
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'paramount-ui-dist.cjs'), 'pm-no-such-binary-xyz'], {
+    env: { ...process.env, PARAMOUNT_UI_DIST: dir },
+    encoding: 'utf8'
+  })
+  assert.notStrictEqual(r.status, 0)
+  assert.match(r.stderr, /could not run 'pm-no-such-binary-xyz'/)
 })
 
 test('build-dmg.sh fails clearly when index.html is missing', { skip: process.platform !== 'darwin' }, () => {

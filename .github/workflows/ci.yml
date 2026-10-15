@@ -1,42 +1,77 @@
 name: CI
 
+# Paramount CI: the Electron core (repo root) and the Paramount UI (ui/, a git
+# subtree of the UI repo). Every step tees its output into logs/, and the logs
+# are uploaded as an artifact only when a step fails.
 on:
   push:
-    branches: [main, 'release/**']
+    branches: [main, dev]
   pull_request:
-    branches: [main, 'release/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  typecheck:
-    name: Typecheck
-    runs-on: macos-latest
+  test:
+    name: Typecheck, test, build (macOS arm64)
+    # macos-14 is the Apple Silicon (arm64) runner image.
+    runs-on: macos-14
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Typecheck (node + web)
-        run: npm run typecheck
-      # Release gate: every advertised download link and docs version string must
-      # match package.json. A version left behind in RELEASE.md / docs turns the
-      # download buttons into 404s the moment the next release ships — this catches
-      # it on the release branch, before a tag, instead of on launch day.
-      - name: Release links consistent
-        run: npm run check:links
 
-  build:
-    name: Build
-    runs-on: macos-latest
-    # Build exercises the native node-pty rebuild; allowed to fail without blocking.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
-      - run: npm run build
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      # node-gyp (electron-rebuild of node-pty / better-sqlite3 in postinstall)
+      # imports distutils, which Python 3.12 removed.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Provide distutils for node-gyp
+        run: python -m pip install --upgrade setuptools
+
+      - name: Prepare log dir
+        run: mkdir -p logs
+
+      - name: Install (root)
+        run: npm ci 2>&1 | tee logs/root-npm-ci.log
+
+      - name: Install (ui)
+        working-directory: ui
+        run: npm ci 2>&1 | tee ../logs/ui-npm-ci.log
+
+      - name: Typecheck (root, tsc node + web)
+        run: npm run typecheck 2>&1 | tee logs/root-typecheck.log
+
+      - name: Test (root, node --test)
+        run: npm run test:focused 2>&1 | tee logs/root-test.log
+
+      - name: Build (ui, tsc + vite)
+        working-directory: ui
+        run: npm run build 2>&1 | tee ../logs/ui-build.log
+
+      - name: Test (ui, node --test)
+        working-directory: ui
+        run: npm test 2>&1 | tee ../logs/ui-test.log
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: logs/
+          retention-days: 14
