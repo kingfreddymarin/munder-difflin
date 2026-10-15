@@ -230,6 +230,8 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
           : nonnegative.includes(key) ? typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0
           : key === 'maxTurns' ? value !== null && (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 1000)
           : key === 'embeddingModel' ? value !== 'minilm' && value !== 'embeddinggemma'
+          : key === 'responseStyleBrief' ? typeof value !== 'string' || value.length > 1200 || value.includes('\0')
+          : key === 'claudeOutputStyle' ? !['off', 'concise', 'explanatory', 'learning'].includes(value as string)
           : key === 'providerBaseUrls' || key === 'providerDefaultModels' ? !providerField
           : key === 'circuitBreaker' ? !object(value) || Object.keys(value).length !== 1 || !Object.entries(value).every(([k, v]) =>
               ['enabled', 'hardStop'].includes(k) ? typeof v === 'boolean' :

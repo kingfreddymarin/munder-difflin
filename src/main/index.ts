@@ -2782,6 +2782,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         { ...opts.hive, cwd: opts.cwd, provider },
         {
           semanticMemory: memory.active(),
+          responseStyleBrief: readConfig().responseStyleBrief,
+          claudeOutputStyle: readConfig().claudeOutputStyle,
           knowledgeGraph: knowledge.active(),
           // Bake the ABSOLUTE KG CLI path into the agent's prompt. The prompt used
           // to spell it `$KG_CLI`, which is POSIX-only: under cmd.exe/PowerShell it
@@ -3583,7 +3585,8 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
     defaultModel: readConfig().defaultModel, godProvider: readConfig().godProvider, orchestratorMaySpawn: readConfig().orchestratorMaySpawn,
     semanticMemory: readConfig().semanticMemory, embeddingModel: readConfig().embeddingModel, reflectEnabled: readConfig().reflectEnabled,
     maxTurns: readConfig().maxTurns, costCapTokens: readConfig().costCapTokens, circuitBreaker: effectiveCircuitBreaker(readConfig().circuitBreaker),
-    providerBaseUrls: readConfig().providerBaseUrls ?? {}, providerDefaultModels: readConfig().providerDefaultModels ?? {} },
+    providerBaseUrls: readConfig().providerBaseUrls ?? {}, providerDefaultModels: readConfig().providerDefaultModels ?? {},
+    responseStyleBrief: readConfig().responseStyleBrief ?? '', claudeOutputStyle: readConfig().claudeOutputStyle ?? 'off' },
   missions: readConfig().missions ?? [], ptys: ptyManager.list(), preferences: paramountPreferences(),
   integrations: integrations.listRecordsRedacted(),
   // Service prerequisite state, including a daemon started outside the app.

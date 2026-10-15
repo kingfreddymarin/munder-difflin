@@ -210,6 +210,10 @@ export interface HarnessConfig {
   defaultCommand: string;
   /** Default model for newly spawned agents (e.g. 'claude-sonnet-4-6[1m]'); unset = CLI default. */
   defaultModel?: string;
+  /** Operator's response guidance, applied to newly started hive agents. */
+  responseStyleBrief?: string;
+  /** Additional Claude Code response mode for newly started Claude agents. */
+  claudeOutputStyle?: 'off' | 'concise' | 'explanatory' | 'learning';
   /** Which provider powers the GOD orchestrator ("Michael"). The persona is
    *  constant; only its engine is selectable. Default 'claude'. Eligible providers
    *  are those that can receive inbox (claude/codex/antigravity/qwen). */

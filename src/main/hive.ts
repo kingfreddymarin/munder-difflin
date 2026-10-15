@@ -722,6 +722,8 @@ export class HiveManager {
     meta: AgentMeta,
     opts: {
       semanticMemory?: boolean;
+      responseStyleBrief?: string;
+      claudeOutputStyle?: 'off' | 'concise' | 'explanatory' | 'learning';
       knowledgeGraph?: boolean;
       /** ABSOLUTE path to the Knowledge-Graph CLI (`knowledge.env().KG_CLI`), baked
        *  into the agent's prompt instead of a `$KG_CLI` shell reference — `$VAR` is
@@ -854,7 +856,7 @@ export class HiveManager {
     if (!isHiveAwareProvider(meta.provider)) {
       const preset = providerPreset(meta.provider ?? 'claude');
       const flag = preset.initialPromptFlag;
-      const prompt = this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath);
+      const prompt = this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath, opts.responseStyleBrief, opts.claudeOutputStyle);
       // agy, codex, and grok expose a Claude-style lifecycle-hook surface, so each
       // gets the SAME live status + Stop→inbox-drain Claude does — selected by the
       // preset's `hookBridge`. agy needs a translating shim (its hook stdin/stdout
@@ -999,7 +1001,7 @@ export class HiveManager {
     const args: string[] = [];
     if (!claudeProvider) return { args, env };
 
-    args.push('--append-system-prompt', this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath));
+    args.push('--append-system-prompt', this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath, opts.responseStyleBrief, opts.claudeOutputStyle));
 
     // Phase 1 — autonomy: attach lifecycle hooks via --settings (no edits to the
     // user's repo) so the agent reports activity and drains its inbox on Stop.
@@ -1541,7 +1543,9 @@ export class HiveManager {
     root: string,
     semanticMemory: boolean,
     knowledgeGraph: boolean,
-    kgCliPath?: string
+    kgCliPath?: string,
+    responseStyleBrief?: string,
+    claudeOutputStyle?: 'off' | 'concise' | 'explanatory' | 'learning'
   ): string {
     // Native-separator path helpers — see the 🪟 note above.
     const inDir = (...parts: string[]): string => join(dir, ...parts);
@@ -1617,6 +1621,8 @@ export class HiveManager {
       runtimeLine,
       slackLine,
       ctxLine,
+      responseStyleBrief ? `RESPONSE STYLE: ${responseStyleBrief}` : '',
+      meta.provider === 'claude' && claudeOutputStyle && claudeOutputStyle !== 'off' ? `CLAUDE OUTPUT STYLE: ${claudeOutputStyle}. Follow this response mode when writing to the human.` : '',
       `Env vars available to you: AGENT_ID, AGENT_NAME, HIVE_ROOT, AGENT_DIR.`
     ].filter(Boolean).join('\n');
   }
