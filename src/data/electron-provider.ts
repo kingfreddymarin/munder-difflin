@@ -4,7 +4,7 @@ import { findBridge, requireBridge } from './bridge';
 import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountRawSnapshot, ParamountResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import type { Command, DataProvider, FloorEvent } from './protocol';
-import type { Agent, Card, Message, Snapshot } from './types';
+import type { Agent, Card, CardRef, CardStatus, Message, Snapshot } from './types';
 
 type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent'>> & { kind: 'electron' };
 
@@ -20,6 +20,23 @@ const array = (value: unknown): Record<string, unknown>[] =>
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const string = (value: unknown, fallback = ''): string => typeof value === 'string' ? value : fallback;
 const date = (value: unknown): string => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : new Date().toISOString();
+
+const REF_KINDS: readonly string[] = ['pr', 'build', 'run', 'workitem'];
+const REF_SYSTEMS: readonly string[] = ['github', 'ado'];
+const httpsUrl = (value: unknown): value is string => {
+  try { return typeof value === 'string' && new URL(value).protocol === 'https:'; } catch { return false; }
+};
+/** Same rule as the core's cardRefs: malformed refs and non-https URLs are left out. */
+function refs(value: unknown): CardRef[] {
+  return array(value).filter((ref) => REF_KINDS.includes(string(ref.kind)) && REF_SYSTEMS.includes(string(ref.system)) && string(ref.id) && httpsUrl(ref.url))
+    .map((ref) => ({ kind: ref.kind, system: ref.system, id: string(ref.id), url: string(ref.url) }) as CardRef);
+}
+const strings = (value: unknown): string[] => Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim()))] : [];
+/** The human's saved order first, then any core column they have not placed. */
+function boardColumns(saved: unknown): CardStatus[] {
+  const order = strings(saved).filter((id) => CORE_COLUMNS.includes(id));
+  return [...order, ...CORE_COLUMNS.filter((id) => !order.includes(id))] as CardStatus[];
+}
 
 function role(value: string, isGod: boolean): Agent['role'] {
   if (isGod) return 'paramount';
@@ -132,7 +149,8 @@ export function createElectronProvider(): ElectronProvider {
         priority: Number(task.priority) <= 1 ? 'P1' : Number(task.priority) === 2 ? 'P2' : 'P3',
         agentId: string(task.assignee), created: date(task.createdAt), createdBy: 'hive', updated: date(task.updatedAt ?? task.createdAt),
         description: string(task.description), dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.filter((id): id is string => typeof id === 'string').join(', ') : '',
-        plan: [], doneMeans: [], links: [], evidence: [], tokens: 0, origin: 'hive', people: [],
+        plan: [], doneMeans: [], tags: strings(task.tags), workspace: string(task.workspace) || undefined,
+        dir: string(task.dir) || undefined, refs: refs(task.refs), tokens: 0, origin: 'hive', people: [],
       }));
       const snapshot: Snapshot = {
         prerequisites: [], setupDismissed: true, objectives: [], wins: [],
@@ -144,7 +162,7 @@ export function createElectronProvider(): ElectronProvider {
           id: message.id, kind: 'question' as const, from: message.from, title: 'Needs your answer', body: message.text,
           at: message.at, chatId: message.chatId, messageId: message.id, actions: [],
         })),
-        cards, activity: [], timelines: [], sources: [], access: {}, engines: [],
+        cards, board: { columns: boardColumns(object(preferences.board).columns) }, activity: [], timelines: [], sources: [], access: {}, engines: [],
         automations: array(native.missions).map((mission) => ({ id: string(mission.id), name: string(mission.label), when: String(mission.intervalMs ?? ''),
           onlyIf: '', then: string(mission.body), onFailure: '', enabled: mission.enabled === true, runs: [], last: '', file: '' })),
         services: [{ id: 'core', group: 'command-center', name: 'Local core', state: 'ok', detail: 'Connected' }], log: [],

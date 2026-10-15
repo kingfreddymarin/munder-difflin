@@ -105,5 +105,11 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
       return audit({ ...s, setupDismissed: true }, ev, 'Continued in degraded mode', 'Setup', c.degraded.length ? `not ready: ${c.degraded.join(', ')}` : 'all ready', ['pm']);
     case 'layout.panels':
       return audit(s, ev, 'Changed Team layout', 'Team', c.panels.join(', '), []);
+    case 'board.columns':
+      return audit({ ...s, board: { columns: c.order } }, ev, 'Reordered board columns', 'Board', c.order.join(' → '), []);
+    case 'card.open':
+    case 'card.link':
+      // Opening is a side effect in the core; the board's data does not change.
+      return s;
   }
 }
