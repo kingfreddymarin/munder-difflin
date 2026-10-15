@@ -1,11 +1,13 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/components/animate-ui/components/buttons/button';
-import { useDispatch, useFloor } from '@/data/store';
+import { useDispatch, useFloor, useUnsupported } from '@/data/store';
+import { UnsupportedReason } from '@/components/app/error-notice';
 import { clock } from '@/components/app/format';
 
 export function YoloBanner() {
   const yolo = useFloor((s) => s.me.yolo);
   const dispatch = useDispatch();
+  const reason = useUnsupported()({ type: 'floor.yolo', patch: { on: false } });
   return (
     <AnimatePresence>
       {yolo.on && (
@@ -17,7 +19,8 @@ export function YoloBanner() {
               {yolo.since ? ` · since ${clock(yolo.since)}` : ''}
               {yolo.autoOffHours ? ` · auto-off after ${yolo.autoOffHours} h` : ''}
             </span>
-            <Button size="sm" variant="outline" onClick={() => dispatch({ type: 'floor.yolo', patch: { on: false } })}>
+            <UnsupportedReason reason={reason} />
+            <Button size="sm" variant="outline" disabled={!!reason} onClick={() => dispatch({ type: 'floor.yolo', patch: { on: false } })}>
               Turn off
             </Button>
           </div>

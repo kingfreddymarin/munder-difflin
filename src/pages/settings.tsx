@@ -9,7 +9,8 @@ import { Badge } from '@/components/ui/badge';
 import { Tile } from '@/components/app/tile';
 import { SeeAll } from '@/components/app/see-all';
 import { stamp } from '@/components/app/format';
-import { useDispatch, useFloor } from '@/data/store';
+import { useDispatch, useFloor, useUnsupported } from '@/data/store';
+import { UnsupportedReason } from '@/components/app/error-notice';
 import { useRouter } from '@/app/router';
 import { resetMockData } from '@/data/mock-provider';
 import { PrereqList } from '@/components/app/prereq-list';
@@ -26,6 +27,10 @@ export function SettingsPage() {
   const audit = useFloor((s) => s.audit);
   const agents = useFloor((s) => s.agents);
   const dispatch = useDispatch();
+  const unsupported = useUnsupported();
+  const profileReason = unsupported({ type: 'account.profile', patch: {} });
+  const yoloReason = unsupported({ type: 'floor.yolo', patch: {} });
+  const iterationReason = unsupported({ type: 'floor.iteration', patch: {} });
   const { route, go } = useRouter();
   const tab = route.params.get('tab') ?? 'account';
   const [profile, setProfile] = React.useState({ name: me.name, workEmail: me.workEmail, timezone: me.timezone });
@@ -66,9 +71,10 @@ export function SettingsPage() {
               <div className="grid gap-1.5"><Label htmlFor="s-work">Work email (used for commits)</Label><Input id="s-work" value={profile.workEmail} onChange={(e) => setProfile({ ...profile, workEmail: e.target.value })} /></div>
               <div className="grid gap-1.5"><Label htmlFor="s-tz">Time zone</Label><Input id="s-tz" value={profile.timezone} onChange={(e) => setProfile({ ...profile, timezone: e.target.value })} /></div>
               <div className="flex gap-2 pt-1">
-                <Button onClick={() => dispatch({ type: 'account.profile', patch: profile })}>Save</Button>
+                <Button disabled={!!profileReason} onClick={() => dispatch({ type: 'account.profile', patch: profile })}>Save</Button>
                 <Button variant="ghost" onClick={() => { resetMockData(); window.location.reload(); }}>Reset sample data</Button>
               </div>
+              <UnsupportedReason reason={profileReason} />
             </Tile>
           </TabsContent>
           <TabsContent value="connections">
@@ -77,7 +83,7 @@ export function SettingsPage() {
                 <div key={c.id} className="bg-card flex items-center gap-3 rounded-xl border p-4">
                   <span className="flex flex-1 flex-col"><span className="font-medium">{c.name}</span><span className="text-muted-foreground text-xs">{c.detail}</span></span>
                   <Badge variant={c.connected ? 'success' : 'danger'}>{c.connected ? 'connected' : 'off'}</Badge>
-                  <Switch checked={c.connected} onCheckedChange={(v) => dispatch({ type: 'account.connection', id: c.id, connected: v })} aria-label={`Connect ${c.name}`} />
+                  <Switch checked={c.connected} disabled={!!unsupported({ type: 'account.connection', id: c.id, connected: !c.connected })} title={unsupported({ type: 'account.connection', id: c.id, connected: !c.connected }) ?? undefined} onCheckedChange={(v) => dispatch({ type: 'account.connection', id: c.id, connected: v })} aria-label={`Connect ${c.name}`} />
                 </div>
               ))}
             </div>
@@ -87,23 +93,24 @@ export function SettingsPage() {
               <Tile title="YOLO mode" hint="no limits, fast cycles" className="border-fuchsia-500/30">
                 <div className="flex items-center gap-3">
                   <span className="flex-1 text-sm">No token caps · approvals auto-granted · the breaker only steers. Everything is still logged.</span>
-                  <Switch checked={me.yolo.on} onCheckedChange={(v) => dispatch({ type: 'floor.yolo', patch: { on: v } })} aria-label="YOLO mode" />
+                  <Switch checked={me.yolo.on} disabled={!!yoloReason} onCheckedChange={(v) => dispatch({ type: 'floor.yolo', patch: { on: v } })} aria-label="YOLO mode" />
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="flex-1 text-sm">Keep my hard rules (no deletes, no policy bypass)</span>
-                  <Switch checked={me.yolo.keepHardRules} onCheckedChange={(v) => dispatch({ type: 'floor.yolo', patch: { keepHardRules: v } })} aria-label="Keep hard rules" />
+                  <Switch checked={me.yolo.keepHardRules} disabled={!!yoloReason} onCheckedChange={(v) => dispatch({ type: 'floor.yolo', patch: { keepHardRules: v } })} aria-label="Keep hard rules" />
                 </div>
                 <div className="flex flex-col gap-2">
                   <span className="text-sm">Turn itself off after</span>
-                  <RadioGroup value={String(me.yolo.autoOffHours ?? 'never')} onValueChange={(v) => dispatch({ type: 'floor.yolo', patch: { autoOffHours: v === 'never' ? null : Number(v) } })} className="flex flex-wrap gap-4">
+                  <RadioGroup value={String(me.yolo.autoOffHours ?? 'never')} disabled={!!yoloReason} onValueChange={(v) => dispatch({ type: 'floor.yolo', patch: { autoOffHours: v === 'never' ? null : Number(v) } })} className="flex flex-wrap gap-4">
                     {['1', '2', '8', 'never'].map((v) => (
                       <Label key={v} className="gap-2 font-normal"><RadioGroupItem value={v} />{v === 'never' ? 'Never' : `${v} h`}</Label>
                     ))}
                   </RadioGroup>
                 </div>
+                <UnsupportedReason reason={yoloReason} />
               </Tile>
               <Tile title="Iteration cycle" hint="how fast the floor loops">
-                <RadioGroup value={me.iteration.speed} onValueChange={(v) => dispatch({ type: 'floor.iteration', patch: speeds[v as IterationSettings['speed']].patch })} className="flex flex-col gap-3">
+                <RadioGroup value={me.iteration.speed} disabled={!!iterationReason} onValueChange={(v) => dispatch({ type: 'floor.iteration', patch: speeds[v as IterationSettings['speed']].patch })} className="flex flex-col gap-3">
                   {(Object.keys(speeds) as IterationSettings['speed'][]).map((k) => (
                     <Label key={k} className="items-start gap-3 rounded-lg border p-3 font-normal">
                       <RadioGroupItem value={k} className="mt-0.5" />
@@ -111,6 +118,7 @@ export function SettingsPage() {
                     </Label>
                   ))}
                 </RadioGroup>
+                <UnsupportedReason reason={iterationReason} />
               </Tile>
             </div>
           </TabsContent>
@@ -119,7 +127,7 @@ export function SettingsPage() {
               {me.notify.map((n) => (
                 <div key={n.id} className="flex items-center gap-3 py-1">
                   <span className="flex-1 text-sm">{n.label}</span>
-                  <Switch checked={n.on} onCheckedChange={(v) => dispatch({ type: 'account.notify', id: n.id, on: v })} aria-label={n.label} />
+                  <Switch checked={n.on} disabled={!!unsupported({ type: 'account.notify', id: n.id, on: !n.on })} title={unsupported({ type: 'account.notify', id: n.id, on: !n.on }) ?? undefined} onCheckedChange={(v) => dispatch({ type: 'account.notify', id: n.id, on: v })} aria-label={n.label} />
                 </div>
               ))}
             </Tile>

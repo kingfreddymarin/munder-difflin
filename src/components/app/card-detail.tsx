@@ -4,7 +4,7 @@ import { Button } from '@/components/animate-ui/components/buttons/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/animate-ui/components/radix/dropdown-menu';
 import { cn } from '@/lib/utils';
 import type { Card as CardT, CardStatus } from '@/data/types';
-import { useDispatch, useFloor } from '@/data/store';
+import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { AgentAvatar } from './agent-avatar';
 import { stamp } from './format';
 
@@ -27,17 +27,21 @@ const stepStyle = {
 
 export function MoveCardMenu({ card }: { card: CardT }) {
   const dispatch = useDispatch();
+  const unsupported = useUnsupported();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button size="sm" variant="outline">Move</Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent>
-        {columns.filter((c) => c.id !== card.status).map((c) => (
-          <DropdownMenuItem key={c.id} onSelect={() => dispatch({ type: 'card.move', key: card.key, status: c.id })}>
-            <span className={cn('size-2 rounded-full', c.dot)} /> {c.label}
-          </DropdownMenuItem>
-        ))}
+        {columns.filter((c) => c.id !== card.status).map((c) => {
+          const reason = unsupported({ type: 'card.move', key: card.key, status: c.id });
+          return (
+            <DropdownMenuItem key={c.id} disabled={!!reason} title={reason ?? undefined} onSelect={() => dispatch({ type: 'card.move', key: card.key, status: c.id })}>
+              <span className={cn('size-2 rounded-full', c.dot)} /> {c.label}{reason && <span className="text-muted-foreground ml-auto text-[11px]">not in core</span>}
+            </DropdownMenuItem>
+          );
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   );

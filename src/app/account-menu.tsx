@@ -1,11 +1,12 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuCheckboxItem } from '@/components/animate-ui/components/radix/dropdown-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { useDispatch, useFloor } from '@/data/store';
+import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { useRouter } from './router';
 
 export function AccountMenu() {
   const me = useFloor((s) => s.me);
   const dispatch = useDispatch();
+  const yoloReason = useUnsupported()({ type: 'floor.yolo', patch: { on: true } });
   const { go } = useRouter();
   return (
     <DropdownMenu>
@@ -24,7 +25,7 @@ export function AccountMenu() {
         <DropdownMenuItem onSelect={() => go('settings', { tab: 'connections' })}>Connections</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => go('settings', { tab: 'audit' })}>My changes (audit log)</DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuCheckboxItem checked={me.yolo.on} onCheckedChange={(v) => dispatch({ type: 'floor.yolo', patch: { on: !!v } })}>
+        <DropdownMenuCheckboxItem checked={me.yolo.on} disabled={!!yoloReason} title={yoloReason ?? undefined} onCheckedChange={(v) => dispatch({ type: 'floor.yolo', patch: { on: !!v } })}>
           YOLO mode
         </DropdownMenuCheckboxItem>
       </DropdownMenuContent>

@@ -4,7 +4,8 @@ import { Button } from '@/components/animate-ui/components/buttons/button';
 import { CopyButton } from '@/components/animate-ui/components/buttons/copy';
 import { cn } from '@/lib/utils';
 import type { Prerequisite } from '@/data/types';
-import { useDispatch, useFloor } from '@/data/store';
+import { useDispatch, useFloor, useUnsupported } from '@/data/store';
+import { UnsupportedReason } from './error-notice';
 
 const stateLook = {
   ready: ['Ready', 'success'],
@@ -16,8 +17,11 @@ const levelLook = { required: 'danger', recommended: 'info', optional: 'secondar
 
 function Row({ p, featured }: { p: Prerequisite; featured?: boolean }) {
   const dispatch = useDispatch();
+  const unsupported = useUnsupported();
   const [label, variant] = stateLook[p.state];
   const cmd = p.state === 'installed-not-running' ? p.start : p.install;
+  const command = { type: p.state === 'installed-not-running' ? 'prereq.start' : 'prereq.install', id: p.id } as const;
+  const reason = unsupported(command);
   return (
     <div className={cn('flex flex-col gap-2 rounded-lg border p-3', featured && p.state !== 'ready' && 'border-amber-500/50 bg-amber-500/5')}>
       <div className="flex flex-wrap items-center gap-2">
@@ -31,11 +35,12 @@ function Row({ p, featured }: { p: Prerequisite; featured?: boolean }) {
         <div className="flex items-center gap-2">
           <code className="bg-muted min-w-0 flex-1 truncate rounded-md px-2.5 py-1.5 font-mono text-xs">{cmd}</code>
           <CopyButton content={cmd} size="sm" variant="outline" aria-label="Copy command" />
-          <Button size="sm" onClick={() => dispatch({ type: p.state === 'installed-not-running' ? 'prereq.start' : 'prereq.install', id: p.id })}>
+          <Button size="sm" disabled={!!reason} onClick={() => dispatch(command)}>
             {p.state === 'installed-not-running' ? 'Start it' : 'Install'}
           </Button>
         </div>
       )}
+      <UnsupportedReason reason={p.state !== 'ready' ? reason : null} />
     </div>
   );
 }

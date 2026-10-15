@@ -19,3 +19,9 @@ export function ErrorNotice({ error, className, children }: { error: unknown; cl
     </div>
   );
 }
+
+/** The reason a control is disabled because the core cannot run it. */
+export function UnsupportedReason({ reason, className }: { reason: string | null | undefined; className?: string }) {
+  if (!reason) return null;
+  return <span role="note" className={cn('text-xs text-amber-300', className)}>Unavailable: {reason}</span>;
+}

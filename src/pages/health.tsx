@@ -7,17 +7,22 @@ import { SeeAll } from '@/components/app/see-all';
 import { StatTile } from '@/components/app/stat-tile';
 import { clock } from '@/components/app/format';
 import { stateDot, stateTone } from '@/components/app/status';
-import { useDispatch, useFloor } from '@/data/store';
+import { CopyDiagnosticsButton, useDispatch, useFloor, useUnsupported } from '@/data/store';
+import { UnsupportedReason } from '@/components/app/error-notice';
 import { cn } from '@/lib/utils';
 import type { Service } from '@/data/types';
 
 function ServiceRow({ s }: { s: Service }) {
-  const [fixing, setFixing] = React.useState(false);
+  const [fixing, setFixing] = React.useState<'idle' | 'sending' | 'started'>('idle');
   const dispatch = useDispatch();
   const prereq = useFloor((st) => st.prerequisites.find((p) => p.id === s.id));
+  const command = prereq ? { type: prereq.state === 'missing' ? 'prereq.install' : 'prereq.start', id: prereq.id } as const : null;
+  const reason = useUnsupported()(command ?? { type: 'prereq.start', id: s.id });
   const fix = () => {
-    setFixing(true);
-    if (prereq) dispatch({ type: prereq.state === 'missing' ? 'prereq.install' : 'prereq.start', id: prereq.id });
+    if (!command) return;
+    setFixing('sending');
+    // A failure shows in the store's error notice with its errorId; the button returns to its label.
+    void dispatch(command).then((ok) => setFixing(ok ? 'started' : 'idle'));
   };
   return (
     <div className="flex items-center gap-3 rounded-lg border px-3 py-2">
@@ -25,8 +30,9 @@ function ServiceRow({ s }: { s: Service }) {
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-sm font-medium">{s.name}</span>
         <span className="text-muted-foreground truncate text-xs">{s.detail}</span>
+        {s.fix && <UnsupportedReason reason={command ? reason : 'No installer is known for this service.'} />}
       </span>
-      {s.fix && <Button size="sm" variant={fixing ? 'secondary' : 'outline'} onClick={fix}>{fixing ? 'Fix started' : s.fix}</Button>}
+      {s.fix && <Button size="sm" variant={fixing === 'idle' ? 'outline' : 'secondary'} disabled={!command || !!reason || fixing === 'sending'} onClick={fix}>{fixing === 'sending' ? 'Starting…' : fixing === 'started' ? 'Fix started' : s.fix}</Button>}
       {!s.fix && <span className={cn('text-xs', stateTone[s.state])}>{s.state === 'ok' ? 'healthy' : s.state === 'warn' ? 'degraded' : 'failing'}</span>}
     </div>
   );
@@ -52,7 +58,7 @@ export function HealthPage() {
           <span className={cn('text-xs', bad.length ? 'text-amber-300' : 'text-emerald-400')}>{bad.length ? `${bad.length} need attention` : 'Everything healthy'}{checked ? ` · checked ${checked}` : ''}</span>
         </div>
         <Button onClick={() => setChecked(clock(new Date().toISOString()))}><RefreshCw animateOnHover /> Run doctor</Button>
-        <Button variant="outline">Export diagnostics</Button>
+        <CopyDiagnosticsButton />
       </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatTile label="Services healthy" value={services.length - bad.length} sub={`of ${services.length}`} />
