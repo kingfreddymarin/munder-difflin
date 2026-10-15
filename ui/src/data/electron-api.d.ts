@@ -22,6 +22,9 @@ export type ElectronBridge = ParamountPreloadAPI & {
   providerKeyHas?(backend: string): Promise<boolean>;
   providerKeySet?(request: { backend: string; key: string }): Promise<{ ok: boolean; error?: string }>;
   providerKeyClear?(backend: string): Promise<{ ok: boolean; error?: string }>;
+  hiveMemory?(id: string): Promise<string>;
+  textSearch?(query: string): Promise<{ ok: boolean; results: Array<{ source: string; excerpt: string }> }>;
+  searchMemory?(query: string, wing?: string): Promise<{ ok: boolean; output: string; error?: string }>;
 };
 
 declare global {

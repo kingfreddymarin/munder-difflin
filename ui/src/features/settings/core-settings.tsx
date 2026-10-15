@@ -50,13 +50,21 @@ export function CoreSettings() {
       {columns.map((column, index) => <div key={column} className="flex items-center gap-2 py-1 text-sm"><span className="flex-1 capitalize">{column}</span><Button variant="outline" size="sm" disabled={index === 0} onClick={() => { const order = [...columns]; [order[index - 1], order[index]] = [order[index], order[index - 1]]; void dispatch({ type: 'board.columns', order }); }}>↑</Button><Button variant="outline" size="sm" disabled={index === columns.length - 1} onClick={() => { const order = [...columns]; [order[index + 1], order[index]] = [order[index], order[index + 1]]; void dispatch({ type: 'board.columns', order }); }}>↓</Button></div>)}
       <span className="text-muted-foreground text-xs">Agents supply tags and workspaces on their cards; Board filters use those values.</span>
     </Tile>
+    <Tile title="Response style" hint="applies when an agent starts its next session">
+      <label htmlFor="response-style-brief" className="text-sm">Style brief · up to 1,200 characters</label>
+      <textarea id="response-style-brief" maxLength={1200} className="bg-background min-h-28 rounded-md border p-2 text-sm" value={drafts.responseStyleBrief ?? String(settings.responseStyleBrief ?? '')} onChange={(event) => setDrafts((current) => ({ ...current, responseStyleBrief: event.target.value }))} />
+      <div className="flex gap-2"><Button variant="outline" onClick={() => save('responseStyleBrief', drafts.responseStyleBrief ?? String(settings.responseStyleBrief ?? ''))}>Save brief</Button><Button variant="ghost" onClick={() => { save('responseStyleBrief', ''); setDrafts((current) => ({ ...current, responseStyleBrief: '' })); }}>Reset</Button></div>
+      <label htmlFor="claude-output-style" className="text-sm">Claude Code output style</label>
+      <select id="claude-output-style" className="bg-background rounded-md border px-3 py-2 text-sm" value={String(settings.claudeOutputStyle ?? 'off')} onChange={(event) => save('claudeOutputStyle', event.target.value)}><option value="off">Off</option><option value="concise">Concise</option><option value="explanatory">Explanatory</option><option value="learning">Learning</option></select>
+    </Tile>
     <Tile title="Advanced & memory">
       {numeric('maxTurns', 'Maximum turns per agent', 1, 1000, 'Unset means the CLI default.')}
+      <Button variant="ghost" size="sm" onClick={() => save('maxTurns', null)}>Use CLI turn limit</Button>
       {toggle('semanticMemory', 'Semantic search (MemPalace)')}
       {toggle('reflectEnabled', 'Condense agent memory files')}
       <label className="text-sm" htmlFor="core-embedding-model">Memory embedding model</label>
       <select id="core-embedding-model" className="bg-background rounded-md border px-3 py-2 text-sm" value={String(settings.embeddingModel ?? 'minilm')} onChange={(e) => save('embeddingModel', e.target.value)}><option value="minilm">MiniLM</option><option value="embeddinggemma">EmbeddingGemma</option></select>
-      <span className="text-muted-foreground text-xs">Memory file and text search controls have no Paramount settings API yet.</span>
+      <span className="text-muted-foreground text-xs">Read memory files and search from Settings → Memory.</span>
     </Tile>
     <Tile title="Circuit breaker" hint="YOLO can override budget enforcement while enabled">
       {breakerToggle('enabled', 'Enable circuit breaker')}{breakerToggle('hardStop', 'Allow hard stop')}
@@ -64,7 +72,7 @@ export function CoreSettings() {
       {breakerNumber('tokenVelocityPerMin', 'Token velocity per minute')}{breakerNumber('repeatedToolLimit', 'Repeated tool calls')}{breakerNumber('errorStormLimit', 'Consecutive API errors')}
     </Tile>
     <Tile title="Still awaiting core support">
-      <p className="text-muted-foreground text-sm">Response style, key and secret management, text search controls, and ticket archiving rules are not exposed by this fork’s settings API yet. No saved state is implied here.</p>
+      <p className="text-muted-foreground text-sm">Ticket archiving rules are not exposed by this fork’s settings API yet. No saved state is implied here.</p>
     </Tile>
   </div>;
 }

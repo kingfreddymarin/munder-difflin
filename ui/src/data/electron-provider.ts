@@ -208,7 +208,7 @@ export function createElectronProvider(): ElectronProvider {
       });
       const snapshot: Snapshot = {
         usageReported: false,
-        settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels'].filter((key) => key in config).map((key) => [key, config[key]])),
+        settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle'].filter((key) => key in config).map((key) => [key, config[key]])),
         prerequisites, setupDismissed: object(preferences.setup).dismissed === true, objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
           connections: array(native.integrations).map((item) => ({ id: string(item.id), name: string(item.label, string(item.id)), detail: string(item.kind), connected: item.enabled === true,
