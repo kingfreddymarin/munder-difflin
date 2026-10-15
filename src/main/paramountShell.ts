@@ -6,9 +6,9 @@
 //
 // It is imported FIRST in index.ts: ES imports evaluate in order, so the
 // setName/setPath below land before any other module can read userData.
-import { app, net, protocol } from 'electron';
+import { app, net, protocol, session, type Session } from 'electron';
 import { join, resolve, sep } from 'node:path';
-import { existsSync, mkdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export const PARAMOUNT_NAME = 'Paramount';
@@ -42,21 +42,34 @@ function uiDistDir(): string {
   return join(process.resourcesPath, 'paramount-ui');
 }
 
-/** Serve the bundled UI over paramount://app/. Unknown paths fall back to
- *  index.html so client-side routes survive a reload. Call once, after ready. */
-export function registerParamountProtocol(): void {
-  if (!app.isPackaged) return;
+/** The file to serve for a paramount:// pathname: the asset when it exists,
+ *  index.html for unknown paths (client-side routes survive a reload), or null
+ *  when the request escapes `root` lexically (`..`, an encoded separator) or
+ *  through a symlink inside the bundle. */
+export function resolveUiAsset(root: string, pathname: string): string | null {
+  const inside = (p: string, base: string): boolean => p === base || p.startsWith(base + sep);
+  const target = resolve(root, '.' + decodeURIComponent(pathname));
+  if (!inside(target, root)) return null;
+  if (!existsSync(target)) return join(root, 'index.html');
+  if (!inside(realpathSync(target), realpathSync(root))) return null;
+  return statSync(target).isFile() ? target : join(root, 'index.html');
+}
+
+/** Sessions that already serve paramount://. A handler belongs to one session,
+ *  and a second protocol.handle on the same session throws. */
+const servedSessions = new WeakSet<Session>();
+
+/** Serve the bundled UI over paramount://app/ on `ses`. Call for every session
+ *  that loads the UI (each floor has its own partition); repeat calls are no-ops. */
+export function registerParamountProtocol(ses: Session = session.defaultSession): void {
+  if (!app.isPackaged || servedSessions.has(ses)) return;
   const root = resolve(uiDistDir());
-  protocol.handle(SCHEME, (req) => {
-    const { pathname } = new URL(req.url);
-    const target = resolve(root, '.' + decodeURIComponent(pathname));
-    // Never serve outside the bundle (`..` or an encoded separator).
-    if (target !== root && !target.startsWith(root + sep)) {
-      return new Response('forbidden', { status: 403 });
-    }
-    const isFile = existsSync(target) && statSync(target).isFile();
-    return net.fetch(pathToFileURL(isFile ? target : join(root, 'index.html')).toString());
+  ses.protocol.handle(SCHEME, (req) => {
+    const file = resolveUiAsset(root, new URL(req.url).pathname);
+    if (!file) return new Response('forbidden', { status: 403 });
+    return net.fetch(pathToFileURL(file).toString());
   });
+  servedSessions.add(ses);
 }
 
 /** Where the main window loads its UI from: the Paramount Vite dev server in
