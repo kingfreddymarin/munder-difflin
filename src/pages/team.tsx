@@ -78,7 +78,7 @@ export function TeamPage() {
       case 'agents': return <AgentsPanel onOpen={openAgent} />;
       case 'graph': return <GraphPanel onOpen={openAgent} />;
       case 'activity': return <ActivityPanel onOpen={openAgent} />;
-      case 'sources': return <SourcesPanel />;
+      case 'sources': return <SourcesPanel onOpen={openAgent} />;
       case 'automations': return <AutomationsPanel />;
     }
   };

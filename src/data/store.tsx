@@ -88,7 +88,7 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
           return true;
         } catch (cause) {
           actionError = toBackendError(cause, c.type);
-          if (actionError.code === 'UNSUPPORTED') unsupported = new Map(unsupported).set(c.type, actionError.message);
+          if (actionError.code === 'UNSUPPORTED') unsupported = new Map(unsupported).set(unsupportedKey(c), actionError.message);
           if (actionError.code === 'DISCONNECTED') refresh();
           return false;
         } finally {
@@ -141,11 +141,16 @@ export function useAgent(id: string | undefined) {
   return useFloor((s) => s.agents.find((a) => a.id === id));
 }
 
+/** agent.update is learned per field: the core refusing one field must not disable the others. */
+function unsupportedKey(c: Command): string {
+  return c.type === 'agent.update' ? `agent.update:${Object.keys(c.patch).sort().join(',')}` : c.type;
+}
+
 /** Why the core cannot run this command (known up front or learned from an UNSUPPORTED answer), else null. */
 export function useUnsupported() {
   const store = useStore();
   const learned = React.useSyncExternalStore(store.subscribe, store.getUnsupported);
-  return React.useCallback((command: Command) => learned.get(command.type) ?? store.provider.unsupported?.(command) ?? null, [learned, store]);
+  return React.useCallback((command: Command) => learned.get(unsupportedKey(command)) ?? store.provider.unsupported?.(command) ?? null, [learned, store]);
 }
 
 /** The provider's agent discovery and import, or null when it has none (the control is then disabled with a reason). */

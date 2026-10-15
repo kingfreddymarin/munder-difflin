@@ -9,7 +9,7 @@ const next: Record<Access, Access> = { rw: 'r', r: 'none', none: 'rw' };
 const look: Record<Access, string> = { rw: 'bg-sky-500/15 text-sky-300', r: 'bg-secondary text-secondary-foreground', none: 'text-muted-foreground/40' };
 const word: Record<Access, string> = { rw: 'RW', r: 'R', none: '·' };
 
-export function SourcesPanel() {
+export function SourcesPanel({ onOpen }: { onOpen?: (id: string) => void }) {
   const agents = useFloor((s) => s.agents);
   const sources = useFloor((s) => s.sources);
   const access = useFloor((s) => s.access);
@@ -39,7 +39,7 @@ export function SourcesPanel() {
         ))}
         {agents.map((a) => (
           <div key={a.id} className="contents">
-            <span className="truncate self-center text-xs">{a.name}</span>
+            <button type="button" onClick={() => onOpen?.(a.id)} className="hover:text-foreground truncate self-center text-left text-xs hover:underline">{a.name}</button>
             {sources.map((s) => {
               const v = (access[`${a.id}:${s.id}`] ?? 'none') as Access;
               return (

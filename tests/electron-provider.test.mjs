@@ -141,3 +141,35 @@ test('a result without its payload is an INTERNAL error, not undefined', async (
   const failure = await createElectronProvider().discoverAgents().catch((error) => error);
   assert.deepEqual([failure.code, failure.operation], ['INTERNAL', 'agents.discover']);
 });
+
+test('agent.update: one field per command, only fields the core stores (name, tokensCap, model)', () => {
+  globalThis.window = { cth: bridge() };
+  const { unsupported } = createElectronProvider();
+  const update = (patch) => unsupported({ type: 'agent.update', agentId: 'god', patch });
+  assert.equal(update({ model: 'claude-opus-4-8' }), null);
+  assert.equal(update({ name: 'Ada' }), null);
+  assert.equal(update({ tokensCap: 2 }), null);
+  assert.match(update({ color: 'sky' }), /color/);
+  assert.match(update({ name: 'Ada', tokensCap: 2 }), /one agent field/);
+});
+
+test('team.models and agent.hire send the team commands and return their payloads', async () => {
+  const api = bridge();
+  const seen = [];
+  const plan = { agentId: 'rev', name: 'Rev', engine: 'claude', cwd: '/w', isolate: false, command: 'claude', engineInstalled: true, confirmed: false, consentRequired: [], ignored: [] };
+  api.paramountDispatch = async (command) => {
+    seen.push(command);
+    const event = { id: 'e', at: '', actor: 'you', command };
+    if (command.type === 'team.models') return { ok: true, event, models: { engines: [{ id: 'claude', label: 'Claude', models: [{ id: 'm1', label: 'M1' }] }], defaultModel: 'm1', agents: { god: { engine: 'claude', model: 'm1' } } } };
+    if (command.type === 'agent.hire') return command.manifest.name ? { ok: true, event, hire: plan } : { ok: false, errorId: 'err-h', code: 'INVALID_INPUT', message: 'name required', error: 'name required', correlationId: 'c' };
+    return { ok: false, errorId: 'x', code: 'UNSUPPORTED', message: 'no', error: 'no', correlationId: 'c' };
+  };
+  globalThis.window = { cth: api };
+  const provider = createElectronProvider();
+  const models = await provider.teamModels();
+  assert.equal(models.agents.god.model, 'm1');
+  assert.deepEqual(await provider.hire({ spec: 'munder-difflin/hire@1', name: 'Rev' }, { cwd: '/w' }), plan);
+  assert.deepEqual(seen[1], { type: 'agent.hire', manifest: { spec: 'munder-difflin/hire@1', name: 'Rev' }, cwd: '/w' });
+  const failure = await provider.hire({ spec: 'munder-difflin/hire@1' }).catch((error) => error);
+  assert.deepEqual([failure.errorId, failure.code, failure.operation], ['err-h', 'INVALID_INPUT', 'agent.hire']);
+});

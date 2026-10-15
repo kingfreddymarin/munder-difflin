@@ -9,9 +9,16 @@ import type { Agent, Card, Message, Snapshot } from './types';
 type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'teamModels' | 'hire'>> & { kind: 'electron' };
 
 const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
+/** Agent fields the core's agent.update accepts (name, budget; model via the Team module). */
+const CORE_AGENT_FIELDS: readonly string[] = ['name', 'tokensCap', 'model'];
 
 function unsupported(command: Command): string | null {
   if (command.type === 'card.move' && !CORE_COLUMNS.includes(command.status)) return `The core board has no "${command.status}" column; use todo, doing, blocked or done.`;
+  if (command.type === 'agent.update') {
+    const keys = Object.keys(command.patch);
+    if (keys.length !== 1) return 'The core changes one agent field per command.';
+    if (!CORE_AGENT_FIELDS.includes(keys[0])) return `the core does not store an agent's ${keys[0]} yet.`;
+  }
   return null;
 }
 
