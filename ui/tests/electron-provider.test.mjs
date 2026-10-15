@@ -218,3 +218,21 @@ test('team.models and agent.hire send the team commands and return their payload
   const failure = await provider.hire({ spec: 'munder-difflin/hire@1' }).catch((error) => error);
   assert.deepEqual([failure.errorId, failure.code, failure.operation], ['err-h', 'INVALID_INPUT', 'agent.hire']);
 });
+
+test('projects prerequisite and health evidence instead of invented ready state or empty logs', async () => {
+  const native = nativeSnapshot();
+  native.prereqs = { skid: { id: 'skid', label: 'Skidbladnir', installed: true, running: false, command: 'skid doctor' } };
+  native.preferences = { setup: { dismissed: false } };
+  native.log = [
+    { ts: '2026-10-15T09:00:00Z', kind: 'drop', reason: 'no-inbox', agentId: 'god' },
+    { ts: '2026-10-15T09:01:00Z', kind: 'paramount-error', code: 'INTERNAL', errorId: 'err-1' },
+  ];
+  globalThis.window = { cth: bridge(native) };
+  const snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.setupDismissed, false);
+  assert.equal(snapshot.prerequisites[0].state, 'installed-not-running');
+  assert.equal(snapshot.services.find((service) => service.id === 'skid')?.state, 'warn');
+  assert.equal(snapshot.log.length, 2);
+  assert.equal(snapshot.log[0].source, 'drop');
+  assert.equal(snapshot.log[1].level, 'error');
+});

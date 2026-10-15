@@ -58,7 +58,7 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
         if (!active || version !== refreshVersion) return;
         record('snapshot', performance.now() - started);
         const next = state ? share(state, s) : s;
-        if (next === state && !error) return;
+        if (next === state && !error) { refreshedAt = Date.now(); emit(); return; }
         state = next;
         error = null;
         refreshedAt = Date.now();
@@ -176,6 +176,13 @@ export function useLiveRefresh(ms: number) {
     return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
   }, [store, ms]);
   return React.useSyncExternalStore(store.subscribe, store.getRefreshedAt);
+}
+
+/** Re-runs the core snapshot probes and reports when a response actually arrived. */
+export function useSnapshotRefresh() {
+  const store = useStore();
+  const refreshedAt = React.useSyncExternalStore(store.subscribe, store.getRefreshedAt);
+  return { refresh: store.retry, refreshedAt };
 }
 
 /** agent.update is learned per field: the core refusing one field must not disable the others. */

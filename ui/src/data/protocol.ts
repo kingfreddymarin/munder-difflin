@@ -17,6 +17,7 @@ export type Command =
   | { type: 'account.connection'; id: string; connected: boolean }
   | { type: 'account.notify'; id: string; on: boolean }
   | { type: 'account.profile'; patch: Partial<Pick<Snapshot['me'], 'name' | 'workEmail' | 'timezone'>> }
+  | { type: 'settings.update'; patch: Record<string, unknown> }
   | { type: 'terminal.input'; agentId: string; text: string }
   | { type: 'layout.panels'; panels: string[] }
   | { type: 'prereq.install'; id: string; confirm?: boolean }

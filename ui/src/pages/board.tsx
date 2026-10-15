@@ -125,7 +125,7 @@ function BoardCard({ card, onOpen }: { card: CardT; onOpen: () => void }) {
       className="bg-card hover:border-primary/50 focus-visible:ring-ring flex cursor-grab flex-col gap-2 rounded-lg border p-3 text-left transition-colors outline-none focus-visible:ring-2 active:cursor-grabbing">
       <span className="flex items-center gap-2 text-[11px]">
         <span className="text-muted-foreground flex-1 font-mono">{card.key}</span>
-        <Badge variant={card.priority === 'P1' ? 'danger' : card.priority === 'P2' ? 'violet' : 'secondary'} className="px-1.5 py-0 text-[10px]">{card.priority}</Badge>
+        {card.priority && <Badge variant={card.priority === 'P1' ? 'danger' : card.priority === 'P2' ? 'violet' : 'secondary'} className="px-1.5 py-0 text-[10px]">{card.priority}</Badge>}
       </span>
       <span className="text-sm leading-snug font-medium">{card.title}</span>
       {(card.workspace || card.tags.length > 0) && (

@@ -118,6 +118,13 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
     }
     case 'account.profile':
       return audit({ ...s, me: { ...s.me, ...c.patch } }, ev, 'Updated account', 'You', Object.keys(c.patch).join(', '), ['pm']);
+    case 'settings.update': {
+      const key = Object.keys(c.patch)[0] ?? '';
+      const settings = { ...s.settings, [key]: ['circuitBreaker', 'providerBaseUrls', 'providerDefaultModels'].includes(key)
+        ? { ...(s.settings?.[key] as Record<string, unknown> | undefined), ...(c.patch[key] as Record<string, unknown>) }
+        : c.patch[key] };
+      return audit({ ...s, settings }, ev, 'Updated setting', key, String(key === 'circuitBreaker' ? Object.keys(c.patch.circuitBreaker as object)[0] : c.patch[key]), s.agents.map((a) => a.id));
+    }
     case 'terminal.input': {
       const terminals = s.terminals.map((t) => (t.agentId === c.agentId ? { ...t, pending: undefined, lines: [...t.lines, { stream: 'in' as const, text: `you › ${c.text}` }] } : t));
       return audit({ ...s, terminals }, ev, 'Typed into terminal', nameOf(s, c.agentId), c.text, [c.agentId]);
