@@ -4,6 +4,8 @@ import { BackendError } from './errors';
 import { agentDiscovery, fixtures } from './fixtures';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import { applyEvent, nextCardKey } from './reducer';
+
+import { artifactMaps } from './terminal-fixtures';
 import type { Snapshot } from './types';
 
 const KEY = 'paramount.mock.events.v1';
@@ -87,6 +89,11 @@ export function createMockProvider(): DataProvider {
     },
     async openIn() {
       throw BackendError.local('UNSUPPORTED', 'Opening a folder in Warp or VS Code needs the desktop core; sample data has none.', 'shell.openIn');
+    },
+    async artifacts(agentId) {
+      const map = artifactMaps[agentId];
+      if (!map) throw BackendError.local('NOT_FOUND', `No sample artifacts for "${agentId}".`, 'terminal.artifacts');
+      return structuredClone(map);
     },
     subscribe(listener) {
       listeners.add(listener);

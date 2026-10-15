@@ -1,6 +1,6 @@
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
-import type { ParamountBoardCommand, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountOpenInApp, ParamountHirePlan, ParamountTeamModels } from './paramount-api';
+import type { ParamountBoardCommand, ParamountArtifactMap, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountOpenInApp, ParamountHirePlan, ParamountTeamModels } from './paramount-api';
 import type { Access, Agent, AskMode, CardStatus, ChatView, HomeLayout, IterationSettings, Snapshot, YoloSettings } from './types';
 export type Command =
   | { type: 'chat.send'; chatId: string; text: string }
@@ -61,4 +61,6 @@ export interface DataProvider {
   teamModels?(): Promise<ParamountTeamModels>;
   /** The Add-Agent hire: without `confirm` it returns the spawn plan for review; with it the agent starts in a visible terminal. */
   hire?(manifest: Record<string, unknown>, options?: { cwd?: string; confirm?: boolean }): Promise<ParamountHirePlan>;
+  /** Read-only: map artifacts touched by an agent. */
+  artifacts?(agentId: string): Promise<ParamountArtifactMap>;
 }

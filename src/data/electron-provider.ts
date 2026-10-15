@@ -1,13 +1,13 @@
 // The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
 import { findBridge, requireBridge } from './bridge';
-import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
+import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import { askOptions, cardAsks, logActivity } from './projection';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, CardRef, CardStatus, Message, Snapshot } from './types';
 
-type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn' | 'teamModels' | 'hire'>> & { kind: 'electron' };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn' | 'teamModels' | 'hire' | 'artifacts'>> & { kind: 'electron' };
 
 const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
 /** Agent fields the core's agent.update accepts (name, budget; model via the Team module). */
@@ -66,7 +66,7 @@ function status(value: string, breaker: string): Agent['status'] {
 }
 
 type OkResult = Extract<ParamountResult, { ok: true }> & Omit<ParamountTeamResult, 'ok' | 'event'>;
-type ResultPayload = 'diagnostics' | 'discovery' | 'imported' | 'models' | 'hire';
+type ResultPayload = 'diagnostics' | 'discovery' | 'imported' | 'models' | 'hire' | 'artifacts';
 
 /** Sends a command whose answer is a payload on the result rather than a floor event. */
 async function query<K extends ResultPayload>(command: ParamountCommand | ParamountTeamCommand, payload: K, missing: string): Promise<NonNullable<OkResult[K]>> {
@@ -170,6 +170,7 @@ export function createElectronProvider(): ElectronProvider {
           at: date(item.created_at), kind: asks ? 'question' : 'text', text,
           ...(asks ? { options: askOptions(string(item.body)), answer: reply ? string(reply.body) : undefined } : {}),
           read: item.archived === true || !!reply,
+          to: string(item.to) || undefined, act: string(item.act) || undefined,
         };
       });
       const questions = cardAsks(tasks, agentIds, godId);
@@ -272,6 +273,9 @@ export function createElectronProvider(): ElectronProvider {
       const plan = await query({ type: 'agent.hire', manifest, ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.confirm ? { confirm: true } : {}) }, 'hire', 'The core returned no hire plan.');
       if (plan.confirmed) refresh();
       return plan;
+    },
+    artifacts(agentId): Promise<ParamountArtifactMap> {
+      return query({ type: 'terminal.artifacts', agentId }, 'artifacts', 'The core returned no artifact map.');
     },
     subscribe(listener) {
       listeners.add(listener);

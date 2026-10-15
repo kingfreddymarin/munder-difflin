@@ -2,9 +2,23 @@ import type { ParamountPreloadAPI } from './paramount-api';
 
 export type * from './paramount-api';
 
-/** The preload surface Paramount uses. `resizePty` exists on the fork's preload but is not in the shared contract. */
+/** The preload surface Paramount uses. The optional calls exist on the fork's preload but are not in the shared
+ *  contract; each caller checks for them and says what it cannot do when one is missing. */
 export type ElectronBridge = ParamountPreloadAPI & {
   resizePty?(id: string, cols: number, rows: number): Promise<{ ok: boolean; error?: string }>;
+  // Terminal (lane e-terminal): the same calls Munder's own terminal uses.
+  /** Asks the TUI for a fresh frame at its current size; output from before we subscribed is otherwise never shown. */
+  redrawPty?(id: string): Promise<{ ok: boolean; error?: string }>;
+  onPtyRelaunch?(id: string, cb: () => void): () => void;
+  copyToClipboard?(text: string): Promise<{ ok: boolean; error?: string }>;
+  readClipboard?(): Promise<string>;
+  readClipboardSync?(): string;
+  /** https only; the main process re-checks. */
+  openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
+  /** Shows a file in Finder, or opens a directory. Never opens a file with its default app. */
+  revealPath?(path: string): Promise<{ ok: boolean; error?: string }>;
+  pathForFile?(file: File): string;
+  statAbs?(path: string): Promise<{ exists: boolean; isFile: boolean; path: string }>;
 };
 
 declare global {

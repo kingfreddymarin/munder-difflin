@@ -66,6 +66,10 @@ export interface Message {
   dismissed?: boolean;
   /** Only card asks (humanQA) can be dismissed; a direct message can only be replied to. */
   dismissible?: boolean;
+  /** Recipient agent id when one agent wrote to another (lane e-terminal: agent-to-agent view). */
+  to?: string;
+  /** Hive act: request, inform, query, done… */
+  act?: string;
 }
 
 export type AskMode = 'answer' | 'decision' | 'done';

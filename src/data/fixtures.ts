@@ -92,6 +92,9 @@ export const fixtures: Snapshot = {
     { id: 'b1', chatId: 'c-bw', from: 'bw', at: t('23:20'), kind: 'text', text: 'Will ping compute-lead when 61251 ends.' },
     { id: 's1', chatId: 'c-sm', from: 'sm', at: t('22:58'), kind: 'text', text: 'Breaker constrained me after a loop. Holding in read-only mode.' },
     { id: 'tg1', chatId: 'c-tg', from: 'you', at: t('22:32'), kind: 'text', text: 'remember we need installers', read: true },
+    { id: 'm-a1', chatId: 'c-cl', from: 'pm', to: 'cl', act: 'request', at: t('23:33'), kind: 'text', text: 'NSC-30: sign the macOS DMG and re-run def 435. Ping me only if Windows blocks the merge.' },
+    { id: 'm-a2', chatId: 'c-pm', from: 'cl', to: 'pm', act: 'inform', at: t('23:37'), kind: 'text', text: 'Signed. Build 61204 green on macOS and Linux; Windows needs cp314t wheels from pipeline-worker.' },
+    { id: 'm-a3', chatId: 'c-pw', from: 'cl', to: 'pw', act: 'query', at: t('23:39'), kind: 'text', text: 'Can you publish cp314t wheels to the feed before 09:00?' },
   ],
   notifications: [
     { id: 'n1', kind: 'question', from: 'cl', title: 'Merge PR 23572 now?', body: 'Green on macOS and Linux; Windows waits on cp314t wheels.', at: t('23:38'), chatId: 'c-pm', messageId: 'm5', actions: ['Merge now', 'Wait for wheel'] },
