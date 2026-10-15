@@ -65,6 +65,7 @@ import { analytics, isRendererMessageSurface } from './analytics';
 import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import { accessFor, withAccess } from './accessMatrix';
+import { probePort } from './portProbe';
 import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
@@ -3514,15 +3515,24 @@ function paramountRunPrereqInstall(plan: ParamountPrereqPlan, sender: Electron.W
 }
 /** Service prerequisites with a vetted start command (the same constant the Paramount
  *  prerequisite definition shows). Nothing else can be started from Paramount. */
-const PARAMOUNT_STARTABLE: Record<string, { label: string; bin: string; command: string }> = {
-  skid: { label: 'Skidbladnir', bin: 'skid', command: 'skid doctor && skid run qwen-3.5-9b "ready"' }
+const PARAMOUNT_STARTABLE: Record<string, { label: string; bin: string; command: string; port: number }> = {
+  skid: { label: 'Skidbladnir', bin: 'skid', command: 'skid doctor && skid run qwen-3.5-9b "ready"', port: 8000 }
 };
-function paramountStartPlan(prereqId: string): ParamountPrereqStartPlan | null {
+/** Async probe of a startable service's port, so a daemon started outside the app is
+ *  seen. The result is logged under the caller's correlation id. */
+async function paramountProbeService(prereqId: string, cid: string): Promise<boolean> {
+  if (!Object.hasOwn(PARAMOUNT_STARTABLE, prereqId)) return false;
+  const port = PARAMOUNT_STARTABLE[prereqId].port;
+  const open = await probePort(port);
+  paramountLog({ kind: 'paramount-prereq', cid, step: 'port-probe', id: prereqId, port, open });
+  return open;
+}
+function paramountStartPlan(prereqId: string, portOpen = false): ParamountPrereqStartPlan | null {
   if (!Object.hasOwn(PARAMOUNT_STARTABLE, prereqId)) return null;
   const def = PARAMOUNT_STARTABLE[prereqId];
-  // "Running" = a start terminal this app opened is still alive. A daemon started
-  // outside the app is not detected here (no synchronous probe).
-  const running = ptyManager.list().some((p) => p.id.startsWith(`prereq-start-${prereqId}-`));
+  // Running = a start terminal this app opened is alive, OR the service port answers
+  // (a daemon started outside the app).
+  const running = portOpen || ptyManager.list().some((p) => p.id.startsWith(`prereq-start-${prereqId}-`));
   return { id: prereqId, label: def.label, installed: ptyManager.isCommandAvailable(def.bin), running, command: def.command };
 }
 function paramountRunPrereqStart(plan: ParamountPrereqStartPlan, sender: Electron.WebContents): { ok: boolean; ptyId?: string; error?: string } {
@@ -3567,17 +3577,23 @@ function paramountSetIntegrationConnected(connectionId: string, connected: boole
 /** Paramount calls log `paramount-op` start/end lines and `paramount-error`
  *  lines into the hive's log.jsonl; see paramountObservability.ts. */
 const paramountLog: LogSink = (event) => hive.appendLog(event);
-ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, () => ({
+ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => ({
   registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
   log: hive.logTail(500), roster: roster.read(),
   config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode, autoModeExpiresAt: readConfig().autoModeExpiresAt, accessMatrix: readConfig().accessMatrix ?? {} },
-  missions: readConfig().missions ?? [], ptys: ptyManager.list(), preferences: paramountPreferences()
+  missions: readConfig().missions ?? [], ptys: ptyManager.list(), preferences: paramountPreferences(),
+  // Service prerequisite state, including a daemon started outside the app.
+  prereqs: { skid: paramountStartPlan('skid', await paramountProbeService('skid', span.cid)) }
 }), { rethrow: true }));
 ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramount.dispatch', paramountLog, {
   sender: evt.sender.id,
   commandType: command && typeof command === 'object' && typeof (command as { type?: unknown }).type === 'string'
     ? String((command as { type: string }).type).slice(0, 80) : undefined
-}, (span) => dispatchParamount(command, {
+}, async (span) => {
+  // dispatchParamount is synchronous, so the one async fact it needs is fetched first.
+  const startId = command && typeof command === 'object' && (command as { type?: unknown }).type === 'prereq.start' ? (command as { id?: unknown }).id : undefined;
+  const portOpen = typeof startId === 'string' ? await paramountProbeService(startId, span.cid) : false;
+  return dispatchParamount(command, {
   tasks: () => hive.tasks() as { tasks?: HiveTask[] },
   patchTask: (id, patch) => hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>),
   missions: () => readConfig().missions ?? [],
@@ -3588,7 +3604,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   setNotifications: (on) => { writeConfig({ notifications: on }); },
   setFloorAutoMode: (on, expiresAt) => { writeConfig({ autoMode: on, autoModeExpiresAt: on ? expiresAt : undefined }); armAutoModeExpiry(); },
   setAccess: (agentId, sourceId, access) => { writeConfig({ accessMatrix: withAccess(readConfig().accessMatrix, agentId, sourceId, access) }); },
-  prereqStart: { plan: paramountStartPlan, run: (plan) => paramountRunPrereqStart(plan, evt.sender) },
+  prereqStart: { plan: (id) => paramountStartPlan(id, portOpen), run: (plan) => paramountRunPrereqStart(plan, evt.sender) },
   setIntegrationConnected: paramountSetIntegrationConnected,
   prereqInstall: { plan: paramountPrereqPlan, run: (plan) => paramountRunPrereqInstall(plan, evt.sender) },
   logStep: (step) => paramountLog(step),
@@ -3616,7 +3632,8 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
     config: redact(readConfig()),
     logLines
   }, cid)
-}, span)));
+}, span);
+}));
 ipcMain.handle('hive:registry', () => hive.registry());
 ipcMain.handle('hive:renameAgent', (_evt, id: unknown, name: unknown) => {
   if (typeof id !== 'string' || typeof name !== 'string') {

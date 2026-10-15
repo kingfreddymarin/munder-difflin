@@ -368,3 +368,43 @@ test('prereq.start spawn failure is INTERNAL, logged, and emits no event', () =>
   assert.ok(state.steps.some((s) => s.step === 'start-spawn-failed'));
   assert.equal(state.events.length, 0);
 });
+
+// ─── port probe (daemon started outside the app) ────────────────────────────
+test('probePort sees a real local listener and reports a closed port as false', async () => {
+  const { probePort } = loadTs('src/main/portProbe.ts');
+  const net = require('node:net');
+  const server = net.createServer((s) => s.end());
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  try {
+    assert.equal(await probePort(port), true);
+  } finally { await new Promise((r) => server.close(r)); }
+  assert.equal(await probePort(port), false, 'closed after the listener stops');
+});
+
+test('probePort times out on a black hole instead of blocking (known bad)', async () => {
+  const { probePort } = loadTs('src/main/portProbe.ts');
+  const started = Date.now();
+  assert.equal(await probePort(9, '10.255.255.1', 150), false);
+  assert.ok(Date.now() - started < 2000);
+});
+
+test('an open service port makes prereq.start CONFLICT, and a closed one allows the dry run', async () => {
+  const { probePort } = loadTs('src/main/portProbe.ts');
+  const net = require('node:net');
+  const server = net.createServer((s) => s.end());
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  const plan = (portOpen) => (id) => ({ id, label: 'Skid', installed: true, running: portOpen, command: 'skid doctor' });
+  try {
+    const open = await probePort(port);
+    const a = fixture();
+    a.deps.prereqStart.plan = plan(open);
+    assertFailure(dispatchParamount({ type: 'prereq.start', id: 'skid', confirm: true }, a.deps), 'CONFLICT');
+    assert.deepEqual(a.state.starts, []);
+  } finally { await new Promise((r) => server.close(r)); }
+  const closed = await probePort(port);
+  const b = fixture();
+  b.deps.prereqStart.plan = plan(closed);
+  assert.equal(dispatchParamount({ type: 'prereq.start', id: 'skid' }, b.deps).ok, true);
+});
