@@ -3,11 +3,13 @@ import { isAbsolute } from 'node:path';
 import type { ScheduledMission } from './config';
 import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand, ParamountPrereqReport, ParamountSourceWarning } from '../preload/paramount';
 import { createSpan, type Span } from './paramountObservability';
+import { dispatchHomeChats, type HomeChatsDeps } from './paramount-home-chats';
+import type { ParamountHomeChatsCommand } from '../preload/paramount';
 import { normalizeWeekly } from '../shared/weeklySchedule';
 import { AGENT_SOURCES, discoverAgents, findAgents, toHireManifest, type AgentSourceRoots } from './agentSources';
 import type { HireManifest } from '../shared/hire';
 
-export interface ParamountDeps {
+export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'message' | 'godId'>> {
   tasks(): { tasks?: Array<{ id: string; humanQA?: Array<{ q: string; a?: string; answeredAt?: string }> }> };
   patchTask(id: string, patch: Record<string, unknown>): boolean;
   missions(): ScheduledMission[];
@@ -16,7 +18,7 @@ export interface ParamountDeps {
   renameAgent(id: string, name: string): { ok: boolean; error?: string };
   setAgentTokenCap(id: string, cap: number): void;
   setNotifications(on: boolean): void;
-  savePreference(key: 'profile' | 'setup', value: Record<string, unknown>): void;
+  savePreference(key: 'profile' | 'setup' | 'home' | 'chats', value: Record<string, unknown>): void;
   appendEvent(event: ParamountEvent): void;
   publish(event: ParamountEvent): void;
   /** Redacted support bundle for `diagnostics.bundle`; absent means unsupported. */
@@ -352,6 +354,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         imported = { agent: { ...found.agent, warnings }, manifest: hire.manifest as unknown as Record<string, unknown>, adjustments: hire.adjustments };
         break;
       }
+      case 'ask.reply': case 'ask.dismiss': case 'home.layout': case 'chats.view': { const r = dispatchHomeChats(command as unknown as ParamountHomeChatsCommand, deps, fail, () => { writeAttempted = true; }); if (r) return r; break; }
       case 'layout.panels':
         return fail('UNSUPPORTED', 'Team panel layout is a renderer-local preference');
       default:
