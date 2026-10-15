@@ -88,12 +88,8 @@ export interface Notification {
 
 export type CardStatus = 'backlog' | 'todo' | 'doing' | 'blocked' | 'review' | 'done';
 export type StepState = 'done' | 'doing' | 'blocked' | 'ask' | 'todo';
-export interface Evidence {
-  name: string;
-  ext: string;
-  size: string;
-  attachedTo?: string;
-}
+/** A link to an external item (PR, build, run, ADO work item); `url` is the real link stored on the card. */
+export type CardRef = import('./paramount-api').ParamountCardRef;
 export interface Card {
   key: string;
   title: string;
@@ -108,8 +104,13 @@ export interface Card {
   dependsOn?: string;
   plan: { text: string; state: StepState; note?: string }[];
   doneMeans: string[];
-  links: { label: string; href: string }[];
-  evidence: Evidence[];
+  /** Labels the agents set; the board filters on them. */
+  tags: string[];
+  workspace?: string;
+  /** Absolute working directory, opened in Warp or VS Code. */
+  dir?: string;
+  /** PRs, builds, runs and ADO work items; ADO work items hold the card's evidence. */
+  refs: CardRef[];
   tokens: number;
   origin: string;
   people: string[];
@@ -281,6 +282,8 @@ export interface Snapshot {
   messages: Message[];
   notifications: Notification[];
   cards: Card[];
+  /** The board's columns in the human's order; only columns the core supports. */
+  board: { columns: CardStatus[] };
   activity: ActivityEvent[];
   timelines: Timeline[];
   sources: Source[];

@@ -141,3 +141,24 @@ test('a result without its payload is an INTERNAL error, not undefined', async (
   const failure = await createElectronProvider().discoverAgents().catch((error) => error);
   assert.deepEqual([failure.code, failure.operation], ['INTERNAL', 'agents.discover']);
 });
+
+test('maps card tags, workspace, dir and refs from the hive task and keeps the saved column order', async () => {
+  const native = nativeSnapshot();
+  Object.assign(native.tasks.tasks[0], {
+    tags: ['compute', ' compute ', '', 7], workspace: 'Varium', dir: '/work/repo',
+    refs: [
+      { kind: 'pr', system: 'ado', id: '23572', url: 'https://dev.azure.com/o/p/_git/r/pullrequest/23572' },
+      { kind: 'build', system: 'ado', id: '61204', url: 'http://insecure.example/61204' },
+      { kind: 'file', system: 'ado', id: 'x', url: 'https://dev.azure.com/x' },
+    ],
+  });
+  native.preferences = { board: { columns: ['done', 'doing', 'nope', 'done'] } };
+  globalThis.window = { cth: bridge(native) };
+  const snapshot = await createElectronProvider().snapshot();
+  const card = snapshot.cards[0];
+  assert.deepEqual(card.tags, ['compute']);
+  assert.equal(card.workspace, 'Varium');
+  assert.equal(card.dir, '/work/repo');
+  assert.deepEqual(card.refs.map((ref) => ref.id), ['23572']);
+  assert.deepEqual(snapshot.board.columns, ['done', 'doing', 'todo', 'blocked']);
+});

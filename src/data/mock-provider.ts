@@ -33,6 +33,13 @@ export function createMockProvider(): DataProvider {
       return events.reduce(applyEvent, structuredClone(fixtures));
     },
     async dispatch(command: Command) {
+      // The browser cannot open local apps; a stored https link opens in a new tab instead.
+      if (command.type === 'card.open') throw BackendError.local('UNSUPPORTED', 'Opening a folder in Warp or VS Code needs the desktop app.', command.type);
+      if (command.type === 'card.link') {
+        const card = events.reduce(applyEvent, structuredClone(fixtures)).cards.find((item) => item.key === command.key);
+        if (!card?.refs.some((ref) => ref.url === command.url)) throw BackendError.local('NOT_FOUND', `Card ${command.key} has no link to that URL.`, command.type);
+        window.open(command.url, '_blank', 'noopener');
+      }
       const event: FloorEvent = { id: `ev-${Date.now()}-${++seq}`, at: new Date().toISOString(), actor: 'you', command };
       events = [...events, event];
       saveEvents(events);
