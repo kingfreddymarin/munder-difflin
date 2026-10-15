@@ -302,6 +302,6 @@ test('main process routes Paramount IPC and process failures through observabili
   assert.doesNotMatch(src, /process\.on\('uncaughtException'/, 'one handler set, in paramountObservability');
   assert.match(src, /ipcMain\.handle\('paramount:snapshot',[^\n]*traced\('paramount\.snapshot'/);
   assert.match(src, /ipcMain\.handle\('paramount:dispatch',[^\n]*traced\('paramount\.dispatch'/);
-  assert.match(src, /\}, span\)\)\);/, 'dispatch receives the traced span');
+  assert.match(src, /\}, span\);\n\}\)\);/, 'dispatch receives the traced span');
   assert.match(src, /diagnostics: \(\{ logLines, cid \}\) => buildDiagnostics\(/);
 });

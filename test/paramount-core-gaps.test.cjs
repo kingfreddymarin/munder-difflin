@@ -2,7 +2,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
-const { dispatchParamount } = loadTs('src/main/paramount.ts');
+const { dispatchParamount, autoModeExpired } = loadTs('src/main/paramount.ts');
+const { accessFor, withAccess, isReadMethod } = loadTs('src/main/accessMatrix.ts');
 
 function fixture(overrides = {}) {
   const state = {
@@ -18,7 +19,8 @@ function fixture(overrides = {}) {
       github: { enabled: false, needsSecret: true, hasSecret: true }
     },
     cli: { claude: { installed: false, kind: 'npm', command: 'npm install -g @anthropic-ai/claude-code' }, codex: { installed: true, kind: 'npm', command: 'npm install -g @openai/codex' }, opencode: { installed: false, kind: 'manual' } },
-    spawnOk: true
+    spawnOk: true, starts: [], matrix: undefined, expiresAt: undefined,
+    svc: { skid: { installed: true, running: false }, off: { installed: false, running: false }, up: { installed: true, running: true } }
   };
   const deps = {
     tasks: () => ({ tasks: [] }), patchTask: () => true,
@@ -30,7 +32,6 @@ function fixture(overrides = {}) {
     agents: () => ({}), renameAgent: () => ({ ok: true }), setAgentTokenCap: () => {}, setNotifications: () => {},
     savePreference: () => {},
     appendEvent: (event) => { state.events.push(event); }, publish: () => {},
-    setFloorAutoMode: (on) => { state.writes += 1; state.autoMode = on; },
     setIntegrationConnected: (id, connected) => {
       const r = Object.hasOwn(state.integrations, id) ? state.integrations[id] : null;
       if (!r) return 'not_found';
@@ -40,6 +41,12 @@ function fixture(overrides = {}) {
     prereqInstall: {
       plan: (id) => Object.hasOwn(state.cli, id) ? { id, label: id, ...state.cli[id] } : null,
       run: (plan) => { state.runs.push(plan.id); return state.spawnOk ? { ok: true, ptyId: `pty-${plan.id}` } : { ok: false, error: 'no pty' }; }
+    },
+    setFloorAutoMode: (on, expiresAt) => { state.writes += 1; state.autoMode = on; state.expiresAt = expiresAt; },
+    setAccess: (agentId, sourceId, access) => { state.writes += 1; state.matrix = withAccess(state.matrix, agentId, sourceId, access); },
+    prereqStart: {
+      plan: (id) => Object.hasOwn(state.svc, id) ? { id, label: 'Skid', command: 'skid doctor', ...state.svc[id] } : null,
+      run: (plan) => { state.starts.push(plan.id); return state.spawnOk ? { ok: true, ptyId: `pty-start-${plan.id}` } : { ok: false, error: 'no pty' }; }
     },
     logStep: (step) => { state.steps.push(step); },
     ...overrides
@@ -65,8 +72,7 @@ test('floor.yolo persists autoMode and emits one event', () => {
 
 test('floor.yolo rejects fields the fork cannot enforce, with no write (known bad)', () => {
   const { state, deps } = fixture();
-  assertFailure(dispatchParamount({ type: 'floor.yolo', patch: { on: true, autoOffHours: 2 } }, deps), 'UNSUPPORTED');
-  assertFailure(dispatchParamount({ type: 'floor.yolo', patch: { keepHardRules: true } }, deps), 'UNSUPPORTED');
+    assertFailure(dispatchParamount({ type: 'floor.yolo', patch: { keepHardRules: true } }, deps), 'UNSUPPORTED');
   assertFailure(dispatchParamount({ type: 'floor.yolo', patch: { on: 'yes' } }, deps), 'INVALID_INPUT');
   assertFailure(dispatchParamount({ type: 'floor.yolo', patch: {} }, deps), 'INVALID_INPUT');
   assertFailure(dispatchParamount({ type: 'floor.yolo' }, deps), 'INVALID_INPUT');
@@ -201,20 +207,204 @@ test('prereq.install spawn failure is traced, emits no event and does not claim 
   assert.ok(state.steps.some((s) => s.step === 'spawn-failed'));
 });
 
-// ─── access.set / prereq.start stay unsupported, each with an errorId ───────
-test('access.set validates input, then fails UNSUPPORTED with the open product question', () => {
+// ─── floor.yolo autoOffHours ────────────────────────────────────────────────
+test('floor.yolo autoOffHours persists an ISO expiry; turning off clears it', () => {
   const { state, deps } = fixture();
-  assertFailure(dispatchParamount({ type: 'access.set', agentId: 'jim', sourceId: 'ado', access: 'admin' }, deps), 'INVALID_INPUT');
-  const result = dispatchParamount({ type: 'access.set', agentId: 'jim', sourceId: 'ado', access: 'rw' }, deps);
+  const before = Date.now();
+  assert.equal(dispatchParamount({ type: 'floor.yolo', patch: { on: true, autoOffHours: 2 } }, deps).ok, true);
+  const at = Date.parse(state.expiresAt);
+  assert.ok(at >= before + 2 * 3_600_000 - 1000 && at <= Date.now() + 2 * 3_600_000 + 1000);
+  assert.equal(dispatchParamount({ type: 'floor.yolo', patch: { on: true } }, deps).ok, true);
+  assert.equal(state.expiresAt, undefined, 'plain on carries no expiry');
+  assert.equal(dispatchParamount({ type: 'floor.yolo', patch: { on: true, autoOffHours: null } }, deps).ok, true);
+  assert.equal(state.expiresAt, undefined);
+});
+
+test('floor.yolo autoOffHours rejects bad values, off+hours and keepHardRules (known bad)', () => {
+  const { state, deps } = fixture();
+  for (const autoOffHours of [0, -1, 169, 'soon', NaN, Infinity]) {
+    assertFailure(dispatchParamount({ type: 'floor.yolo', patch: { on: true, autoOffHours } }, deps), 'INVALID_INPUT');
+  }
+  assertFailure(dispatchParamount({ type: 'floor.yolo', patch: { on: false, autoOffHours: 2 } }, deps), 'INVALID_INPUT');
+  const kh = dispatchParamount({ type: 'floor.yolo', patch: { on: true, keepHardRules: true } }, deps);
+  assertFailure(kh, 'UNSUPPORTED');
+  assert.match(kh.message, /keepHardRules/);
+  assert.equal(state.writes, 0);
+});
+
+test('autoModeExpired: past and unreadable expire, future and unset do not', () => {
+  const now = Date.parse('2026-10-15T12:00:00Z');
+  assert.equal(autoModeExpired('2026-10-15T11:59:59Z', now), true);
+  assert.equal(autoModeExpired('2026-10-15T12:00:00Z', now), true);
+  assert.equal(autoModeExpired('2026-10-15T12:00:01Z', now), false);
+  assert.equal(autoModeExpired('garbage', now), true, 'fails safe');
+  assert.equal(autoModeExpired(undefined, now), false);
+});
+
+// ─── floor.iteration unsupported reason ─────────────────────────────────────
+test('floor.iteration speed says it is unsupported in v1 so the UI can show why', () => {
+  const { deps } = fixture();
+  const result = dispatchParamount({ type: 'floor.iteration', patch: { speed: 'fast' } }, deps);
   assertFailure(result, 'UNSUPPORTED');
-  assert.match(result.message, /product decision/);
+  assert.match(result.message, /not supported in v1/);
+  assert.match(result.message, /speed/);
+});
+
+// ─── access.set ─────────────────────────────────────────────────────────────
+test('access.set persists restrictive cells and clears the cell for rw', () => {
+  const { state, deps } = fixture();
+  assert.equal(dispatchParamount({ type: 'access.set', agentId: 'jim', sourceId: 'ado', access: 'r' }, deps).ok, true);
+  assert.equal(accessFor(state.matrix, 'jim', 'ado'), 'r');
+  assert.equal(dispatchParamount({ type: 'access.set', agentId: 'jim', sourceId: 'slack', access: 'none' }, deps).ok, true);
+  assert.equal(accessFor(state.matrix, 'jim', 'slack'), 'none');
+  assert.equal(accessFor(state.matrix, 'pam', 'ado'), 'rw', 'unset cell stays rw');
+  assert.equal(dispatchParamount({ type: 'access.set', agentId: 'jim', sourceId: 'ado', access: 'rw' }, deps).ok, true);
+  assert.deepEqual(state.matrix, { 'jim:slack': 'none' });
+  assert.equal(state.events.length, 3);
+});
+
+test('access.set rejects bad input with no write (known bad)', () => {
+  const { state, deps } = fixture();
+  for (const c of [
+    { agentId: 'jim', sourceId: 'ado', access: 'admin' },
+    { agentId: 'ji:m', sourceId: 'ado', access: 'r' },
+    { agentId: 'jim', sourceId: 'a:do', access: 'r' },
+    { agentId: '', sourceId: 'ado', access: 'r' },
+    { agentId: 'jim', sourceId: 'ado', access: 'r', token: 'x' },
+    {}
+  ]) assertFailure(dispatchParamount({ type: 'access.set', ...c }, deps), 'INVALID_INPUT');
+  assert.equal(state.writes, 0);
   assert.equal(state.events.length, 0);
 });
 
-test('prereq.start fails UNSUPPORTED with an errorId and never runs anything', () => {
+test('access.set is unsupported without a setter and uncertain if the write throws', () => {
+  assertFailure(dispatchParamount({ type: 'access.set', agentId: 'jim', sourceId: 'ado', access: 'r' }, fixture({ setAccess: undefined }).deps), 'UNSUPPORTED');
+  assertFailure(dispatchParamount({ type: 'access.set', agentId: 'jim', sourceId: 'ado', access: 'r' }, fixture({ setAccess: () => { throw new Error('disk'); } }).deps), 'UNCERTAIN_STATE');
+});
+
+test('access matrix helpers: unset is rw, unreadable fails closed, prototype keys are inert', () => {
+  assert.equal(accessFor(undefined, 'a', 's'), 'rw');
+  assert.equal(accessFor({ 'a:s': 'weird' }, 'a', 's'), 'none');
+  assert.equal(accessFor({}, '__proto__', 'toString'), 'rw');
+  const m = {}; const next = withAccess(m, 'a', 's', 'r');
+  assert.deepEqual(m, {}, 'input not mutated');
+  assert.equal(isReadMethod('get'), true);
+  assert.equal(isReadMethod('POST'), false);
+});
+
+// ─── broker enforcement ─────────────────────────────────────────────────────
+test('integration broker enforces none and r, logs a denial with errorId and ids only', async () => {
+  const { IntegrationBroker } = loadTs('src/main/integrationBroker.ts');
+  const http = require('node:http');
+  const upstream = http.createServer((req, res) => { res.end('ok'); });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${upstream.address().port}`;
+  const denials = [];
+  let matrix = {};
+  const broker = new IntegrationBroker({
+    getRecord: (id) => ({ id, enabled: true, baseUrl: base, authType: 'none' }),
+    getSecret: () => undefined,
+    access: (w, i) => accessFor(matrix, w, i),
+    onDeny: (d) => denials.push(d)
+  });
+  const started = await broker.start(0);
+  const token = broker.grant('jim', ['ado']);
+  const call = (method) => fetch(`${broker.url()}/i/ado/x`, { method, body: method === 'POST' ? 'SECRET-PAYLOAD' : undefined, headers: { 'x-md-broker-token': token } });
+  try {
+    assert.equal((await call('POST')).status, 200, 'unset cell is rw');
+    matrix = { 'jim:ado': 'r' };
+    assert.equal((await call('GET')).status, 200);
+    const blocked = await call('POST');
+    assert.equal(blocked.status, 403);
+    assert.match((await blocked.json()).error, /errorId [0-9a-f]+/);
+    matrix = { 'jim:ado': 'none' };
+    assert.equal((await call('GET')).status, 403);
+    assert.equal(denials.length, 2);
+    assert.deepEqual(Object.keys(denials[0]).sort(), ['errorId', 'integrationId', 'level', 'method', 'workerId']);
+    assert.ok(!JSON.stringify(denials).includes('SECRET-PAYLOAD'));
+    assert.ok(started.ok);
+  } finally { broker.stop(); upstream.close(); }
+});
+
+// ─── prereq.start ───────────────────────────────────────────────────────────
+test('prereq.start without confirm is a dry run that starts nothing', () => {
   const { state, deps } = fixture();
-  assertFailure(dispatchParamount({ type: 'prereq.start', id: 'skid' }, deps), 'UNSUPPORTED');
+  const result = dispatchParamount({ type: 'prereq.start', id: 'skid' }, deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.prereq.confirmed, false);
+  assert.equal(result.prereq.kind, 'start');
+  assert.equal(result.prereq.command, 'skid doctor');
+  assert.deepEqual(state.starts, []);
+  assert.deepEqual(state.steps.map((s) => s.step), ['start-plan', 'start-confirm-required']);
+});
+
+test('prereq.start confirm=true runs once in one visible PTY with every step logged', () => {
+  const { state, deps } = fixture();
+  const result = dispatchParamount({ type: 'prereq.start', id: 'skid', confirm: true }, deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.prereq.ptyId, 'pty-start-skid');
+  assert.deepEqual(state.starts, ['skid']);
+  assert.deepEqual(state.steps.map((s) => s.step), ['start-plan', 'start-confirmed', 'start-spawned']);
+  assert.ok(state.steps.every((s) => typeof s.cid === 'string' && s.cid));
+});
+
+test('prereq.start refuses running, uninstalled, unknown, bad confirm and extra fields (known bad)', () => {
+  const { state, deps } = fixture();
+  assertFailure(dispatchParamount({ type: 'prereq.start', id: 'up', confirm: true }, deps), 'CONFLICT');
+  assertFailure(dispatchParamount({ type: 'prereq.start', id: 'off', confirm: true }, deps), 'UNSUPPORTED');
+  assertFailure(dispatchParamount({ type: 'prereq.start', id: 'nope', confirm: true }, deps), 'UNSUPPORTED');
+  assertFailure(dispatchParamount({ type: 'prereq.start', id: '__proto__', confirm: true }, deps), 'UNSUPPORTED');
+  assertFailure(dispatchParamount({ type: 'prereq.start', id: 'skid', confirm: 'true' }, deps), 'INVALID_INPUT');
+  assertFailure(dispatchParamount({ type: 'prereq.start', id: 'skid', confirm: true, command: 'rm -rf /' }, deps), 'INVALID_INPUT');
   assertFailure(dispatchParamount({ type: 'prereq.start' }, deps), 'INVALID_INPUT');
-  assert.deepEqual(state.runs, []);
+  assert.deepEqual(state.starts, []);
   assert.equal(state.events.length, 0);
+});
+
+test('prereq.start spawn failure is INTERNAL, logged, and emits no event', () => {
+  const { state, deps } = fixture();
+  state.spawnOk = false;
+  assertFailure(dispatchParamount({ type: 'prereq.start', id: 'skid', confirm: true }, deps), 'INTERNAL');
+  assert.ok(state.steps.some((s) => s.step === 'start-spawn-failed'));
+  assert.equal(state.events.length, 0);
+});
+
+// ─── port probe (daemon started outside the app) ────────────────────────────
+test('probePort sees a real local listener and reports a closed port as false', async () => {
+  const { probePort } = loadTs('src/main/portProbe.ts');
+  const net = require('node:net');
+  const server = net.createServer((s) => s.end());
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  try {
+    assert.equal(await probePort(port), true);
+  } finally { await new Promise((r) => server.close(r)); }
+  assert.equal(await probePort(port), false, 'closed after the listener stops');
+});
+
+test('probePort times out on a black hole instead of blocking (known bad)', async () => {
+  const { probePort } = loadTs('src/main/portProbe.ts');
+  const started = Date.now();
+  assert.equal(await probePort(9, '10.255.255.1', 150), false);
+  assert.ok(Date.now() - started < 2000);
+});
+
+test('an open service port makes prereq.start CONFLICT, and a closed one allows the dry run', async () => {
+  const { probePort } = loadTs('src/main/portProbe.ts');
+  const net = require('node:net');
+  const server = net.createServer((s) => s.end());
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  const plan = (portOpen) => (id) => ({ id, label: 'Skid', installed: true, running: portOpen, command: 'skid doctor' });
+  try {
+    const open = await probePort(port);
+    const a = fixture();
+    a.deps.prereqStart.plan = plan(open);
+    assertFailure(dispatchParamount({ type: 'prereq.start', id: 'skid', confirm: true }, a.deps), 'CONFLICT');
+    assert.deepEqual(a.state.starts, []);
+  } finally { await new Promise((r) => server.close(r)); }
+  const closed = await probePort(port);
+  const b = fixture();
+  b.deps.prereqStart.plan = plan(closed);
+  assert.equal(dispatchParamount({ type: 'prereq.start', id: 'skid' }, b.deps).ok, true);
 });

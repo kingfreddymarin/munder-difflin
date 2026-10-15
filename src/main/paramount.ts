@@ -19,7 +19,7 @@ export interface ParamountDeps {
   diagnostics?(options: { logLines?: number; cid: string }): ParamountDiagnostics;
   /** Floor-wide YOLO: persisted as config `autoMode` (new agents spawn with the
    *  engine's bypass-permissions stance). Absent means unsupported. */
-  setFloorAutoMode?(on: boolean): void;
+  setFloorAutoMode?(on: boolean, expiresAt?: string): void;
   /** Connect/disconnect a registered integration by toggling its `enabled` flag.
    *  Never receives or returns a secret. `needs_secret` = the record requires a
    *  credential that has not been stored through the integrations flow. */
@@ -29,6 +29,15 @@ export interface ParamountDeps {
   prereqInstall?: {
     plan(id: string): ParamountPrereqPlan | null;
     run(plan: ParamountPrereqPlan, cid: string): { ok: boolean; ptyId?: string; error?: string };
+  };
+  /** Persist one cell of the access matrix (atomic config write). 'rw' is the
+   *  default, so it clears the cell. Enforcement lives in the integration broker. */
+  setAccess?(agentId: string, sourceId: string, access: 'rw' | 'r' | 'none'): void;
+  /** Vetted service starters only (Skidbladnir). `plan` is read-only; `run` starts a
+   *  VISIBLE terminal that runs the plan's trusted command and returns its pty id. */
+  prereqStart?: {
+    plan(id: string): ParamountPrereqStartPlan | null;
+    run(plan: ParamountPrereqStartPlan, cid: string): { ok: boolean; ptyId?: string; error?: string };
   };
   /** One audit line per step of a prerequisite action, tagged with the correlation id. */
   logStep?(step: Record<string, unknown>): void;
@@ -41,6 +50,25 @@ export interface ParamountPrereqPlan {
   kind: 'npm' | 'node-then-npm' | 'native' | 'manual';
   /** Trusted constant from the provider preset; absent for the manual rung. */
   command?: string;
+}
+
+export interface ParamountPrereqStartPlan {
+  id: string;
+  label: string;
+  installed: boolean;
+  /** A start terminal this app opened is still alive. */
+  running: boolean;
+  /** Trusted constant; never built from the command. */
+  command: string;
+}
+
+/** YOLO auto-off window, in hours. */
+export const YOLO_OFF_HOURS = { min: 0.1, max: 168 };
+/** True when a persisted YOLO expiry has passed (or is unreadable, which fails safe). */
+export function autoModeExpired(expiresAt: string | undefined, now: number): boolean {
+  if (!expiresAt) return false;
+  const at = Date.parse(expiresAt);
+  return !Number.isFinite(at) || at <= now;
 }
 
 /** Iteration limits. The heartbeat mission and the ops standup are the only
@@ -152,29 +180,39 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         break;
       }
       case 'access.set': {
-        if (!id(command.agentId) || !id(command.sourceId) || !['rw', 'r', 'none'].includes(command.access as string)) {
-          return fail('INVALID_INPUT', 'Invalid access grant');
+        if (!id(command.agentId) || !id(command.sourceId) || !['rw', 'r', 'none'].includes(command.access as string)
+          || command.agentId.includes(':') || command.sourceId.includes(':') || !onlyKeys(command, ['type', 'agentId', 'sourceId', 'access'])) {
+          return fail('INVALID_INPUT', 'Invalid access grant; ids must not contain ":" and access is rw, r or none');
         }
-        // The fork has no per-agent/per-source access matrix to persist or enforce,
-        // and inventing one would imply a guarantee nothing checks. Product decision.
-        return fail('UNSUPPORTED', 'access.set needs a product decision: what a read/none grant per agent and source means, and which fork gate enforces it (tool permissions, integration scope, or file roots)');
+        if (!deps.setAccess) return fail('UNSUPPORTED', 'Access grants are not available in this build');
+        writeAttempted = true;
+        deps.setAccess(command.agentId, command.sourceId, command.access as 'rw' | 'r' | 'none');
+        break;
       }
       case 'floor.yolo': {
         const patch = command.patch;
         if (!object(patch) || Object.keys(patch).length === 0) return fail('INVALID_INPUT', 'Invalid floor yolo patch');
-        const unsupported = Object.keys(patch).filter((k) => k !== 'on');
-        if (unsupported.length) return fail('UNSUPPORTED', `floor.yolo fields without a fork mechanism: ${unsupported.join(', ')}; only "on" is supported`);
+        const unsupported = Object.keys(patch).filter((k) => k !== 'on' && k !== 'autoOffHours');
+        if (unsupported.length) return fail('UNSUPPORTED', `floor.yolo fields without a fork mechanism: ${unsupported.join(', ')}; "on" and "autoOffHours" are supported`);
         if (typeof patch.on !== 'boolean') return fail('INVALID_INPUT', 'floor.yolo "on" must be a boolean');
+        const hours = patch.autoOffHours;
+        if (hours !== undefined && hours !== null) {
+          if (typeof hours !== 'number' || !Number.isFinite(hours) || hours < YOLO_OFF_HOURS.min || hours > YOLO_OFF_HOURS.max) {
+            return fail('INVALID_INPUT', `autoOffHours must be a number from ${YOLO_OFF_HOURS.min} to ${YOLO_OFF_HOURS.max}, or null for no expiry`);
+          }
+          if (!patch.on) return fail('INVALID_INPUT', 'autoOffHours only applies when "on" is true');
+        }
         if (!deps.setFloorAutoMode) return fail('UNSUPPORTED', 'Floor YOLO is not available in this build');
+        const expiresAt = patch.on && typeof hours === 'number' ? new Date(Date.now() + hours * 3_600_000).toISOString() : undefined;
         writeAttempted = true;
-        deps.setFloorAutoMode(patch.on);
+        deps.setFloorAutoMode(patch.on, expiresAt);
         break;
       }
       case 'floor.iteration': {
         const patch = command.patch;
         if (!object(patch) || Object.keys(patch).length === 0) return fail('INVALID_INPUT', 'Invalid floor iteration patch');
         const unsupported = Object.keys(patch).filter((k) => k !== 'heartbeatSec' && k !== 'standupMin');
-        if (unsupported.length) return fail('UNSUPPORTED', `floor.iteration fields without a fork mechanism: ${unsupported.join(', ')}; heartbeatSec and standupMin are supported`);
+        if (unsupported.length) return fail('UNSUPPORTED', `floor.iteration fields not supported in v1 (no backing mechanism): ${unsupported.join(', ')}; heartbeatSec and standupMin are supported`);
         const within = (v: unknown, r: { min: number; max: number }): v is number =>
           typeof v === 'number' && Number.isInteger(v) && v >= r.min && v <= r.max;
         if (patch.heartbeatSec !== undefined && !within(patch.heartbeatSec, HEARTBEAT_SEC)) return fail('INVALID_INPUT', `heartbeatSec must be an integer from ${HEARTBEAT_SEC.min} to ${HEARTBEAT_SEC.max}`);
@@ -229,10 +267,31 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         break;
       }
       case 'prereq.start': {
-        if (!id(command.id)) return fail('INVALID_INPUT', 'Invalid prerequisite id');
-        // Nothing in the fork starts a prerequisite service (Skidbladnir has no launcher
-        // here), so any start would be an unvetted command. Product decision.
-        return fail('UNSUPPORTED', 'prereq.start needs a product decision: which vetted launcher starts each service prerequisite (for example Skidbladnir)');
+        if (!id(command.id) || !onlyKeys(command, ['type', 'id', 'confirm'])) return fail('INVALID_INPUT', 'Invalid prerequisite start request');
+        if (command.confirm !== undefined && typeof command.confirm !== 'boolean') return fail('INVALID_INPUT', 'confirm must be a boolean');
+        if (!deps.prereqStart) return fail('UNSUPPORTED', 'Prerequisite start is not available in this build');
+        const plan = deps.prereqStart.plan(command.id);
+        if (!plan) return fail('UNSUPPORTED', `No vetted start command for "${command.id}"`);
+        deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'start-plan', id: plan.id, installed: plan.installed, running: plan.running, command: plan.command });
+        if (!plan.installed) return fail('UNSUPPORTED', `${plan.label} is not installed; install it first`);
+        if (plan.running) return fail('CONFLICT', `${plan.label} is already running`);
+        const report: ParamountPrereqReport = { id: plan.id, label: plan.label, installed: true, kind: 'start', command: plan.command, confirmed: command.confirm === true };
+        if (command.confirm !== true) {
+          deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'start-confirm-required', id: plan.id });
+          prereq = report;
+          break;
+        }
+        deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'start-confirmed', id: plan.id });
+        writeAttempted = true;
+        const started = deps.prereqStart.run(plan, span.cid);
+        if (!started.ok) {
+          writeAttempted = false;
+          deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'start-spawn-failed', id: plan.id, error: started.error });
+          return fail('INTERNAL', `Could not start the ${plan.label} terminal: ${started.error ?? 'unknown error'}`);
+        }
+        deps.logStep?.({ kind: 'paramount-prereq', cid: span.cid, step: 'start-spawned', id: plan.id, ptyId: started.ptyId });
+        prereq = { ...report, ptyId: started.ptyId };
+        break;
       }
       case 'layout.panels':
         return fail('UNSUPPORTED', 'Team panel layout is a renderer-local preference');
