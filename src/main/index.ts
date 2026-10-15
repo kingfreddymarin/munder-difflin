@@ -3614,6 +3614,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   prereqInstall: { plan: paramountPrereqPlan, run: (plan) => paramountRunPrereqInstall(plan, evt.sender) },
   logStep: (step) => paramountLog(step),
   agentSources: { roots: paramountAgentRoots, deliverHire },
+  terminal: { messages: (agentId) => hive.voiceMessages({ agentId, limit: 200 }), logStep: (step) => paramountLog(step) },
   savePreference: saveParamountPreference,
   appendEvent: (event) => {
     const root = hive.root();
