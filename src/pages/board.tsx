@@ -15,6 +15,7 @@ import { useFloor } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { Card as CardT } from '@/data/types';
+import { Screen } from '@/components/app/screen';
 
 function BoardCard({ card, onOpen }: { card: CardT; onOpen: () => void }) {
   const agent = useFloor((s) => s.agents.find((a) => a.id === card.agentId));
@@ -49,7 +50,7 @@ export function BoardPage() {
   const openCard = (key: string) => go('board', { card: key });
 
   return (
-    <>
+    <Screen fill>
       <PageHeader title="Board" description="The single list of work. Agents read their card’s plan every turn and tick steps as they go." actions={<Button>New card</Button>} />
       <div className="flex flex-wrap items-center gap-3">
         <Tabs value={view} onValueChange={setView}>
@@ -62,12 +63,12 @@ export function BoardPage() {
       </div>
 
       {view === 'columns' ? (
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <div className="grid h-full grid-cols-3 gap-3 xl:grid-cols-6">
+        <div className="min-h-0 flex-1 overflow-auto">
+          <div className="grid h-full min-h-[20rem] grid-cols-3 gap-3 xl:grid-cols-6">
             {columns.map((col) => {
               const list = visible.filter((c) => c.status === col.id);
               return (
-                <section key={col.id} className="bg-muted/30 flex min-h-0 flex-col gap-2 overflow-hidden rounded-xl border p-2.5">
+                <section key={col.id} className="bg-muted/30 flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain rounded-xl border p-2.5">
                   <h2 className="flex items-center gap-2 px-1 text-sm font-medium">
                     <span className={cn('size-2 rounded-full', col.dot)} />
                     <span className="flex-1">{col.label}</span>
@@ -81,7 +82,7 @@ export function BoardPage() {
           </div>
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 auto-rows-min gap-3 overflow-hidden lg:grid-cols-2">
+        <div className="grid min-h-0 flex-1 auto-rows-min gap-3 overflow-y-auto overscroll-contain lg:grid-cols-2">
           {agents.filter((a) => agent === 'all' || a.id === agent).map((a) => {
             const list = cards.filter((c) => c.agentId === a.id);
             if (!list.length) return null;
@@ -111,6 +112,6 @@ export function BoardPage() {
           )}
         </DialogContent>
       </Dialog>
-    </>
+    </Screen>
   );
 }

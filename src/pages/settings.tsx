@@ -15,6 +15,7 @@ import { useRouter } from '@/app/router';
 import { resetMockData } from '@/data/mock-provider';
 import { PrereqList } from '@/components/app/prereq-list';
 import type { IterationSettings } from '@/data/types';
+import { Screen } from '@/components/app/screen';
 
 const speeds: Record<IterationSettings['speed'], { label: string; hint: string; patch: Partial<IterationSettings> }> = {
   fast: { label: 'Fast', hint: 'Heartbeat 15 s · standup every 15 min · checkpoint every step', patch: { speed: 'fast', heartbeatSec: 15, standupMin: 15, checkpointEverySteps: 1 } },
@@ -45,7 +46,7 @@ export function SettingsPage() {
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
+    <Screen>
       <div className="flex flex-col">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <span className="text-muted-foreground text-xs">Every change here is logged and added to the context of the agents it affects.</span>
@@ -139,6 +140,6 @@ export function SettingsPage() {
           </TabsContent>
         </TabsContents>
       </Tabs>
-    </div>
+    </Screen>
   );
 }

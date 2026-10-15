@@ -13,6 +13,7 @@ import { useFloor } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { ActivityKind } from '@/data/types';
+import { Screen } from '@/components/app/screen';
 
 const healthBadge = { 'on-track': ['success', 'On track'], 'at-risk': ['warning', 'At risk'], blocked: ['danger', 'Blocked'] } as const;
 const kindTone: Record<ActivityKind, string> = { message: 'text-sky-300', tool: 'text-muted-foreground', edit: 'text-violet-300', ticket: 'text-emerald-400', breaker: 'text-rose-400', question: 'text-amber-300' };
@@ -49,7 +50,7 @@ export function HomePage() {
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
+    <Screen>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-col">
           <h1 className="text-xl font-semibold tracking-tight">{greeting}</h1>
@@ -142,6 +143,6 @@ export function HomePage() {
           })}
         </Tile>
       </div>
-    </div>
+    </Screen>
   );
 }
