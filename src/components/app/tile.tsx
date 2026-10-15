@@ -1,4 +1,4 @@
-// A fixed-height panel for no-scroll screens: header, body that clips, optional footer action.
+// A panel: header, then a body that scrolls when its content is taller than the panel.
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
@@ -10,7 +10,7 @@ export function Tile({ title, hint, actions, children, className }: { title: Rea
         {hint && <span className="text-muted-foreground truncate text-xs">{hint}</span>}
         <span className="ml-auto flex items-center gap-1">{actions}</span>
       </header>
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">{children}</div>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain">{children}</div>
     </section>
   );
 }

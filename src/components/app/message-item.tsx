@@ -6,6 +6,7 @@ import { X } from '@/components/animate-ui/icons/x';
 import { cn } from '@/lib/utils';
 import type { Agent, Message } from '@/data/types';
 import { AskReply, AskText } from './ask-reply';
+import { useDispatch } from '@/data/store';
 import { ExternalLink } from './external-link';
 import { clock } from './format';
 
@@ -87,8 +88,10 @@ export function MessageItem({ m, agents, showNames, onHide }: { m: Message; agen
         </ul>
       )}
       {m.links && (
-        <div className="flex flex-wrap gap-3">
-          {m.links.map((l) => <ExternalLink key={l.label} href={l.href} label={l.label} />)}
+        <div className="flex flex-wrap gap-3 text-sm">
+          {m.links.map((l) => (
+            <ExternalLink key={l.label} href={l.href}>{l.label}</ExternalLink>
+          ))}
         </div>
       )}
       {(m.kind === 'question' || m.kind === 'approval') && <AskReply m={m} />}

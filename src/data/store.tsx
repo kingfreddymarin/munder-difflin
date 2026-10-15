@@ -7,6 +7,8 @@ import { ErrorNotice } from '@/components/app/error-notice';
 import { BackendError, toBackendError } from './errors';
 import type { Command, DataProvider } from './protocol';
 import { applyEvent } from './reducer';
+import { share } from './share';
+import { record } from '@/lib/perf';
 import type { Snapshot } from './types';
 
 export type FloorStatus = 'loading' | 'ready' | 'error' | 'disconnected';
@@ -41,14 +43,23 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
     let active = false;
     let refreshVersion = 0;
     let refreshedAt = 0;
+    // One snapshot request at a time: a burst of invalidations becomes one request now and one after it.
+    let inFlight = false;
+    let again = false;
     const subs = new Set<() => void>();
     const emit = () => subs.forEach((f) => f());
     const refresh = () => {
+      if (inFlight) { again = true; return; }
+      inFlight = true;
       const version = ++refreshVersion;
       if (!state) { error = null; emit(); }
+      const started = performance.now();
       provider.snapshot().then((s) => {
         if (!active || version !== refreshVersion) return;
-        state = s;
+        record('snapshot', performance.now() - started);
+        const next = state ? share(state, s) : s;
+        if (next === state && !error) return;
+        state = next;
         error = null;
         refreshedAt = Date.now();
         emit();
@@ -57,6 +68,9 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
         state = null;
         error = toBackendError(cause, 'snapshot');
         emit();
+      }).finally(() => {
+        inFlight = false;
+        if (again && active) { again = false; refresh(); }
       });
     };
     return {
@@ -177,6 +191,15 @@ export function useAgentImport() {
   return React.useMemo(() => provider.discoverAgents && provider.importAgent
     ? { discover: provider.discoverAgents.bind(provider), importAgent: provider.importAgent.bind(provider) }
     : null, [provider]);
+}
+
+/** The provider's link and folder openers; each is null when the provider cannot do it (the control then says why). */
+export function useOpeners() {
+  const { provider } = useStore();
+  return React.useMemo(() => ({
+    openExternal: provider.openExternal?.bind(provider) ?? null,
+    openIn: provider.openIn?.bind(provider) ?? null,
+  }), [provider]);
 }
 
 /** Fetches the redacted `diagnostics.bundle` and puts it on the clipboard. */

@@ -12,12 +12,12 @@ export function AccountMenu() {
     <DropdownMenu>
       <DropdownMenuTrigger className="rounded-full outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50" aria-label="Account">
         <Avatar className="size-8">
-          <AvatarFallback className="bg-primary/20 text-primary text-xs font-semibold">{me.name.slice(0, 2).toUpperCase()}</AvatarFallback>
+          <AvatarFallback className="bg-primary/20 text-primary text-xs font-semibold">{me.name ? me.name.slice(0, 2).toUpperCase() : '—'}</AvatarFallback>
         </Avatar>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-60">
         <DropdownMenuLabel className="flex flex-col">
-          <span>{me.name}</span>
+          <span>{me.name || 'Name not set'}</span>
           <span className="text-muted-foreground text-xs font-normal">{me.workEmail}</span>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />

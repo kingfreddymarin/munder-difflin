@@ -8,7 +8,7 @@ export function AgentsPanel({ onOpen }: { onOpen: (id: string) => void }) {
   const agents = useFloor((s) => s.agents);
   const yolo = useFloor((s) => s.me.yolo.on);
   return (
-    <div className="flex min-h-0 flex-col gap-1 overflow-hidden">
+    <div className="flex min-h-0 flex-col gap-1">
       {agents.map((a) => (
         <button key={a.id} type="button" title={a.doing} onClick={() => onOpen(a.id)} className="hover:bg-accent flex items-center gap-2.5 rounded-lg px-1.5 py-1 text-left">
           <AgentAvatar agent={a} size="sm" tooltip={false} />

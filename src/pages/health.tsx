@@ -11,6 +11,7 @@ import { CopyDiagnosticsButton, useDispatch, useFloor, useUnsupported } from '@/
 import { UnsupportedReason } from '@/components/app/error-notice';
 import { cn } from '@/lib/utils';
 import type { Service } from '@/data/types';
+import { Screen } from '@/components/app/screen';
 
 function ServiceRow({ s }: { s: Service }) {
   const [fixing, setFixing] = React.useState<'idle' | 'sending' | 'started'>('idle');
@@ -51,7 +52,7 @@ export function HealthPage() {
   const tokens = agents.reduce((n, a) => n + a.tokensUsed, 0);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
+    <Screen>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-1 flex-col">
           <h1 className="text-xl font-semibold tracking-tight">Health</h1>
@@ -86,6 +87,6 @@ export function HealthPage() {
           ))}
         </Tile>
       </div>
-    </div>
+    </Screen>
   );
 }

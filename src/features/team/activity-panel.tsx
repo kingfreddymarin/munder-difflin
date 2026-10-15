@@ -8,7 +8,7 @@ export function ActivityPanel({ onOpen }: { onOpen: (id: string) => void }) {
   const agents = useFloor((s) => s.agents);
   const timelines = useFloor((s) => s.timelines);
   return (
-    <div className="flex min-h-0 flex-col gap-1.5 overflow-hidden">
+    <div className="flex min-h-0 flex-col gap-1.5">
       <div className="text-muted-foreground flex items-center gap-2 pl-[140px] text-[10px]">
         <span className="flex-1">12:00</span><span className="flex-1 text-center">18:00</span><span>now</span>
         <span className="w-28 text-right">msgs · tools · done</span>

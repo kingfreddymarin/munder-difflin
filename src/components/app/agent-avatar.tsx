@@ -13,7 +13,7 @@ export function AgentAvatar({ agent, size = 'md', showLevel = true, tooltip = tr
       <Avatar className={cn(sizes[size], 'ring-2 ring-offset-2 ring-offset-background', statusMeta[agent.status].ring, agent.yolo && 'ring-fuchsia-400')}>
         <AvatarFallback className={cn('font-mono', a.bg, a.fg)}>{agent.initials}</AvatarFallback>
       </Avatar>
-      {showLevel && size !== 'sm' && (
+      {showLevel && size !== 'sm' && agent.level > 0 && (
         <span className="absolute -right-2 -bottom-1 rounded-full border border-background bg-secondary px-1.5 text-[10px] leading-4 text-secondary-foreground">L{agent.level}</span>
       )}
     </span>

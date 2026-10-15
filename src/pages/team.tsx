@@ -14,6 +14,7 @@ import { ImportAgentsSheet } from '@/features/team/import-agents-sheet';
 import { useAgentImport, useDispatch } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
+import { Screen } from '@/components/app/screen';
 
 type PanelId = 'agents' | 'graph' | 'activity' | 'sources' | 'automations';
 const PANELS: Record<PanelId, { title: string; hint: string }> = {
@@ -78,7 +79,7 @@ export function TeamPage() {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
+    <Screen>
       <div className="flex items-center gap-3">
         <div className="flex flex-1 flex-col">
           <h1 className="text-xl font-semibold tracking-tight">Team</h1>
@@ -117,6 +118,6 @@ export function TeamPage() {
       </div>
       <AgentSheet agentId={open} tab={route.params.get('tab')} onClose={() => go('team')} />
       <ImportAgentsSheet open={importing} onClose={() => setImporting(false)} />
-    </div>
+    </Screen>
   );
 }

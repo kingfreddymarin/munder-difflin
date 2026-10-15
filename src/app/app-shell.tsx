@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarTrigger } from '@/components/animate-ui/components/radix/sidebar';
+import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarTrigger, useSidebar } from '@/components/animate-ui/components/radix/sidebar';
 import { ThemeTogglerButton } from '@/components/animate-ui/components/buttons/theme-toggler';
 import { Separator } from '@/components/ui/separator';
 import { footerNav, mainNav, type RouteId } from '@/config/navigation';
@@ -9,6 +9,7 @@ import { NotificationsMenu } from './notifications-menu';
 import { AccountMenu } from './account-menu';
 import { YoloBanner } from './yolo-banner';
 import { SetupGate } from './setup-gate';
+import { cn } from '@/lib/utils';
 
 function useBadges(): Partial<Record<RouteId, number>> {
   const messages = useFloor((s) => s.messages);
@@ -24,12 +25,31 @@ function useBadges(): Partial<Record<RouteId, number>> {
   );
 }
 
+/** The window's title bar: drags the window, controls inside it stay clickable. When the sidebar does not
+ *  sit under the macOS traffic lights (collapsed or offcanvas), the bar leaves room for them. */
+function TopBar({ title }: { title: string }) {
+  const { state, isMobile } = useSidebar();
+  const clearLights = isMobile || state === 'collapsed';
+  return (
+    <header className={cn('app-drag bg-background/80 sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b px-4 backdrop-blur', clearLights && 'desktop-mac:pl-20')}>
+      <SidebarTrigger />
+      <Separator orientation="vertical" className="mx-1 !h-5" />
+      <span className="flex-1 truncate font-medium">{title}</span>
+      <ThemeTogglerButton variant="ghost" size="sm" aria-label="Toggle theme" />
+      <NotificationsMenu />
+      <AccountMenu />
+    </header>
+  );
+}
+
 export function AppShell({ children, title }: { children: React.ReactNode; title: string }) {
   const { route, go } = useRouter();
   const badges = useBadges();
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon">
+        {/* Drag strip under the macOS traffic lights; the window has no title bar of its own. */}
+        <div aria-hidden className="app-drag hidden h-7 shrink-0 desktop-mac:block" />
         <SidebarHeader>
           <SidebarMenu>
             <SidebarMenuItem>
@@ -75,17 +95,10 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
         <SidebarRail />
       </Sidebar>
       <SidebarInset className="h-svh min-w-0 overflow-hidden">
-        <header className="bg-background/80 sticky top-0 z-20 flex h-14 items-center gap-2 border-b px-4 backdrop-blur">
-          <SidebarTrigger />
-          <Separator orientation="vertical" className="mx-1 !h-5" />
-          <span className="flex-1 font-medium">{title}</span>
-          <ThemeTogglerButton variant="ghost" size="sm" aria-label="Toggle theme" />
-          <NotificationsMenu />
-          <AccountMenu />
-        </header>
+        <TopBar title={title} />
         <YoloBanner />
         <SetupGate />
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden p-4">{children}</main>
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain p-4">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );

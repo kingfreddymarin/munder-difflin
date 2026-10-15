@@ -1,6 +1,6 @@
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
-import type { ParamountBoardCommand, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics } from './paramount-api';
+import type { ParamountBoardCommand, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountOpenInApp } from './paramount-api';
 import type { Access, Agent, AskMode, CardStatus, ChatView, HomeLayout, IterationSettings, Snapshot, YoloSettings } from './types';
 
 export type Command =
@@ -52,4 +52,8 @@ export interface DataProvider {
   discoverAgents?(options?: { sources?: ParamountAgentSource[]; projectDir?: string }): Promise<ParamountAgentDiscovery>;
   /** Imports one discovered agent through the hire path; the human confirms the spawn in the Add-Agent form. */
   importAgent?(source: ParamountAgentSource, id: string, projectDir?: string): Promise<ParamountAgentImport>;
+  /** Opens an http(s) link in the default browser; the core refuses hosts outside its allow-list. Absent when the provider cannot open links. */
+  openExternal?(url: string): Promise<void>;
+  /** Opens an existing absolute folder in Warp or VS Code. Absent when the provider cannot launch apps. */
+  openIn?(app: ParamountOpenInApp, path: string): Promise<void>;
 }

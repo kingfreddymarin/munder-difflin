@@ -17,6 +17,7 @@ import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { Card as CardT, CardStatus } from '@/data/types';
+import { Screen } from '@/components/app/screen';
 
 /** Filter keys: `w:` workspace, `t:` tag, `a:` agent. OR inside a group, AND across groups. */
 type FilterKey = `${'w' | 't' | 'a'}:${string}`;
@@ -194,7 +195,7 @@ export function BoardPage() {
   const openCard = (key: string) => go('board', { card: key });
 
   return (
-    <>
+    <Screen fill>
       <PageHeader title="Board" description="The single list of work. Agents read their card’s plan every turn and tick steps as they go." />
       <div className="flex flex-wrap items-center gap-3">
         <Tabs value={view} onValueChange={setView}>
@@ -215,7 +216,7 @@ export function BoardPage() {
           </div>
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 auto-rows-min gap-3 overflow-y-auto lg:grid-cols-2">
+        <div className="grid min-h-0 flex-1 auto-rows-min gap-3 overflow-y-auto overscroll-contain lg:grid-cols-2">
           {agents.map((a) => {
             const list = visible.filter((c) => c.agentId === a.id);
             if (!list.length) return null;
@@ -245,6 +246,6 @@ export function BoardPage() {
           )}
         </DialogContent>
       </Dialog>
-    </>
+    </Screen>
   );
 }

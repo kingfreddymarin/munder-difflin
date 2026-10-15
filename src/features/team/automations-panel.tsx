@@ -9,7 +9,7 @@ export function AutomationsPanel() {
   const automations = useFloor((s) => s.automations);
   const dispatch = useDispatch();
   return (
-    <div className="flex min-h-0 flex-col gap-1.5 overflow-hidden">
+    <div className="flex min-h-0 flex-col gap-1.5">
       {automations.map((a) => (
         <div key={a.id} className="flex items-center gap-3 rounded-lg border px-2.5 py-2">
           <HoverCard>

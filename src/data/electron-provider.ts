@@ -7,7 +7,7 @@ import { askOptions, cardAsks, logActivity } from './projection';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, CardRef, CardStatus, Message, Snapshot } from './types';
 
-type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent'>> & { kind: 'electron' };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn'>> & { kind: 'electron' };
 
 const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
 
@@ -20,7 +20,9 @@ const array = (value: unknown): Record<string, unknown>[] =>
   Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object') : [];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const string = (value: unknown, fallback = ''): string => typeof value === 'string' ? value : fallback;
-const date = (value: unknown): string => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : new Date().toISOString();
+// An unknown time stays '' (shown as '—'), never "now": an invented time is a hardcoded value and would also
+// make every refresh look changed.
+const date = (value: unknown): string => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : '';
 
 const REF_KINDS: readonly string[] = ['pr', 'build', 'run', 'workitem'];
 const REF_SYSTEMS: readonly string[] = ['github', 'ado'];
@@ -71,6 +73,19 @@ async function query<K extends ResultPayload>(command: ParamountCommand, payload
   const value = result?.ok ? result[payload] : undefined;
   if (!value) throw BackendError.local('INTERNAL', missing, command.type);
   return value as NonNullable<Extract<ParamountResult, { ok: true }>[K]>;
+}
+
+/** Sends a command that only acts outside the floor (no snapshot change); any failure becomes a BackendError. */
+async function act(command: ParamountCommand): Promise<void> {
+  const bridge = requireBridge();
+  let result: ParamountResult;
+  try {
+    result = await bridge.paramountDispatch(command);
+  } catch (cause) {
+    throw toBackendError(cause, command.type);
+  }
+  if (isFailure(result)) throw BackendError.fromFailure(result, command.type);
+  if (!result?.ok) throw BackendError.local('INTERNAL', 'The core answered without a result.', command.type);
 }
 
 export function createElectronProvider(): ElectronProvider {
@@ -124,7 +139,7 @@ export function createElectronProvider(): ElectronProvider {
         return {
         id, name, initials: name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase(),
         role: role(string(source.role).toLowerCase(), id === string(registry.godId)), status: status(string(source.status, string(local.status)), string(source.breaker)),
-        engine: string(local.provider, 'unknown'), model: string(local.model), level: 1, color: string(local.accent, 'sky'), doing: string(local.action),
+        engine: string(local.provider), model: string(local.model), level: Number(source.level) || 0, color: string(local.accent, 'sky'), doing: string(local.action),
         step: 0, steps: 0, tokensUsed: 0, tokensCap: 0,
         tokensIn: 0, tokensOut: 0, tokensCached: 0, contextPct: 0,
         bundle: '', skills: [], mcps: [], rules: [],
@@ -155,7 +170,7 @@ export function createElectronProvider(): ElectronProvider {
         key: string(task.id), title: string(task.title, 'Untitled task'),
         status: ['todo', 'doing', 'blocked', 'done'].includes(string(task.status)) ? string(task.status) as Card['status'] : 'todo',
         priority: Number(task.priority) <= 1 ? 'P1' : Number(task.priority) === 2 ? 'P2' : 'P3',
-        agentId: string(task.assignee), created: date(task.createdAt), createdBy: 'hive', updated: date(task.updatedAt ?? task.createdAt),
+        agentId: string(task.assignee), created: date(task.createdAt), createdBy: string(task.createdBy), updated: date(task.updatedAt ?? task.createdAt),
         description: string(task.description), dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.filter((id): id is string => typeof id === 'string').join(', ') : '',
         plan: [], doneMeans: [], tags: strings(task.tags), workspace: string(task.workspace) || undefined,
         dir: string(task.dir) || undefined, refs: refs(task.refs), tokens: 0, origin: 'hive', people: [],
@@ -231,6 +246,12 @@ export function createElectronProvider(): ElectronProvider {
     },
     importAgent(source, id, projectDir): Promise<ParamountAgentImport> {
       return query({ type: 'agents.import', source, id, ...(projectDir ? { projectDir } : {}) }, 'imported', 'The core returned no import result.');
+    },
+    openExternal(url) {
+      return act({ type: 'shell.openExternal', url });
+    },
+    openIn(app, path) {
+      return act({ type: 'shell.openIn', app, path });
     },
     subscribe(listener) {
       listeners.add(listener);

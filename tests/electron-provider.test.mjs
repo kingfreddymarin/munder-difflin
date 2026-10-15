@@ -162,3 +162,27 @@ test('maps card tags, workspace, dir and refs from the hive task and keeps the s
   assert.deepEqual(card.refs.map((ref) => ref.id), ['23572']);
   assert.deepEqual(snapshot.board.columns, ['done', 'doing', 'todo', 'blocked']);
 });
+
+test('openExternal and openIn send shell commands and keep the core errorId on a refusal', async () => {
+  const api = bridge();
+  const seen = [];
+  api.paramountDispatch = async (command) => {
+    seen.push(command);
+    if (command.type === 'shell.openExternal' && !command.url.startsWith('https://github.com/'))
+      return { ok: false, errorId: 'err-host', code: 'INVALID_INPUT', message: 'example.com is not an allowed host', error: 'x', correlationId: 'c9' };
+    return { ok: true, event: { id: 'e', at: '', actor: 'you', command } };
+  };
+  globalThis.window = { cth: api };
+  const provider = createElectronProvider();
+  await provider.openExternal('https://github.com/org/repo/pull/1');
+  await provider.openIn('vscode', '/work');
+  assert.deepEqual(seen, [{ type: 'shell.openExternal', url: 'https://github.com/org/repo/pull/1' }, { type: 'shell.openIn', app: 'vscode', path: '/work' }]);
+  const failure = await provider.openExternal('https://example.com').catch((error) => error);
+  assert.deepEqual([failure.errorId, failure.code, failure.operation], ['err-host', 'INVALID_INPUT', 'shell.openExternal']);
+});
+
+test('openIn with no bridge is DISCONNECTED, not a silent no-op', async () => {
+  globalThis.window = {};
+  const failure = await createElectronProvider().openIn('warp', '/work').catch((error) => error);
+  assert.equal(failure.code, 'DISCONNECTED');
+});

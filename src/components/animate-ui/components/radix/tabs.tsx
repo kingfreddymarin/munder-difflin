@@ -61,8 +61,9 @@ function TabsTrigger({ className, ...props }: TabsTriggerProps) {
 
 type TabsContentsProps = TabsContentsPrimitiveProps;
 
-function TabsContents(props: TabsContentsProps) {
-  return <TabsContentsPrimitive {...props} />;
+// The tab body scrolls vertically; the primitive clips it for its size animation.
+function TabsContents({ style, ...props }: TabsContentsProps) {
+  return <TabsContentsPrimitive style={{ overflowY: 'auto', ...style }} {...props} />;
 }
 
 type TabsContentProps = TabsContentPrimitiveProps;

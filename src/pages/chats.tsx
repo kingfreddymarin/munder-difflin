@@ -15,6 +15,7 @@ import { useDispatch, useFloor } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { UPDATE_KINDS, type Agent, type Chat, type Message } from '@/data/types';
+import { Screen } from '@/components/app/screen';
 
 type Filter = 'all' | 'unread' | 'asks' | 'leads' | 'workers' | 'groups';
 const FILTERS: { value: Filter; label: string }[] = [
@@ -107,7 +108,7 @@ export function ChatsPage() {
   const showUpdates = () => void dispatch({ type: 'chats.view', hideUpdates: false, hiddenIds: (view?.hiddenIds ?? []).filter((id) => !updates.some((m) => m.id === id)) });
 
   return (
-    <div className="bg-card grid h-full min-h-0 grid-cols-1 overflow-hidden rounded-xl border lg:grid-cols-[320px_1fr] 2xl:grid-cols-[320px_1fr_320px]">
+    <Screen fill className="bg-card grid grid-cols-1 gap-0 overflow-hidden rounded-xl border lg:grid-cols-[320px_1fr] 2xl:grid-cols-[320px_1fr_320px]">
       <aside className="flex min-h-0 flex-col overflow-hidden border-r">
         <div className="flex flex-col gap-2 border-b p-3">
           <div className="bg-muted/60 focus-within:ring-ring/50 flex h-9 items-center gap-2 rounded-lg px-2.5 focus-within:ring-2">
@@ -146,7 +147,7 @@ export function ChatsPage() {
             ))}
           </div>
         </div>
-        <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2" aria-label="Chats">
+        <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain p-2" aria-label="Chats">
           {list.length === 0 && (
             <span className="text-muted-foreground p-3 text-center text-sm">{q ? `No chat matches “${q}”` : 'No chats in this filter'}</span>
           )}
@@ -233,6 +234,6 @@ export function ChatsPage() {
           <AgentSummary agent={focus} onOpenProfile={() => openSettings(focus.id)} />
         </aside>
       )}
-    </div>
+    </Screen>
   );
 }
