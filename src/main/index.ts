@@ -39,7 +39,7 @@ import {
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
-import { CircuitBreaker, type BreakerInput } from './breaker';
+import { CircuitBreaker, effectiveCircuitBreaker, type BreakerInput } from './breaker';
 import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
@@ -3579,8 +3579,13 @@ const paramountLog: LogSink = (event) => hive.appendLog(event);
 ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => ({
   registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
   log: hive.logTail(500), roster: roster.read(),
-  config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode, autoModeExpiresAt: readConfig().autoModeExpiresAt, accessMatrix: readConfig().accessMatrix ?? {} },
+  config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode, autoModeExpiresAt: readConfig().autoModeExpiresAt, accessMatrix: readConfig().accessMatrix ?? {},
+    defaultModel: readConfig().defaultModel, godProvider: readConfig().godProvider, orchestratorMaySpawn: readConfig().orchestratorMaySpawn,
+    semanticMemory: readConfig().semanticMemory, embeddingModel: readConfig().embeddingModel, reflectEnabled: readConfig().reflectEnabled,
+    maxTurns: readConfig().maxTurns, costCapTokens: readConfig().costCapTokens, circuitBreaker: effectiveCircuitBreaker(readConfig().circuitBreaker),
+    providerBaseUrls: readConfig().providerBaseUrls ?? {}, providerDefaultModels: readConfig().providerDefaultModels ?? {} },
   missions: readConfig().missions ?? [], ptys: ptyManager.list(), preferences: paramountPreferences(),
+  integrations: integrations.listRecordsRedacted(),
   // Service prerequisite state, including a daemon started outside the app.
   prereqs: { skid: paramountStartPlan('skid', await paramountProbeService('skid', span.cid)) }
 }), { rethrow: true }));
@@ -3649,6 +3654,12 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   renameAgent: (id, name) => hive.renameAgent(id, name),
   setAgentTokenCap: (id, cap) => { setAgentTokenCap(id, cap); },
   setNotifications: (on) => { writeConfig({ notifications: on }); },
+  saveSettings: (patch) => {
+    if (patch.circuitBreaker) writeConfig({ circuitBreaker: { ...readConfig().circuitBreaker, ...patch.circuitBreaker } });
+    else if (patch.providerBaseUrls) writeConfig({ providerBaseUrls: { ...readConfig().providerBaseUrls, ...patch.providerBaseUrls } });
+    else if (patch.providerDefaultModels) writeConfig({ providerDefaultModels: { ...readConfig().providerDefaultModels, ...patch.providerDefaultModels } });
+    else writeConfig(patch);
+  },
   setFloorAutoMode: (on, expiresAt) => { writeConfig({ autoMode: on, autoModeExpiresAt: on ? expiresAt : undefined }); armAutoModeExpiry(); },
   setAccess: (agentId, sourceId, access) => { writeConfig({ accessMatrix: withAccess(readConfig().accessMatrix, agentId, sourceId, access) }); },
   prereqStart: { plan: (id) => paramountStartPlan(id, portOpen), run: (plan) => paramountRunPrereqStart(plan, evt.sender) },

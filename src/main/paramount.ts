@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
-import type { ScheduledMission } from './config';
+import type { HarnessConfig, ScheduledMission } from './config';
 import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand, ParamountPrereqReport, ParamountSourceWarning } from '../preload/paramount';
 import { createSpan, type Span } from './paramountObservability';
 import { dispatchHomeChats, type HomeChatsDeps } from './paramount-home-chats';
@@ -23,6 +23,7 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   renameAgent(id: string, name: string): { ok: boolean; error?: string };
   setAgentTokenCap(id: string, cap: number): void;
   setNotifications(on: boolean): void;
+  saveSettings?(patch: Partial<HarnessConfig>): void;
   savePreference(key: 'profile' | 'setup' | 'home' | 'chats', value: Record<string, unknown>): void;
   appendEvent(event: ParamountEvent): void;
   publish(event: ParamountEvent): void;
@@ -207,6 +208,36 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         }
         writeAttempted = true;
         deps.savePreference('profile', patch);
+        break;
+      }
+      case 'settings.update': {
+        if (!object(command.patch) || !onlyKeys(command, ['type', 'patch'])) return fail('INVALID_INPUT', 'Invalid settings update');
+        const patch = command.patch;
+        const keys = Object.keys(patch);
+        if (keys.length !== 1) return fail('INVALID_INPUT', 'Change one setting at a time');
+        const key = keys[0];
+        const value = patch[key];
+        const bool = ['orchestratorMaySpawn', 'semanticMemory', 'reflectEnabled'];
+        const textFields = ['defaultModel'];
+        const nonnegative = ['costCapTokens'];
+        const providerField = (key === 'providerBaseUrls' || key === 'providerDefaultModels') && object(value) && Object.keys(value).length === 1 && Object.entries(value).every(([provider, entry]) => {
+          if (!['opencode', 'crush', 'pi', 'qwen'].includes(provider) || typeof entry !== 'string' || entry.length > 500 || /[\r\n\0]/.test(entry)) return false;
+          if (key === 'providerDefaultModels' || !entry) return true;
+          try { const url = new URL(entry); return url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)); } catch { return false; }
+        });
+        if (bool.includes(key) ? typeof value !== 'boolean'
+          : textFields.includes(key) ? typeof value !== 'string' || value.length > 200 || /[\r\n\0]/.test(value)
+          : nonnegative.includes(key) ? typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0
+          : key === 'maxTurns' ? value !== null && (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 1000)
+          : key === 'embeddingModel' ? value !== 'minilm' && value !== 'embeddinggemma'
+          : key === 'providerBaseUrls' || key === 'providerDefaultModels' ? !providerField
+          : key === 'circuitBreaker' ? !object(value) || Object.keys(value).length !== 1 || !Object.entries(value).every(([k, v]) =>
+              ['enabled', 'hardStop'].includes(k) ? typeof v === 'boolean' :
+                ['repeatedToolLimit', 'errorStormLimit', 'tokenVelocityPerMin'].includes(k) && typeof v === 'number' && Number.isSafeInteger(v) && v > 0 && v <= 1_000_000)
+          : true) return fail('INVALID_INPUT', 'Unsupported setting or invalid value');
+        if (!deps.saveSettings) return fail('UNSUPPORTED', 'Settings are not available in this build');
+        writeAttempted = true;
+        deps.saveSettings(patch as Partial<HarnessConfig>);
         break;
       }
       case 'setup.dismiss':

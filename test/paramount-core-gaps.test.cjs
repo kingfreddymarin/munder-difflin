@@ -30,6 +30,7 @@ function fixture(overrides = {}) {
       state.writes += 1; state.missions = missions;
     },
     agents: () => ({}), renameAgent: () => ({ ok: true }), setAgentTokenCap: () => {}, setNotifications: () => {},
+    saveSettings: (patch) => { state.writes += 1; state.settings = { ...state.settings, ...patch }; },
     savePreference: () => {},
     appendEvent: (event) => { state.events.push(event); }, publish: () => {},
     setIntegrationConnected: (id, connected) => {
@@ -61,6 +62,22 @@ function assertFailure(result, code) {
 }
 
 // ─── floor.yolo ─────────────────────────────────────────────────────────────
+test('settings.update saves one vetted non-secret field and rejects extra or invalid data', () => {
+  const { state, deps } = fixture();
+  assert.equal(dispatchParamount({ type: 'settings.update', patch: { semanticMemory: false } }, deps).ok, true);
+  assert.equal(state.settings.semanticMemory, false);
+  assert.equal(state.events.length, 1);
+  assert.equal(dispatchParamount({ type: 'settings.update', patch: { providerBaseUrls: { qwen: 'http://localhost:11434/v1' } } }, deps).ok, true);
+  assert.equal(state.settings.providerBaseUrls.qwen, 'http://localhost:11434/v1');
+  for (const patch of [{}, { semanticMemory: true, maxTurns: 12 }, { semanticMemory: 'false' },
+    { maxTurns: -1 }, { providerKey: 'secret' }, { circuitBreaker: { hardStop: true, surprise: 1 } },
+    { providerBaseUrls: { qwen: 'http://public.example/v1' } }, { providerBaseUrls: { qwen: 'javascript:alert(1)' } },
+    { providerDefaultModels: Object.fromEntries([['__proto__', 'x']]) }]) {
+    assertFailure(dispatchParamount({ type: 'settings.update', patch }, deps), 'INVALID_INPUT');
+  }
+  assert.equal(state.writes, 2);
+});
+
 test('floor.yolo persists autoMode and emits one event', () => {
   const { state, deps } = fixture();
   const result = dispatchParamount({ type: 'floor.yolo', patch: { on: true } }, deps);

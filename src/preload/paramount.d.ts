@@ -23,6 +23,7 @@ export type ParamountCommand =
   | { type: 'account.connection'; id: string; connected: boolean }
   | { type: 'account.notify'; id: string; on: boolean }
   | { type: 'account.profile'; patch: Partial<{ name: string; workEmail: string; timezone: string }> }
+  | { type: 'settings.update'; patch: Record<string, unknown> }
   | { type: 'terminal.input'; agentId: string; text: string }
   | { type: 'layout.panels'; panels: string[] }
   /** Read-only unless `confirm: true`; then opens a visible installer terminal. */

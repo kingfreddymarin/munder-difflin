@@ -93,6 +93,10 @@ const DEFAULTS = {
   errorStormLimit: 5,
   tokenVelocityPerMin: 60_000 // output tokens/min — coarse backstop, deliberately high
 };
+/** The same effective thresholds the breaker evaluates, for settings/status views. */
+export function effectiveCircuitBreaker(config: CircuitBreakerConfig | undefined): Required<CircuitBreakerConfig> {
+  return { ...DEFAULTS, ...config };
+}
 
 /** Safety cap on the PreCompact exemption: if PostCompact never arrives (crash,
  *  or a Claude build that doesn't emit it), the Δoutput trips re-arm on their own. */
