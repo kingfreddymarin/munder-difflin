@@ -1,6 +1,7 @@
 // Paramount identity (name, userData, UI scheme) — must evaluate before any
 // other module reads userData, so it is the first import.
 import { paramountHome, paramountUiUrl, registerParamountProtocol } from './paramountShell';
+import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
 import {
@@ -333,6 +334,8 @@ function standingGoalFromRoster(agentId: string): string | null {
 // background window can't leave a worker parked on an unread inbox forever).
 // HookServer feeds it the hook stream so a permission/HITL prompt blocks nudges.
 const workerWake = new WorkerWakeWatchdog();
+// These hires use Paramount's UI, which does not mount Munder's useHive loop.
+const paramountOrchestrators = new Set<string>();
 // HookServer needs BOTH: Oscar's control registry (HITL pause/gate/steer/halt via
 // hook returns) AND Jim's breaker (feed recordToolUse on each PostToolUse).
 const hookServer = new HookServer(
@@ -489,6 +492,7 @@ function teardownPty(id: string): void {
   // 1) Archive the agent — retained + flagged; only live-PTY agents are active.
   const agentId = ptyToAgent.get(id);
   if (agentId) {
+    paramountOrchestrators.delete(agentId);
     ptyToAgent.delete(id);
     // Drop watchdog state so a dead agent can't get nudged or leak its grace.
     try { workerWake.forget(agentId, id); } catch { /* best-effort */ }
@@ -535,6 +539,7 @@ function teardownPty(id: string): void {
   if (wasWorker) {
     try { liveWebContents()?.send('hive:agentArchived', { id }); } catch { /* window torn down */ }
   }
+  if (agentId) broadcastParamountInvalidation('pty:exit');
   syncKeepAwake();
 }
 
@@ -1164,31 +1169,7 @@ function looksStuck(windowMs: number): boolean {
 /** Bounded digest for god — paths + counts, never full files (reference-passing,
  *  #6.2). A few hundred tokens at most. */
 function buildHeartbeatDigest(quietMs: number, actionable = 0): string {
-  const reg = hive.registry();
-  const active = Object.entries(reg.agents).filter(([id, a]) => !a.archived && id !== reg.godId);
-  const names = active.map(([, a]) => a.name).join(', ') || '—';
-  const boardHead = hive.board().split('\n').slice(0, 10).join('\n').trim();
-  const log = hive.logTail(8).map((e) => { try { return JSON.stringify(e); } catch { return ''; } }).filter(Boolean).join('\n');
-  const withInbox = active.filter(([id]) => hive.inbox(id).length > 0).map(([, a]) => a.name);
-  // When real agent/human mail is waiting, lead with an explicit call-to-action
-  // instead of the "quiet" line — this beat fired BECAUSE of unread actionable
-  // inbox, not because the floor went quiet, and god must read it now.
-  const header = actionable > 0
-    ? `Floor heartbeat — ${actionable} actionable inbox message(s) awaiting you (worker/human mail). Drain your inbox NOW and act on them.`
-    : `Floor heartbeat — quiet ~${Math.round(quietMs / 60000)}m.`;
-  return [
-    header,
-    `Active agents (${active.length}): ${names}.`,
-    withInbox.length ? `Undrained inbox: ${withInbox.join(', ')}.` : 'No undrained inboxes.',
-    '',
-    'Board (head):',
-    boardHead || '(empty)',
-    '',
-    'Recent log:',
-    log || '(none)',
-    '',
-    'Re-engage anyone stalled or blocked and keep the board accurate — or rest if the work is genuinely done.'
-  ].join('\n');
+  return heartbeatDigest(quietMs, actionable);
 }
 
 /** Senders whose mail is the scheduler's OWN noise (heartbeat beats, ops-standup
@@ -3589,7 +3570,11 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
     maxTurns: readConfig().maxTurns, costCapTokens: readConfig().costCapTokens, circuitBreaker: effectiveCircuitBreaker(readConfig().circuitBreaker),
     providerBaseUrls: readConfig().providerBaseUrls ?? {}, providerDefaultModels: readConfig().providerDefaultModels ?? {},
     responseStyleBrief: readConfig().responseStyleBrief ?? '', claudeOutputStyle: readConfig().claudeOutputStyle ?? 'off' },
-  missions: readConfig().missions ?? [], ptys: ptyManager.list(), preferences: paramountPreferences(),
+  missions: readConfig().missions ?? [],
+  // Main-process hires do not enter the legacy renderer-owned roster. Project
+  // the live ownership map so Paramount can display their actual terminals.
+  ptys: ptyManager.list().map((pty) => ({ ...pty, agentId: ptyToAgent.get(pty.id) })),
+  preferences: paramountPreferences(),
   integrations: integrations.listRecordsRedacted(),
   // Service prerequisite state, including a daemon started outside the app.
   prereqs: { skid: paramountStartPlan('skid', await paramountProbeService('skid', span.cid)) }
@@ -3627,16 +3612,36 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
     },
     appVersion: app.getVersion(),
     defaultModel: () => readConfig().defaultModel,
+    orchestratorProvider: () => readConfig().godProvider,
+    orchestratorModel: () => modelForRole({ isGod: true }, readConfig()),
+    orchestratorId: () => hive.registry().godId ?? undefined,
+    hasLivePty: (id) => ptyManager.list().some((pty) => ptyToAgent.get(pty.id) === id),
     ticketKeyPrefix: () => readConfig().ticketKeyPrefix,
     defaultCommand: () => readConfig().defaultCommand,
     autoMode: () => !!readConfig().autoMode,
-    defaultCwd: () => readConfig().registeredRepos?.[0] ?? null,
+    defaultCwd: (orchestrator) => readConfig().registeredRepos?.[0] ?? (orchestrator ? readConfig().harnessHome ?? null : null),
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
     commandAvailable: (bin) => (isSafeCommandName(bin) || isAbsolute(bin)) && ptyManager.isCommandAvailable(bin),
-    spawnHire: async ({ plan, bin, args, provider, goal, tokenCap, capabilities }) => {
-      const meta: AgentMeta = { id: plan.agentId, name: plan.name, provider: provider as AgentProvider, ...(plan.role ? { role: plan.role } : {}), ...(capabilities ? { capabilities } : {}), cwd: plan.cwd };
-      const res = await spawnAgentCore({ id: plan.agentId, cwd: plan.cwd, command: bin, args, cols: 120, rows: 32, hive: meta, isolate: plan.isolate, provider: provider as AgentProvider }, sender);
-      if (!res.ok) return { ok: false, error: res.error };
+    spawnHire: async ({ plan, bin, args, provider, goal, tokenCap, capabilities, isGod, resume }, cid) => {
+      const meta: AgentMeta = { id: plan.agentId, name: plan.name, provider: provider as AgentProvider, ...(plan.role ? { role: plan.role } : {}), ...(capabilities ? { capabilities } : {}), ...(isGod ? { isGod: true } : {}), cwd: plan.cwd };
+      const res = await spawnAgentCore({ id: plan.agentId, cwd: plan.cwd, command: bin, args, cols: 120, rows: 32, hive: meta, isolate: plan.isolate, provider: provider as AgentProvider, resume }, sender);
+      if (!res.ok) {
+        // Provisioning registers ownership before PTY allocation. A failed
+        // allocation has no exit callback, so roll that registration back to
+        // a stopped (archived) state and permit the next explicit retry.
+        if (isGod) teardownPty(plan.agentId);
+        return { ok: false, error: res.error };
+      }
+      if (isGod) {
+        paramountOrchestrators.add(plan.agentId);
+        // Durable work request + main-owned, busy-aware wake. The CLI receives
+        // its first prompt only after the established boot/idle/HITL guards.
+        hive.send({ to: plan.agentId, act: 'request', subject: 'Start orchestrator', body: [
+          res.seedPrompt,
+          res.resumed ? 'Resume orchestrating this floor.' : 'You are the Paramount orchestrator. Read your memory and pending inbox, then review board.md, tasks.json and fleet.json. Delegate work and keep the team unblocked.'
+        ].filter(Boolean).join('\n\n'), requires_reply: false }, 'system');
+        paramountLog({ kind: 'paramount-orchestrator', cid, step: 'startup-queued', agentId: plan.agentId, resumed: res.resumed === true });
+      }
       if (tokenCap) setAgentTokenCap(plan.agentId, tokenCap);
       if (goal) hive.send({ to: plan.agentId, act: 'request', subject: 'Your goal', body: goal, requires_reply: false }, 'human');
       return { ok: true };
@@ -5428,12 +5433,12 @@ let hookHealthTimer: ReturnType<typeof setInterval> | null = null;
 /** Type the renderer's guarded nudge into one worker's PTY — text first, Enter a
  *  tick later (the exact submitToPty pattern: a single-chunk write would land the
  *  "\r" inside the input box and never submit). Best-effort + never throws. */
-function nudgeWorker(ptyId: string, ids: string[] = []): void {
+function nudgeWorker(ptyId: string, ids: string[] = [], orchestrator = false): void {
   // Same text the renderer queues (#187's inboxNudgeText), so the two wake paths
   // produce byte-identical nudges: the queue's one-pending rule recognises either
   // via isInboxNudge, and a watchdog nudge names its ids so the agent can still
   // tell "I filed this last turn" from "woken for nothing".
-  const wrote = ptyManager.write(ptyId, inboxNudgeText(ids));
+  const wrote = ptyManager.write(ptyId, orchestrator ? orchestratorInboxNudge(ids.length) : inboxNudgeText(ids));
   if (!wrote.ok) { console.warn(`[worker-wake] write failed for ${ptyId}: ${wrote.error}`); return; }
   setTimeout(() => {
     try {
@@ -5450,8 +5455,8 @@ function nudgeWorker(ptyId: string, ids: string[] = []): void {
  *  it gathers live-worker facts (PTY quiescence, inbox depth, control flags) and
  *  lets WorkerWakeWatchdog.decide apply the exact renderer guards (idle-only,
  *  post-boot-grace, not paused/halted, no pending HITL, cooldown), then types the
- *  same nudge the renderer would have. God is never a candidate (its heartbeat
- *  path already re-engages it). */
+ *  same nudge the renderer would have. Paramount's main-owned orchestrator
+ *  explicitly opts in because its UI has no legacy inbox-wake loop. */
 function runWorkerWakeBeat(): void {
   if (!hive.enabled()) return;
   const reg = hive.registry();
@@ -5459,7 +5464,7 @@ function runWorkerWakeBeat(): void {
   const now = Date.now();
   const facts: WorkerWakeFacts[] = [];
   for (const [agentId, a] of Object.entries(reg.agents)) {
-    if (agentId === reg.godId || a?.archived) continue;
+    if ((agentId === reg.godId && !paramountOrchestrators.has(agentId)) || a?.archived) continue;
     const ptyId = ptyForAgent(agentId);
     if (!ptyId) continue;
     const snap = control.snapshot(agentId);
@@ -5477,6 +5482,7 @@ function runWorkerWakeBeat(): void {
     facts.push({
       agentId,
       isGod: agentId === reg.godId,
+      mainOwnedOrchestrator: paramountOrchestrators.has(agentId),
       ptyId,
       lastOutputAt: ptyManager.lastOutputAt(ptyId) ?? 0,
       inboxIds: mail.map((message) => message.id).filter(Boolean),
@@ -5503,7 +5509,7 @@ function runWorkerWakeBeat(): void {
     const ids = hive.inbox(agentId).map((m) => m.id).filter(Boolean);
     if (!ids.length) { console.log(`[worker-wake] ${agentId} drained before delivery, skipping`); continue; }
     console.log(`[worker-wake] nudging ${agentId} on ${ptyId} (${ids.length} pending)`);
-    nudgeWorker(ptyId, ids);
+    nudgeWorker(ptyId, ids, paramountOrchestrators.has(agentId));
   }
   // A worker sitting on old mail without a nudge is the failure this watchdog
   // exists for — say WHY it is being held, once per cooldown, so the log can

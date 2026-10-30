@@ -40,7 +40,7 @@ export function manifestFromForm(form: Form): Record<string, unknown> {
 }
 
 /** `manifest` pre-fills the form (an imported agent); `bundle` asks for a bundle file as the sheet opens. */
-export function HireSheet({ open, bundle, manifest, notes, onClose }: { open: boolean; bundle: boolean; manifest?: Record<string, unknown>; notes?: string[]; onClose: () => void }) {
+export function HireSheet({ open, bundle, orchestrator = false, manifest, notes, onClose }: { open: boolean; bundle: boolean; orchestrator?: boolean; manifest?: Record<string, unknown>; notes?: string[]; onClose: () => void }) {
   const api = useTeamApi();
   const [form, setForm] = React.useState<Form>(EMPTY);
   const [models, setModels] = React.useState<ParamountTeamModels | null>(null);
@@ -51,10 +51,21 @@ export function HireSheet({ open, bundle, manifest, notes, onClose }: { open: bo
   React.useEffect(() => {
     if (!open) return;
     setStep({ kind: 'form' }); setError(null);
-    try { setForm(manifest ? formFromManifest(manifest) : EMPTY); } catch (cause) { setForm(EMPTY); setError(toBackendError(cause, 'agent.hire')); }
-    api?.models().then(setModels, (cause) => setError(toBackendError(cause, 'team.models')));
+    try {
+      setForm(manifest ? formFromManifest(manifest) : orchestrator
+        ? { ...EMPTY, name: 'Paramount', description: 'Main orchestrator' }
+        : EMPTY);
+    } catch (cause) { setForm(EMPTY); setError(toBackendError(cause, 'agent.hire')); }
+    api?.models().then((next) => {
+      setModels(next);
+      if (orchestrator) setForm((current) => ({
+        ...current,
+        provider: next.orchestratorProvider ?? current.provider,
+        model: next.orchestratorModel ?? current.model,
+      }));
+    }, (cause) => setError(toBackendError(cause, 'team.models')));
     if (bundle) setTimeout(() => file.current?.click(), 0);
-  }, [open, bundle, manifest, api]);
+  }, [open, bundle, orchestrator, manifest, api]);
 
   const engine = models?.engines.find((e) => e.id === (form.provider || models.engines[0]?.id));
   const loadBundle = async (f: File | undefined) => {
@@ -72,7 +83,7 @@ export function HireSheet({ open, bundle, manifest, notes, onClose }: { open: bo
     setError(null);
     setStep(confirm && prior ? { kind: 'starting', plan: prior } : { kind: 'reviewing' });
     try {
-      const plan = await api.hire(manifestFromForm(form), { ...(form.cwd.trim() ? { cwd: form.cwd.trim() } : {}), confirm });
+      const plan = await api.hire(manifestFromForm(form), { ...(form.cwd.trim() ? { cwd: form.cwd.trim() } : {}), ...(orchestrator ? { orchestrator: true } : {}), confirm });
       setStep(confirm ? { kind: 'started', plan } : { kind: 'plan', plan });
     } catch (cause) {
       setError(toBackendError(cause, 'agent.hire'));
@@ -86,8 +97,8 @@ export function HireSheet({ open, bundle, manifest, notes, onClose }: { open: bo
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
       <SheetContent side="right" className="w-[560px] sm:max-w-[560px]">
         <SheetHeader>
-          <SheetTitle>{bundle ? 'Hire from a bundle' : manifest ? `Hire ${text(manifest.name) || 'an imported agent'}` : 'Hire an agent'}</SheetTitle>
-          <SheetDescription>Review shows the exact command first. The agent starts only when you press Hire, in a terminal you can watch.</SheetDescription>
+          <SheetTitle>{orchestrator ? 'Start Paramount orchestrator' : bundle ? 'Hire from a bundle' : manifest ? `Hire ${text(manifest.name) || 'an imported agent'}` : 'Hire an agent'}</SheetTitle>
+          <SheetDescription>{orchestrator ? 'Uses Munder’s main-agent role and the configured orchestrator engine. Review the exact command; nothing starts until you confirm.' : 'Review shows the exact command first. The agent starts only when you press Hire, in a terminal you can watch.'}</SheetDescription>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
           <input ref={file} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { void loadBundle(e.target.files?.[0]); e.target.value = ''; }} />
@@ -101,7 +112,7 @@ export function HireSheet({ open, bundle, manifest, notes, onClose }: { open: bo
           <div className="grid gap-1.5"><Label htmlFor="h-goal">Goal</Label><Textarea id="h-goal" rows={3} value={form.goal} onChange={(e) => edit({ goal: e.target.value })} /></div>
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5"><Label htmlFor="h-engine">Engine</Label>
-              <select id="h-engine" className="border-input bg-background h-9 rounded-md border px-2 text-sm" value={form.provider} onChange={(e) => edit({ provider: e.target.value, model: '' })}>
+              <select id="h-engine" disabled={orchestrator} className="border-input bg-background h-9 rounded-md border px-2 text-sm" value={form.provider} onChange={(e) => edit({ provider: e.target.value, model: '' })}>
                 <option value="">Default engine</option>
                 {models?.engines.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
                 {form.provider && !models?.engines.some((e) => e.id === form.provider) && <option value={form.provider}>{form.provider}</option>}
@@ -110,7 +121,7 @@ export function HireSheet({ open, bundle, manifest, notes, onClose }: { open: bo
               <ModelSelect id="h-model" models={models} engineId={engine?.id} value={form.model} onChange={(model) => edit({ model })} /></div>
           </div>
           <div className="grid gap-1.5"><Label htmlFor="h-cwd">Folder</Label>
-            <Input id="h-cwd" placeholder="Absolute path; empty uses your first registered repo" value={form.cwd} onChange={(e) => edit({ cwd: e.target.value })} /></div>
+            <Input id="h-cwd" placeholder={orchestrator ? 'Empty uses your first project or the Paramount workspace' : 'Absolute path; empty uses your first registered repo'} value={form.cwd} onChange={(e) => edit({ cwd: e.target.value })} /></div>
           <label className="flex items-center gap-3 text-sm"><Switch checked={form.isolate} onCheckedChange={(v) => edit({ isolate: v })} aria-label="Own git worktree" />Work in its own git worktree</label>
 
           {plan && (
@@ -130,7 +141,7 @@ export function HireSheet({ open, bundle, manifest, notes, onClose }: { open: bo
             {step.kind !== 'started' && <Button type="button" variant="outline" disabled={!api || !form.name.trim() || step.kind === 'reviewing' || step.kind === 'starting'} onClick={() => void send(false)}>
               {step.kind === 'reviewing' ? 'Checking…' : 'Review'}</Button>}
             {step.kind !== 'started' && <Button type="button" disabled={!plan || !plan.engineInstalled || step.kind !== 'plan'} onClick={() => void send(true)}
-              title={plan ? undefined : 'Review the plan first'}>{step.kind === 'starting' ? 'Starting…' : 'Hire'}</Button>}
+              title={plan ? undefined : 'Review the plan first'}>{step.kind === 'starting' ? 'Starting…' : orchestrator ? 'Start Paramount' : 'Hire'}</Button>}
           </div>
         </div>
       </SheetContent>

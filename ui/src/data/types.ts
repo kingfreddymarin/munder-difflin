@@ -44,7 +44,7 @@ export interface Chat {
   pinned?: boolean;
 }
 
-export type MessageKind = 'text' | 'question' | 'approval' | 'build' | 'suggestion' | 'route' | 'file' | 'context';
+export type MessageKind = 'text' | 'question' | 'approval' | 'build' | 'suggestion' | 'route' | 'file' | 'context' | 'system';
 export interface Message {
   id: string;
   chatId: string;
@@ -52,6 +52,9 @@ export interface Message {
   at: string; // ISO
   kind: MessageKind;
   text: string;
+  /** Original system mail, inspectable beside the agent's terminal. */
+  details?: string;
+  terminalAgentId?: string;
   priority?: boolean;
   read?: boolean;
   ticket?: string;
@@ -74,7 +77,7 @@ export interface Message {
 
 export type AskMode = 'answer' | 'decision' | 'done';
 /** Message kinds that are status updates rather than conversation; Chats can hide them. */
-export const UPDATE_KINDS: readonly MessageKind[] = ['build', 'route', 'context', 'suggestion'];
+export const UPDATE_KINDS: readonly MessageKind[] = ['build', 'route', 'context', 'suggestion', 'system'];
 
 export type NotificationKind = 'question' | 'approval' | 'suggestion' | 'alert';
 export interface Notification {

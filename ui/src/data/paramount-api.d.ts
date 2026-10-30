@@ -261,7 +261,7 @@ export type ParamountTeamCommand =
   /** The Add-Agent form. Read-only unless `confirm: true`: without it the core
    *  validates the hire manifest and returns the exact spawn plan for review;
    *  with it the agent starts in a visible terminal. Nothing spawns unconfirmed. */
-  | { type: 'agent.hire'; manifest: Record<string, unknown>; cwd?: string; confirm?: boolean };
+  | { type: 'agent.hire'; manifest: Record<string, unknown>; cwd?: string; confirm?: boolean; orchestrator?: boolean };
 /** `agent.update` with `{ model }` (and optionally the agent's own `engine`) is
  *  handled by the team module: the pick is saved and used at the agent's next
  *  start. An empty model clears the pick so the default applies again. */
@@ -276,6 +276,9 @@ export interface ParamountTeamModels {
   engines: Array<{ id: string; label: string; models: ParamountTeamModel[] }>;
   /** The harness default (config.defaultModel), a Claude model id; mark it "· default". */
   defaultModel?: string;
+  /** Provider and model selected for Munder's main god/orchestrator. */
+  orchestratorProvider?: string;
+  orchestratorModel?: string;
   /** Model chosen per agent in Paramount; an agent missing here runs the default. */
   agents: Record<string, { engine: string; model?: string }>;
 }

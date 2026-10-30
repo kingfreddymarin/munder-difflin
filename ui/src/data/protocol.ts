@@ -63,7 +63,7 @@ export interface DataProvider {
   /** Models per engine, the default model and each agent's pick (`team.models`). */
   teamModels?(): Promise<ParamountTeamModels>;
   /** The Add-Agent hire: without `confirm` it returns the spawn plan for review; with it the agent starts in a visible terminal. */
-  hire?(manifest: Record<string, unknown>, options?: { cwd?: string; confirm?: boolean }): Promise<ParamountHirePlan>;
+  hire?(manifest: Record<string, unknown>, options?: { cwd?: string; confirm?: boolean; orchestrator?: boolean }): Promise<ParamountHirePlan>;
   /** Read-only: map artifacts touched by an agent. */
   artifacts?(agentId: string): Promise<ParamountArtifactMap>;
 }

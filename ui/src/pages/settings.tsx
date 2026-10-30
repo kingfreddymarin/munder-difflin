@@ -61,7 +61,7 @@ export function SettingsPage() {
         </TabsList>
         <TabsContents className="min-h-0 flex-1">
           <TabsContent value="setup">
-            <Tile title="What this Mac needs" hint="checked at every start · install from here">
+            <Tile title="Runtime checks" hint="checked at every start · optional services are labeled">
               <PrereqList />
             </Tile>
           </TabsContent>

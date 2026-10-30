@@ -12,9 +12,11 @@ npm run build      # type-check + production build
 
 It starts on sample data (the mock provider). Your changes persist in the browser until you press **Settings → Account → Reset sample data**.
 
-## Skidbladnir is required
+## Optional local runtime
 
-When Paramount is installed and running it needs Skidbladnir, the local model runtime from `02-products/lab/skidbladnir`, for jobs that must not spend budget tokens: terminal-to-chat summaries, memory condensing, suggestion drafts and inbound triage. At every start, if a required prerequisite is missing or not running, a setup dialog features Skidbladnir first with its install or start command. You can install it, start it, or continue in degraded mode; the choice is logged and Health keeps flagging it. The list lives in `prerequisites` (`src/data/types.ts`), and Settings › Setup shows it any time.
+Skidbladnir, the local model runtime from `02-products/lab/skidbladnir`, can handle local summarization and memory maintenance when installed and running. It is optional: standard agent work uses the configured CLI engine when Skidbladnir is unavailable. Settings › Setup shows its status and optional install/start commands; its absence does not block Paramount.
+
+Heartbeat and startup requests appear as short system updates in Chats. **Open terminal** opens the agent's live session and its **Updates** tab, where the original message remains available. Ordinary human messages show their original text without an added transport heading. A stopped orchestrator can be started again from Team; its identity and history are retained.
 
 ## Screens
 

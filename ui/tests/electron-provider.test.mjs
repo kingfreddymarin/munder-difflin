@@ -68,6 +68,53 @@ test('rejects a malformed core response instead of showing fake data', async () 
   await assert.rejects(createElectronProvider().snapshot(), /incomplete snapshot/);
 });
 
+test('main-process hires expose live terminals without a legacy renderer roster', async () => {
+  const native = nativeSnapshot();
+  native.roster = null;
+  native.ptys[0].agentId = 'god';
+  globalThis.window = { cth: bridge(native) };
+  const snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.terminals.length, 1);
+  assert.equal(snapshot.terminals[0].agentId, 'god');
+  assert.equal(snapshot.terminals[0].ptyId, 'session-42');
+  assert.equal(snapshot.terminals[0].cwd, '/work');
+  native.ptys = [];
+  assert.equal((await createElectronProvider().snapshot()).terminals.length, 0);
+});
+
+test('verbose heartbeat is a brief system update with original details available in Terminal', async () => {
+  const native = nativeSnapshot();
+  const body = 'Floor heartbeat — 1 actionable inbox message(s) awaiting you (worker/human mail). Drain your inbox NOW and act on them.\nActive agents (0): —.\nNo undrained inboxes.\nBoard (head):\n# Hive board\nRecent log:\n{"kind":"paramount-op","phase":"end"}';
+  native.messages = [{ id: 'beat-1', owner: 'god', from: 'heartbeat', to: 'god', subject: 'Heartbeat', body, created_at: '2026-10-29T10:00:00Z' }];
+  globalThis.window = { cth: bridge(native) };
+  const snapshot = await createElectronProvider().snapshot();
+  const message = snapshot.messages.find((m) => m.id === 'beat-1');
+  assert.equal(message.kind, 'system');
+  assert.equal(message.text, 'Heartbeat · 1 message waiting.');
+  assert.equal(message.terminalAgentId, 'god');
+  assert.equal(message.details, body);
+  assert.ok(message.text.length < 80);
+  assert.doesNotMatch(message.text, /paramount-op|Board|Drain/);
+});
+
+test('new heartbeat summaries preserve counts and do not rewrite human conversation', async () => {
+  const native = nativeSnapshot();
+  native.messages = [
+    { id: 'beat-new', owner: 'god', from: 'heartbeat', to: 'god', subject: 'Heartbeat', body: 'Heartbeat: 3 messages waiting. Read your inbox and handle them.\nDetails: $AGENT_DIR/inbox', created_at: '2026-10-29T10:00:00Z' },
+    { id: 'human', owner: 'god', from: 'human', to: 'god', subject: 'Heartbeat', body: 'Please explain the heartbeat log.', created_at: '2026-10-29T10:01:00Z' },
+    { id: 'human-text', owner: 'god', from: 'human', to: 'god', subject: 'Message from human', body: 'Keep it short, please.', created_at: '2026-10-29T10:02:00Z' },
+  ];
+  globalThis.window = { cth: bridge(native) };
+  const snapshot = await createElectronProvider().snapshot();
+  const beat = snapshot.messages.find((m) => m.id === 'beat-new');
+  assert.equal(beat.text, 'Heartbeat · 3 messages waiting.');
+  const human = snapshot.messages.find((m) => m.id === 'human');
+  assert.equal(human.kind, 'text');
+  assert.match(human.text, /Please explain the heartbeat log\./);
+  assert.equal(human.details, undefined);
+  assert.equal(snapshot.messages.find((m) => m.id === 'human-text').text, 'Keep it short, please.');
+});
+
 test('sends chat to the selected real agent and surfaces command failures', async () => {
   const api = bridge();
   globalThis.window = { cth: api };
@@ -231,10 +278,45 @@ test('projects prerequisite and health evidence instead of invented ready state 
   const snapshot = await createElectronProvider().snapshot();
   assert.equal(snapshot.setupDismissed, false);
   assert.equal(snapshot.prerequisites[0].state, 'installed-not-running');
+  assert.equal(snapshot.prerequisites[0].level, 'optional');
   assert.equal(snapshot.services.find((service) => service.id === 'skid')?.state, 'warn');
   assert.equal(snapshot.log.length, 2);
   assert.equal(snapshot.log[0].source, 'drop');
   assert.equal(snapshot.log[1].level, 'error');
+});
+
+test('missing local runtime remains optional and preserves the main-agent and chat paths', async () => {
+  const native = nativeSnapshot();
+  native.prereqs = { skid: { id: 'skid', label: 'Skidbladnir', installed: false, running: false } };
+  const api = bridge(native);
+  globalThis.window = { cth: api };
+  const provider = createElectronProvider();
+  const snapshot = await provider.snapshot();
+  assert.equal(snapshot.prerequisites[0].level, 'optional');
+  assert.equal(snapshot.prerequisites[0].state, 'missing');
+  assert.equal(snapshot.agents[0].role, 'paramount');
+  await provider.dispatch({ type: 'chat.send', chatId: 'agent:god', text: 'Status?' });
+  assert.equal(api.sent[0].message.to, 'god');
+});
+
+test('orchestrator preview and confirmation preserve the flag across the desktop bridge', async () => {
+  const api = bridge();
+  const seen = [];
+  api.paramountDispatch = async (command) => {
+    seen.push(command);
+    return { ok: true, hire: { agentId: 'god', confirmed: command.confirm === true } };
+  };
+  globalThis.window = { cth: api };
+  const provider = createElectronProvider();
+  const manifest = { spec: 'munder-difflin/hire@1', name: 'Paramount' };
+  let refreshes = 0;
+  provider.onRefresh(() => refreshes++);
+  await provider.hire(manifest, { orchestrator: true });
+  assert.deepEqual(seen[0], { type: 'agent.hire', manifest, orchestrator: true });
+  assert.equal(refreshes, 0);
+  await provider.hire(manifest, { orchestrator: true, confirm: true });
+  assert.deepEqual(seen[1], { type: 'agent.hire', manifest, orchestrator: true, confirm: true });
+  assert.equal(refreshes, 1);
 });
 
 test('projects non-secret settings and redacted integrations from the core', async () => {
