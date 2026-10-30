@@ -1,12 +1,13 @@
 name: CI
 
-# Paramount CI: the Electron core (repo root) and the Paramount UI (ui/, a git
-# subtree of the UI repo). Every step tees its output into logs/, and the logs
-# are uploaded as an artifact only when a step fails.
+# Development validation only. Release PRs use release.yml so those checks run
+# once, in order, before packaging. Pushes never generate an application build.
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, release]
   pull_request:
+    branches-ignore: [release]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions:
   contents: read
@@ -16,62 +17,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Typecheck, test, build (macOS arm64)
-    # macos-14 is the Apple Silicon (arm64) runner image.
-    runs-on: macos-14
-    timeout-minutes: 45
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
+  typecheck:
+    name: 1. Typecheck
+    uses: ./.github/workflows/typecheck.yml
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            ui/package-lock.json
-
-      # node-gyp (electron-rebuild of node-pty / better-sqlite3 in postinstall)
-      # imports distutils, which Python 3.12 removed.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Provide distutils for node-gyp
-        run: python -m pip install --upgrade setuptools
-
-      - name: Prepare log dir
-        run: mkdir -p logs
-
-      - name: Install (root)
-        run: npm ci 2>&1 | tee logs/root-npm-ci.log
-
-      - name: Install (ui)
-        working-directory: ui
-        run: npm ci 2>&1 | tee ../logs/ui-npm-ci.log
-
-      - name: Typecheck (root, tsc node + web)
-        run: npm run typecheck 2>&1 | tee logs/root-typecheck.log
-
-      - name: Test (root, node --test)
-        run: npm run test:focused 2>&1 | tee logs/root-test.log
-
-      - name: Build (ui, tsc + vite)
-        working-directory: ui
-        run: npm run build 2>&1 | tee ../logs/ui-build.log
-
-      - name: Test (ui, node --test)
-        working-directory: ui
-        run: npm test 2>&1 | tee ../logs/ui-test.log
-
-      - name: Upload logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-logs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: logs/
-          retention-days: 14
+  tests:
+    name: 2. Tests
+    needs: [typecheck]
+    uses: ./.github/workflows/tests.yml
