@@ -31,6 +31,7 @@ export type ParamountCommand =
   /** Read-only unless `confirm: true`; then runs the vetted start command in a visible terminal. */
   | { type: 'prereq.start'; id: string; confirm?: boolean }
   | { type: 'setup.dismiss'; degraded: string[] }
+  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean }
   /** Read-only: returns a redacted diagnostics bundle on the result. */
   | { type: 'diagnostics.bundle'; logLines?: number }
   /** Saves the same redacted bundle as a JSON file through the core's save dialog.

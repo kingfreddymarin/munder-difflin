@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { dispatchFloorSetup, type FloorSetupDeps } from './paramount-floor-setup';
 import { isAbsolute } from 'node:path';
 import type { HarnessConfig, ScheduledMission } from './config';
 import type { ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountErrorCode, ParamountEvent, ParamountResult, ParamountCommand, ParamountPrereqReport, ParamountSourceWarning } from '../preload/paramount';
@@ -30,6 +31,8 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   setNotifications(on: boolean): void;
   saveSettings?(patch: Partial<HarnessConfig>): void;
   savePreference(key: 'profile' | 'setup' | 'home' | 'chats', value: Record<string, unknown>): void;
+  /** First-run floor setup (`setup.complete`); absent means unsupported. */
+  floorSetup?: FloorSetupDeps;
   appendEvent(event: ParamountEvent): void;
   publish(event: ParamountEvent): void;
   /** Redacted support bundle for `diagnostics.bundle`; absent means unsupported. */
@@ -142,6 +145,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
     span.fail(code, message, cause, { commandType });
   if (!object(command) || !id(command.type)) return fail('INVALID_COMMAND', 'Invalid command');
   if (isBoardCommand(command.type)) return dispatchBoard(command, deps, span);
+  const setup = dispatchFloorSetup(command, deps.floorSetup, span); if (setup) return setup;
   const team = dispatchTeam(command, deps, span); if (team) return team;
   let writeAttempted = false;
   let diagnostics: ParamountDiagnostics | undefined;

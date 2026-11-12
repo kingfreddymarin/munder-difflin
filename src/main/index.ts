@@ -18,7 +18,8 @@ import { PtyManager, type SpawnOptions } from './pty';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
 import { createBoardDeps } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
-import { agentModelPick, type ParamountTeamDeps } from './paramount-team';
+import { agentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
+import { floorSetupState, type FloorSetupDeps } from './paramount-floor-setup';
 import bakedModelCatalog from '../shared/modelCatalog.json';
 import { parseModelCatalog } from '../shared/modelCatalogPayload';
 import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } from './autoModeExpiry';
@@ -94,8 +95,10 @@ import {
   nonInteractiveEnvForProvider,
   providerPreset,
   installInfoForProvider,
+  AGENT_PROVIDER_PRESETS,
   type AgentProvider
 } from '../shared/agentProvider';
+import type { ParamountEvent } from '../preload/paramount';
 import { buildMissingCliScript, chooseInstallRung } from './cliInstall';
 import { detectNodeVersion, nodeIsUsable, resolveNodeInstaller } from './nodeInstall';
 import { toolCatalog, type ToolStatus } from '../shared/toolCatalog';
@@ -3183,7 +3186,7 @@ ipcMain.handle('integrations:test', async (_evt, payload: unknown) => {
 
 // ─── IPC: config ────────────────────────────────────────────────────────────
 ipcMain.handle('config:get', (): HarnessConfig => readConfig());
-ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
+function applyConfigUpdate(patch: Partial<HarnessConfig>): HarnessConfig {
   // FIRST RUN: every hive-bound service is started by bootstrapHiveServices(),
   // which runs once at app-ready and early-returns on `!hive.enabled()` — i.e.
   // whenever harnessHome is still null, which is exactly the state a fresh
@@ -3222,7 +3225,9 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
     try { bootstrapHiveServices(); } catch (e) { console.error('[hive] bootstrap after onboarding:', e); }
   }
   return next;
-});
+}
+// Paramount's setup.complete goes through the same path (paramount-floor-setup.ts).
+ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => applyConfigUpdate(patch));
 ipcMain.handle('config:setAgentTokenCap', (_evt, agentId: unknown, tokenCap: unknown) =>
   setAgentTokenCap(agentId, tokenCap)
 );
@@ -3561,6 +3566,7 @@ function paramountSetIntegrationConnected(connectionId: string, connected: boole
  *  lines into the hive's log.jsonl; see paramountObservability.ts. */
 const paramountLog: LogSink = (event) => hive.appendLog(event);
 ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => ({
+  floorSetup: floorSetupState(paramountFloorSetupDeps(evt.sender)),
   registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
   log: hive.logTail(500), roster: roster.read(),
   config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode, autoModeExpiresAt: readConfig().autoModeExpiresAt, accessMatrix: readConfig().accessMatrix ?? {},
@@ -3596,6 +3602,38 @@ function paramountModelPick(agentId: string): string | undefined {
     paramountLog({ kind: 'paramount-error', errorId: newErrorId(), code: 'INTERNAL', message: `agent model picks unreadable; using the default model: ${e instanceof Error ? e.message : String(e)}`, agentId });
     return undefined;
   }
+}
+/** paramount:command events go to the floor log and every window. */
+function paramountAppendEvent(event: ParamountEvent): void {
+  const root = hive.root();
+  if (!root) throw new Error('hive disabled (no harnessHome)');
+  appendFileSync(join(root, 'log.jsonl'), JSON.stringify({ ts: Date.now(), kind: 'paramount-command', ...event }) + '\n', { encoding: 'utf8', mode: 0o600 });
+}
+function paramountPublish(event: ParamountEvent): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', event);
+  }
+}
+/** First-run floor setup (paramount-floor-setup.ts): engines from the presets, models from the configured catalog. */
+function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
+  const team = paramountTeamDeps(sender);
+  return {
+    config: () => readConfig(),
+    suggestedHome: () => paramountHome(),
+    engines: () => {
+      const models = new Map(teamModels(team.modelCatalog(), team.appVersion).map((e) => [e.id, e.models]));
+      return AGENT_PROVIDER_PRESETS.filter((p) => p.id !== 'custom').map((p) => ({
+        id: p.id, label: p.label, orchestrator: p.supportsModel && p.canReceiveInbox,
+        installed: team.commandAvailable(p.defaultCommand),
+        models: (models.get(p.id) ?? []).flatMap((m) => (m.id ? [m.id] : []))
+      }));
+    },
+    ensureHome: (path) => ensureHarnessHome(path),
+    // godProvider was validated against AGENT_PROVIDER_PRESETS by dispatchFloorSetup.
+    complete: (patch) => { applyConfigUpdate({ ...patch, godProvider: patch.godProvider as AgentProvider }); },
+    appendEvent: paramountAppendEvent,
+    publish: paramountPublish
+  };
 }
 /** Team screen (paramount-team.ts): cards, model catalog and the Add-Agent hire. */
 function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
@@ -3693,16 +3731,9 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
     open: (url) => shell.openExternal(url),
     onOpenError: (url, error) => paramountLog({ kind: 'paramount-error', errorId: newErrorId(), cid: span.cid, op: 'board.open', code: 'INTERNAL', scheme: url.split(':')[0], message: error instanceof Error ? error.message : String(error) })
   }),
-  appendEvent: (event) => {
-    const root = hive.root();
-    if (!root) throw new Error('hive disabled (no harnessHome)');
-    appendFileSync(join(root, 'log.jsonl'), JSON.stringify({ ts: Date.now(), kind: 'paramount-command', ...event }) + '\n', { encoding: 'utf8', mode: 0o600 });
-  },
-  publish: (event) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', event);
-    }
-  },
+  appendEvent: paramountAppendEvent,
+  publish: paramountPublish,
+  floorSetup: paramountFloorSetupDeps(evt.sender),
   diagnostics: ({ logLines, cid }) => buildDiagnostics({
     root: hive.root(),
     app: {
@@ -5670,12 +5701,12 @@ app.whenReady().then(() => {
   // IPC surface is still registered so preload calls resolve instead of throwing.
   initAutoUpdater(() => liveWebContents(), { feed: false });
   registerParamountProtocol();
-  // Paramount owns its hive: default harnessHome to its own userData folder so it
-  // never lands in (or prompts toward) Munder Difflin's hive.
-  if (!readConfig().harnessHome) {
-    const home = paramountHome();
-    if (ensureHarnessHome(home).ok) writeConfig({ harnessHome: home });
-  }
+  // Munder parity: a fresh profile has NO floor until first-run setup finishes
+  // (setup.complete, paramount-floor-setup.ts). paramountHome() is only the
+  // suggested folder, so setup never points at Munder Difflin's hive.
+  // Upgrade: builds before this one set harnessHome at startup without setup, so
+  // such a profile already has a floor. It is set up; never send it back through setup.
+  { const cfg = readConfig(); if (cfg.harnessHome && !cfg.onboardingComplete) writeConfig({ onboardingComplete: true }); }
   // Bootstrap the hive (if harnessHome is configured) and start the message router.
   bootstrapHiveServices();
   // A timed YOLO window that ended while the app was closed turns autoMode off now.
