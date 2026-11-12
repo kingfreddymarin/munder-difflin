@@ -1,6 +1,7 @@
 // The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
 import { externalTools } from './external-tools';
+import { floorChoiceOf } from './floor-choice';
 import { findBridge, requireBridge } from './bridge';
 import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
@@ -60,6 +61,8 @@ function floorSetupOf(value: unknown): FloorSetup | undefined {
   return {
     ...(v.launchers ? { launchers: v.launchers as FloorSetup['launchers'] } : {}),
     ...(floorLockOf(v.floorLock) ? { floorLock: floorLockOf(v.floorLock) } : {}),
+    // The floor picker (launch and New Floor…); without it the window opened no floor and showed the app.
+    ...(floorChoiceOf(v.choice) ? { choice: floorChoiceOf(v.choice) } : {}),
     complete: v.complete,
     harnessHome: typeof v.harnessHome === 'string' ? v.harnessHome : null,
     suggestedHome: string(v.suggestedHome),

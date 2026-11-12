@@ -178,3 +178,14 @@ test("Settings Floor location: cancelling the dialog changes nothing; the data f
   const main = readFileSync(new URL('../../src/main/index.ts', import.meta.url), 'utf8');
   assert.match(main, /const ownData = dataFolderRefusal\(newHome, appDataDirs\(\)\);\s*if \(ownData\) return \{ ok: false, error: ownData \};/, 'config:changeHome refuses it');
 });
+
+test('the snapshot reader passes the picker state through (isolated check 2026-11-12: without it the picker never showed)', () => {
+  const js = compile('../src/data/floor-choice.ts');
+  const { floorChoiceOf } = load(js, () => ({}));
+  const choice = floorChoiceOf({ pending: true, newFloor: false, last: '/f/a', recents: [{ path: '/f/a', exists: true, state: 'free' }, { path: '/f/h', exists: true, state: 'held', heldBy: 'Munder Difflin 0.5.7 (pid 9)' }, { path: '/f/x', state: 'weird' }, { state: 'free' }] });
+  assert.deepEqual(JSON.parse(JSON.stringify(choice)), { pending: true, newFloor: false, last: '/f/a', recents: [{ path: '/f/a', exists: true, state: 'free' }, { path: '/f/h', exists: true, state: 'held', heldBy: 'Munder Difflin 0.5.7 (pid 9)' }] });
+  assert.equal(floorChoiceOf(undefined), undefined);
+  assert.equal(floorChoiceOf({ recents: [] }), undefined);
+  const provider = readFileSync(new URL('../src/data/electron-provider.ts', import.meta.url), 'utf8');
+  assert.match(provider, /\.\.\.\(floorChoiceOf\(v\.choice\) \? \{ choice: floorChoiceOf\(v\.choice\) \} : \{\}\),/);
+});
