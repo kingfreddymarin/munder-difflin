@@ -19,6 +19,7 @@ require.cache[electron] = {
   exports: {
     app: {
       setName: () => {},
+      commandLine: { getSwitchValue: () => '' },
       getPath: (name) => (name === 'appData' ? appData : calls.at(-1)),
       // Mirror Electron: setPath on a missing directory throws.
       setPath: (name, p) => {

@@ -24,7 +24,10 @@ app.setName(PARAMOUNT_NAME);
 // (by default) the hive all live under here, apart from Munder Difflin's.
 // setPath throws for a missing directory, so create it first: on a clean
 // profile it does not exist yet and the shell would die before any window.
-const userDataDir = join(app.getPath('appData'), PARAMOUNT_NAME);
+// An explicit --user-data-dir (a disposable test profile) wins. Without this
+// the forced path below silently points every run at the real profile.
+const explicitUserData = app.commandLine.getSwitchValue('user-data-dir');
+const userDataDir = explicitUserData ? resolve(explicitUserData) : join(app.getPath('appData'), PARAMOUNT_NAME);
 mkdirSync(userDataDir, { recursive: true });
 app.setPath('userData', userDataDir);
 
