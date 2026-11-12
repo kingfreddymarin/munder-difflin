@@ -4,6 +4,8 @@ This repository contains the Paramount desktop source: the Electron core at the 
 
 Current state: the source builds and an unsigned macOS arm64 DMG has been produced locally. Packaged runtime and visual smoke testing, independent review, and the remaining ticket archiving policy are still open. No release has been published.
 
+Automated validation and packaging are separate: development CI typechecks and tests; a PR targeting `release` validates first and then generates the application build. See [Validation and release actions](docs/RELEASE-ACTIONS.md).
+
 ## Upstream project documentation
 
 <div align="center">

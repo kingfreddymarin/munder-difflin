@@ -5,11 +5,27 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { discoverAgents, findAgents, toHireManifest, defaultMunderHive } = loadTs('src/main/agentSources.ts');
+const { discoverAgents, findAgents, toHireManifest, defaultMunderHive, parseToml } = loadTs('src/main/agentSources.ts');
 const { dispatchParamount } = loadTs('src/main/paramount.ts');
 
 /** Names that must never be opened, whatever directory they sit in. */
 const CREDENTIAL = /(^|[\\/])(auth\.json|\.credentials[^\\/]*|[^\\/]*\.token|\.env(\.[^\\/]*)?|[^\\/]*histor(y|ies)[^\\/]*|[^\\/]*sessions?[^\\/]*)$/i;
+
+test('valid quoted TOML table keys can contain brackets, dots and hash characters', () => {
+  const doc = parseToml('[hooks.state."tool[3].ready"]\nenabled = true\n[hooks.state.\'other]#key\'] # comment\nenabled = false\n[profiles.fast]\nmodel = "fixture-model"\n');
+  assert.deepEqual(doc.errors, []);
+  assert.equal(doc.tables.get('hooks.state.tool[3].ready').enabled, 'true');
+  assert.equal(doc.tables.get('hooks.state.other]#key').enabled, 'false');
+  assert.equal(doc.tables.get('profiles.fast').model, 'fixture-model');
+});
+
+test('mismatched TOML table brackets remain errors without exposing content', () => {
+  for (const text of ['[[hooks.state]\nenabled = true', '[hooks.state]]\nenabled = true']) {
+    const doc = parseToml(text);
+    assert.ok(doc.errors.length > 0);
+    assert.doesNotMatch(doc.errors.join('\n'), /enabled|hooks/);
+  }
+});
 
 function write(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });

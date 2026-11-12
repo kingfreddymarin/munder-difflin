@@ -21,6 +21,8 @@ export interface TeamSpawn {
   goal?: string;
   tokenCap?: number;
   capabilities?: string[];
+  isGod?: boolean;
+  resume?: boolean;
 }
 
 export interface ParamountTeamDeps {
@@ -33,12 +35,16 @@ export interface ParamountTeamDeps {
   appVersion: string;
   /** config.defaultModel. */
   defaultModel(): string | undefined;
+  orchestratorProvider(): string | undefined;
+  orchestratorModel(): string | undefined;
+  orchestratorId(): string | undefined;
+  hasLivePty(agentId: string): boolean;
   ticketKeyPrefix?(): string | undefined;
   /** config.defaultCommand, the fallback engine command. */
   defaultCommand(): string | undefined;
   autoMode(): boolean;
   /** Where a hire starts when the form names no folder. */
-  defaultCwd(): string | null;
+  defaultCwd(orchestrator?: boolean): string | null;
   isDirectory(path: string): boolean;
   commandAvailable(bin: string): boolean;
   spawnHire(spawn: TeamSpawn, cid: string): Promise<{ ok: boolean; error?: string }>;
@@ -56,6 +62,9 @@ interface Deps {
 
 const TEAM_TYPES = new Set(['card.create', 'team.models', 'agent.hire']);
 const MODELS_FILE = 'paramount-agent-models.json';
+// IPC creates a new adapter per request. Keep reservations by hive so two
+// windows cannot both pass the registry check while ensureAgent is awaiting IO.
+const pendingOrchestrators = new Set<string>();
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -213,7 +222,13 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           const engine = object(raw) && typeof raw.provider === 'string' ? raw.provider : 'claude';
           agents[id] = picks[id] && picks[id].engine === engine ? picks[id] : { engine };
         }
-        return done({ models: { engines, ...(team.defaultModel() ? { defaultModel: team.defaultModel() } : {}), agents } });
+        return done({ models: {
+          engines,
+          ...(team.defaultModel() ? { defaultModel: team.defaultModel() } : {}),
+          orchestratorProvider: team.orchestratorProvider() ?? 'claude',
+          ...(team.orchestratorModel() ? { orchestratorModel: team.orchestratorModel() } : {}),
+          agents
+        } });
       }
       case 'agent.update': {
         const agentId = command.agentId;
@@ -242,28 +257,45 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         return done({});
       }
       case 'agent.hire': {
-        if (!onlyKeys(command, ['type', 'manifest', 'cwd', 'confirm'])) return fail('INVALID_INPUT', 'agent.hire accepts manifest, cwd and confirm');
+        if (!onlyKeys(command, ['type', 'manifest', 'cwd', 'confirm', 'orchestrator'])) return fail('INVALID_INPUT', 'agent.hire accepts manifest, cwd, confirm and orchestrator');
         if (command.confirm !== undefined && typeof command.confirm !== 'boolean') return fail('INVALID_INPUT', 'confirm must be a boolean');
+        if (command.orchestrator !== undefined && typeof command.orchestrator !== 'boolean') return fail('INVALID_INPUT', 'orchestrator must be a boolean');
+        const isGod = command.orchestrator === true;
+        const orchestratorRoot = isGod ? team.hiveRoot() : null;
+        if (isGod && !orchestratorRoot) return fail('UNSUPPORTED', 'Enable the Hive before starting the Paramount orchestrator.');
+        if (orchestratorRoot && pendingOrchestrators.has(orchestratorRoot)) {
+          return fail('CONFLICT', 'A Paramount orchestrator is already starting. Wait for its Team and Terminal entry.');
+        }
+        const agents = deps.agents();
+        const registeredGod = isGod ? team.orchestratorId()
+          ?? Object.entries(agents).find(([, agent]) => object(agent) && agent.isGod === true)?.[0] : undefined;
+        if (registeredGod && team.hasLivePty(registeredGod)) {
+          return fail('CONFLICT', 'A Paramount orchestrator is already registered. Use its existing Team and Terminal entry.');
+        }
         const check = validateHireManifest(command.manifest);
         if (!check.ok || !check.manifest) return fail('INVALID_INPUT', `The hire form is not valid: ${check.errors.join('; ')}`);
         const manifest: HireManifest = check.manifest;
-        const cwd = typeof command.cwd === 'string' && command.cwd.trim() ? command.cwd.trim() : team.defaultCwd();
+        const cwd = typeof command.cwd === 'string' && command.cwd.trim() ? command.cwd.trim() : team.defaultCwd(isGod);
         if (!cwd) return fail('INVALID_INPUT', 'Choose the folder the agent works in');
         if (!isAbsolute(cwd) || cwd.length > 4096 || !team.isDirectory(cwd)) return fail('INVALID_INPUT', `Folder not found: ${cwd}`);
-        const provider = normalizeAgentProvider(manifest.provider) ?? 'claude';
+        const provider = isGod
+          ? normalizeAgentProvider(team.orchestratorProvider()) ?? 'claude'
+          : normalizeAgentProvider(manifest.provider) ?? 'claude';
+        const model = manifest.model ?? (isGod ? team.orchestratorModel() : undefined);
         const flags = manifest.commandFlags ?? [];
         const launch = buildWorkerLaunch({
           requestProvider: provider,
-          requestModel: flags.includes('--model') ? undefined : manifest.model,
+          requestModel: flags.includes('--model') ? undefined : model,
           defaultCommand: team.defaultCommand(),
           autoMode: team.autoMode(),
         });
         const args = [...launch.args, ...flags];
-        const agentId = uniqueAgentId(manifest.name, Object.keys(deps.agents()));
+        if (isGod && !registeredGod && Object.hasOwn(agents, 'god')) return fail('CONFLICT', 'The reserved god agent id is already in use; inspect the Hive registry before starting another orchestrator.');
+        const agentId = isGod ? registeredGod ?? 'god' : uniqueAgentId(manifest.name, Object.keys(agents));
         const isolate = manifest.isolate === true;
         const plan: ParamountHirePlan = {
-          agentId, name: manifest.name, ...(manifest.description ? { role: manifest.description } : {}),
-          engine: provider, ...(manifest.model ? { model: manifest.model } : {}), cwd, isolate,
+          agentId, name: manifest.name, ...(isGod ? { role: 'Paramount orchestrator' } : manifest.description ? { role: manifest.description } : {}),
+          engine: provider, ...(model ? { model } : {}), cwd, isolate,
           command: [launch.bin, ...args].join(' '), engineInstalled: team.commandAvailable(launch.bin),
           confirmed: command.confirm === true, consentRequired: check.consentRequired ?? [],
           ignored: IGNORED_FIELDS.filter((f) => manifest[f] !== undefined && !(Array.isArray(manifest[f]) && (manifest[f] as unknown[]).length === 0)),
@@ -272,15 +304,19 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (!plan.confirmed) return done({ hire: plan });
         if (!plan.engineInstalled) return fail('UNSUPPORTED', `${launch.bin} is not installed on this machine; install it from Health, then hire again`);
         writeAttempted = true;
-        return team.spawnHire({
+        if (orchestratorRoot) pendingOrchestrators.add(orchestratorRoot);
+        return Promise.resolve().then(() => team.spawnHire({
           plan, bin: launch.bin, args, provider,
-          ...(manifest.goal ? { goal: manifest.goal } : {}), ...(manifest.tokenCap ? { tokenCap: manifest.tokenCap } : {}),
+          ...(manifest.goal ? { goal: manifest.goal } : {}), ...(manifest.tokenCap ? { tokenCap: manifest.tokenCap } : {}), ...(isGod ? { isGod: true } : {}),
+          ...(registeredGod ? { resume: true } : {}),
           ...(manifest.capabilities ? { capabilities: manifest.capabilities } : {}),
-        }, span.cid).then((started) => {
+        }, span.cid)).then((started) => {
           deps.logStep?.({ kind: 'paramount-hire', cid: span.cid, step: started.ok ? 'spawned' : 'spawn-failed', agentId, error: started.error });
           if (!started.ok) { writeAttempted = false; return fail('INTERNAL', `Could not start ${plan.name}: ${started.error ?? 'unknown error'}`); }
           return done({ hire: plan });
-        }, failCaught);
+        }, failCaught).finally(() => {
+          if (orchestratorRoot) pendingOrchestrators.delete(orchestratorRoot);
+        });
       }
     }
     return fail('INVALID_COMMAND', `${commandType} is unknown`);

@@ -3,7 +3,7 @@
 import { findBridge, requireBridge } from './bridge';
 import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
-import { askOptions, cardAsks, logActivity } from './projection';
+import { askOptions, cardAsks, heartbeatUpdate, logActivity } from './projection';
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, CardRef, CardStatus, Message, Snapshot } from './types';
 
@@ -139,6 +139,11 @@ export function createElectronProvider(): ElectronProvider {
         const pty = livePtys.get(string(agent.ptyId));
         return pty ? [[string(agent.id), pty] as const] : [];
       }));
+      // Current main-process ownership wins over a missing or stale legacy
+      // roster. Only live PTYs are projected; exited sessions disappear.
+      for (const pty of livePtys.values()) {
+        if (string(pty.agentId)) ptyByAgent.set(string(pty.agentId), pty);
+      }
 
       const agents: Agent[] = Object.entries(registryAgents).filter(([, raw]) => !object(raw).archived).map(([id, raw]) => {
         const source = object(raw);
@@ -147,7 +152,7 @@ export function createElectronProvider(): ElectronProvider {
         return {
         id, name, initials: name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase(),
         role: role(string(source.role).toLowerCase(), id === string(registry.godId)), status: status(string(source.status, string(local.status)), string(source.breaker)),
-        engine: string(local.provider), model: string(local.model), level: Number(source.level) || 0, color: string(local.accent, 'sky'), doing: string(local.action),
+        engine: string(local.provider, string(source.provider)), model: string(local.model), level: Number(source.level) || 0, color: string(local.accent, 'sky'), doing: string(local.action),
         step: 0, steps: 0, tokensUsed: 0, tokensCap: 0,
         tokensIn: 0, tokensOut: 0, tokensCached: 0, contextPct: 0,
         bundle: '', skills: [], mcps: [], rules: [],
@@ -162,7 +167,10 @@ export function createElectronProvider(): ElectronProvider {
       const humanReplies = mail.filter((item) => string(item.from) === 'human');
       const answeredBy = (item: Record<string, unknown>) => humanReplies.find((reply) => string(reply.conversation) === string(item.conversation) && string(reply.created_at) > string(item.created_at));
       const routedMessages: Message[] = mail.map((item) => {
-        const text = [string(item.subject), string(item.body)].filter(Boolean).join('\n\n');
+        const subject = string(item.subject);
+        const text = string(item.from) === 'human' && subject === 'Message from human'
+          ? string(item.body)
+          : [subject, string(item.body)].filter(Boolean).join('\n\n');
         const asks = item.requires_reply === true && string(item.to) === 'human' && string(item.from) !== 'human';
         const reply = asks ? answeredBy(item) : undefined;
         return {
@@ -171,6 +179,7 @@ export function createElectronProvider(): ElectronProvider {
           ...(asks ? { options: askOptions(string(item.body)), answer: reply ? string(reply.body) : undefined } : {}),
           read: item.archived === true || !!reply,
           to: string(item.to) || undefined, act: string(item.act) || undefined,
+          ...heartbeatUpdate(item),
         };
       });
       const questions = cardAsks(tasks, agentIds, godId);
@@ -188,10 +197,10 @@ export function createElectronProvider(): ElectronProvider {
       const skidKnown = !!string(skid.id);
       const skidReady = skid.installed === true && skid.running === true;
       const prerequisites: Snapshot['prerequisites'] = skidKnown ? [{
-        id: string(skid.id), name: string(skid.label, 'Skidbladnir'), level: 'required',
+        id: string(skid.id), name: string(skid.label, 'Skidbladnir'), level: 'optional',
         state: skidReady ? 'ready' : skid.installed === true ? 'installed-not-running' : 'missing',
         detail: skidReady ? 'Running' : skid.installed === true ? 'Installed, not running' : 'Not installed',
-        why: 'Paramount uses this local model runtime when available.',
+        why: 'Optional local runtime for summarization and memory maintenance. Without it, standard agent work continues through your selected CLI engine.',
         ...(skid.installed === true && !skidReady && string(skid.command) ? { start: string(skid.command) } : {}),
       }] : [];
       const log: Snapshot['log'] = array(native.log).map((entry, index) => {
@@ -302,7 +311,7 @@ export function createElectronProvider(): ElectronProvider {
       return query({ type: 'team.models' }, 'models', 'The core returned no model list.');
     },
     async hire(manifest, options = {}): Promise<ParamountHirePlan> {
-      const plan = await query({ type: 'agent.hire', manifest, ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.confirm ? { confirm: true } : {}) }, 'hire', 'The core returned no hire plan.');
+      const plan = await query({ type: 'agent.hire', manifest, ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.confirm ? { confirm: true } : {}), ...(options.orchestrator ? { orchestrator: true } : {}) }, 'hire', 'The core returned no hire plan.');
       if (plan.confirmed) refresh();
       return plan;
     },

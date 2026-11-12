@@ -1,77 +1,30 @@
-name: Release
+name: Release PR
 
-# Build the unsigned Paramount DMG (macOS arm64) when a v* tag is pushed and
-# upload it as a workflow artifact. Nothing is signed, notarized or published:
-# no GitHub Release, no update feed (electron-builder.yml has publish: null),
-# and no secrets are read.
+# A release PR is the only automatic product-build entry point. Each update
+# validates the PR merge commit before generating its unsigned DMG artifact.
 on:
-  push:
-    tags:
-      - "v*"
+  pull_request:
+    branches: [release]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
-  dmg:
-    name: Unsigned DMG (macOS arm64)
-    runs-on: macos-14
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
+  typecheck:
+    name: 1. Typecheck
+    uses: ./.github/workflows/typecheck.yml
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            ui/package-lock.json
+  tests:
+    name: 2. Tests
+    needs: [typecheck]
+    uses: ./.github/workflows/tests.yml
 
-      # node-gyp (electron-rebuild of native modules) imports distutils, which
-      # Python 3.12 removed.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Provide distutils for node-gyp
-        run: python -m pip install --upgrade setuptools
-
-      - name: Build the Paramount UI (ui/ → ui/dist)
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
-          test -f dist/index.html
-
-      - name: Install (root)
-        run: npm ci
-
-      - name: Compile (electron-vite → out/)
-        run: npm run build
-
-      # electron-builder.config.cjs (not the bare yml) fills the paramount-ui
-      # extraResources entry from PARAMOUNT_UI_DIST; the wrapper fails loudly if
-      # ui/dist/index.html is missing or electron-builder cannot be spawned.
-      - name: Package unsigned DMG
-        run: node scripts/paramount-ui-dist.cjs npx electron-builder --config electron-builder.config.cjs --mac dmg --arm64 --publish never
-        env:
-          PARAMOUNT_UI_DIST: ${{ github.workspace }}/ui/dist
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-
-      - name: Checksums
-        run: |
-          cd dist
-          shasum -a 256 *.dmg | tee SHA256SUMS.txt
-
-      - name: Upload DMG
-        uses: actions/upload-artifact@v4
-        with:
-          name: paramount-${{ github.ref_name }}-mac-arm64
-          path: |
-            dist/*.dmg
-            dist/SHA256SUMS.txt
-          if-no-files-found: error
+  build:
+    name: 3. Build release candidate
+    needs: [typecheck, tests]
+    uses: ./.github/workflows/build.yml

@@ -46,6 +46,24 @@ test('never nudges god, archived agents, or agents without a live pty', () => {
   assert.deepEqual(out, []);
 });
 
+test('main-owned orchestrator opts into guarded inbox wake; legacy god stays excluded', () => {
+  const w = new WorkerWakeWatchdog();
+  const now = 200000;
+  const god = fact({ agentId: 'god', isGod: true, mainOwnedOrchestrator: true });
+  assert.deepEqual(w.decide([god], now), ['god']);
+  assert.deepEqual(w.decide([god], now + 1), []);
+  for (const hold of [{ paused: true }, { halted: true }, { autoDeliveryPaused: true }, { lastOutputAt: now - 1 }]) {
+    assert.deepEqual(new WorkerWakeWatchdog().decide([{ ...god, ...hold }], now), []);
+  }
+  const human = new WorkerWakeWatchdog();
+  human.noteHook('god', 'Notification', 'Permission approval required', now - 1000);
+  assert.deepEqual(human.decide([god], now), []);
+  const boot = new WorkerWakeWatchdog();
+  boot.noteSpawn(god.ptyId, now - 1000);
+  assert.deepEqual(boot.decide([god], now), []);
+  assert.deepEqual(new WorkerWakeWatchdog().decide([{ ...god, mainOwnedOrchestrator: false }], now), []);
+});
+
 test('never nudges when there is no inbox mail', () => {
   const w = new WorkerWakeWatchdog();
   w.noteSpawn('pty-alice', 0);

@@ -15,6 +15,21 @@ const iso = (value: unknown): string | null => {
 /** Plain text of one markdown line: no bullet, emphasis or code ticks. */
 const plain = (line: string) => line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, '').replace(/\*\*|__|`/g, '').trim();
 
+/** Only internal heartbeat/startup mail is condensed; human/agent text is intact. */
+export function heartbeatUpdate(item: Raw): Pick<Message, 'kind' | 'text' | 'details' | 'terminalAgentId'> | null {
+  if (str(item.from) === 'system' && str(item.subject) === 'Start orchestrator') return {
+    kind: 'system', text: 'Orchestrator startup requested.', details: str(item.body), terminalAgentId: str(item.owner),
+  };
+  if (str(item.from) !== 'heartbeat' || str(item.subject) !== 'Heartbeat') return null;
+  const body = str(item.body);
+  const firstLine = body.split('\n')[0];
+  const count = /(?:Floor heartbeat\s*—\s*|Heartbeat:\s*)(\d+) (?:actionable inbox message\(s\)|messages? waiting)/.exec(firstLine)?.[1];
+  return { kind: 'system', text: count
+    ? `Heartbeat · ${count} message${count === '1' ? '' : 's'} waiting.`
+    : 'Heartbeat · Team check requested.', details: body,
+    terminalAgentId: str(item.owner) };
+}
+
 /**
  * The options of a decision ask. PROTOCOL.md tells agents to give each option its own "-" bullet or
  * "1." number, so two to six short list items mean "pick one". Anything else is a free-text ask.

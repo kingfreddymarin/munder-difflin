@@ -16,14 +16,18 @@ import { useDispatch, useFloor, useTerminalTools } from '@/data/store';
 import type { Agent, Message } from '@/data/types';
 import { cn } from '@/lib/utils';
 import { agentTalk, groupArtifacts, openAsks } from './session-data';
+import { useRouter } from '@/app/router';
 
-type Tab = 'asks' | 'talk' | 'artifacts';
+type Tab = 'asks' | 'talk' | 'artifacts' | 'updates';
 
 export function SessionSide({ agent, className }: { agent: Agent; className?: string }) {
   const messages = useFloor((s) => s.messages);
   const agents = useFloor((s) => s.agents);
   const asks = React.useMemo(() => openAsks(messages, agent.id), [messages, agent.id]);
-  const [tab, setTab] = React.useState<Tab>(asks.length ? 'asks' : 'talk');
+  const { route } = useRouter();
+  const [tab, setTab] = React.useState<Tab>(route.params.get('tab') === 'updates' ? 'updates' : asks.length ? 'asks' : 'talk');
+  React.useEffect(() => { if (route.params.get('tab') === 'updates') setTab('updates'); }, [route.params]);
+  const updates = messages.filter((m) => m.kind === 'system' && m.terminalAgentId === agent.id).sort((a, b) => b.at.localeCompare(a.at));
   return (
     <aside aria-label={`${agent.name} context`} className={cn('bg-card flex min-h-0 flex-col gap-2 overflow-hidden rounded-xl border p-2', className)}>
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
@@ -31,12 +35,20 @@ export function SessionSide({ agent, className }: { agent: Agent; className?: st
           <TabsTrigger value="asks">Asks{asks.length ? ` · ${asks.length}` : ''}</TabsTrigger>
           <TabsTrigger value="talk">Agents talk</TabsTrigger>
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
+          <TabsTrigger value="updates">Updates</TabsTrigger>
         </TabsList>
       </Tabs>
       <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {tab === 'asks' && <AsksList asks={asks} agent={agent} />}
         {tab === 'talk' && <TalkList messages={messages} agents={agents} agent={agent} />}
         {tab === 'artifacts' && <ArtifactList agent={agent} />}
+        {tab === 'updates' && <div className="flex flex-col gap-2">
+          {!updates.length && <p className="text-muted-foreground p-2 text-sm">No system updates yet.</p>}
+          {updates.map((m) => <details key={m.id} className="rounded-lg border p-2">
+            <summary className="cursor-pointer text-xs">{m.text} · {stamp(m.at)}</summary>
+            <pre className="mt-2 overflow-x-auto text-xs whitespace-pre-wrap break-words">{m.details ?? m.text}</pre>
+          </details>)}
+        </div>}
       </div>
     </aside>
   );

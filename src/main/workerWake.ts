@@ -113,10 +113,12 @@ export function isTurnHook(event: string | undefined): boolean {
 
 /** One worker's live facts, gathered by the caller each beat. */
 export interface WorkerWakeFacts {
-  /** Worker agent id (god is never a candidate). */
+  /** Worker id, or an explicitly opted-in main-owned orchestrator. */
   agentId: string;
-  /** True when this agent is the orchestrator — god is never nudged. */
+  /** Legacy renderer-owned orchestrators remain excluded. */
   isGod?: boolean;
+  /** Opt-in only for a Paramount main-process hire whose renderer has no wake loop. */
+  mainOwnedOrchestrator?: boolean;
   /** Live PTY id, or undefined when the agent has no terminal. */
   ptyId?: string;
   /** Timestamp of the PTY's last output (0 = never output). */
@@ -254,7 +256,7 @@ export class WorkerWakeWatchdog {
   explain(f: WorkerWakeFacts, now = Date.now()): WorkerWakeHold | null {
     const inboxIds = liveInboxIds(f);
     if (inboxIds.size === 0) return 'no-mail';
-    if (f.isGod) return 'god';
+    if (f.isGod && !f.mainOwnedOrchestrator) return 'god';
     if (!f.ptyId) return 'no-pty';
     if (f.autoDeliveryPaused) return 'delivery-paused';
     if (f.paused) return 'paused';

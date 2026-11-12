@@ -191,6 +191,16 @@ function unescapeBasic(text: string): string {
     esc.length > 1 ? String.fromCodePoint(parseInt(esc.slice(1), 16)) : ESCAPES[esc] ?? all);
 }
 
+const TOML_KEY = String.raw`(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')`;
+const TOML_KEY_PATH = `${TOML_KEY}(?:\\s*\\.\\s*${TOML_KEY})*`;
+const TOML_TABLE_HEADER = new RegExp(`^\\[(\\[)?\\s*(${TOML_KEY_PATH})\\s*\\](\\])?\\s*(?:#.*)?$`);
+const TOML_KEY_VALUE = new RegExp(`^(${TOML_KEY_PATH})\\s*=\\s*(.*)$`);
+
+function tomlKeyPath(text: string): string[] {
+  return (text.match(new RegExp(TOML_KEY, 'g')) ?? []).map((key) =>
+    key.startsWith('"') ? unescapeBasic(key.slice(1, -1)) : unquote(key));
+}
+
 /** Enough TOML for agent files and config profiles: tables, dotted/quoted
  *  keys, basic/literal/multi-line strings. Other values are kept as raw text.
  *  Errors carry line numbers only, never content (config.toml may hold secrets). */
@@ -202,15 +212,15 @@ export function parseToml(text: string): TomlDoc {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line || line.startsWith('#')) continue;
-    const header = /^\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/.exec(line);
-    if (header) {
-      table = header[1].split('.').map((part) => unquote(part)).join('.');
+    const header = TOML_TABLE_HEADER.exec(line);
+    if (header && Boolean(header[1]) === Boolean(header[3])) {
+      table = tomlKeyPath(header[2]).join('.');
       if (!tables.has(table)) tables.set(table, {});
       continue;
     }
-    const kv = /^((?:[A-Za-z0-9_-]+|"[^"]*"|'[^']*')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"[^"]*"|'[^']*'))*)\s*=\s*(.*)$/.exec(line);
+    const kv = TOML_KEY_VALUE.exec(line);
     if (!kv) { errors.push(`line ${i + 1} is not "key = value"`); continue; }
-    const keyPath = kv[1].split(/\s*\.\s*/).map(unquote);
+    const keyPath = tomlKeyPath(kv[1]);
     const key = keyPath.pop()!;
     const target = [table, ...keyPath].filter(Boolean).join('.');
     let value = kv[2];

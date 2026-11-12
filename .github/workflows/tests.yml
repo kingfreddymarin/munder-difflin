@@ -1,0 +1,32 @@
+name: Tests
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Core and UI tests
+    runs-on: macos-14
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+      - name: Test core
+        run: npm run test:focused 2>&1 | tee logs/root-test.log
+      - name: Test UI
+        working-directory: ui
+        run: npm test 2>&1 | tee ../logs/ui-test.log
+      - name: Upload failed test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: logs/
+          retention-days: 14

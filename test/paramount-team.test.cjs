@@ -34,6 +34,10 @@ function fixture(overrides = {}) {
     modelCatalog: () => CATALOG,
     appVersion: '0.5.5',
     defaultModel: () => 'claude-sonnet-4-6',
+    orchestratorProvider: () => 'claude',
+    orchestratorModel: () => 'claude-opus-4-8',
+    orchestratorId: () => Object.entries(state.agents).find(([, a]) => a.isGod)?.[0],
+    hasLivePty: (id) => state.agents[id]?.live !== false && state.agents[id]?.archived !== true,
     defaultCommand: () => 'claude',
     autoMode: () => false,
     defaultCwd: () => work,
@@ -189,4 +193,125 @@ test('uniqueAgentId never reuses a registry id', () => {
   assert.equal(uniqueAgentId('Jim Halpert', []), 'jim-halpert');
   assert.equal(uniqueAgentId('Jim', ['jim', 'jim-2']), 'jim-3');
   assert.equal(uniqueAgentId('!!!', []), 'agent');
+});
+
+const orchestratorHire = (confirm = false) => ({
+  type: 'agent.hire', orchestrator: true, confirm,
+  manifest: { spec: 'munder-difflin/hire@1', name: 'Paramount' }
+});
+
+test('orchestrator preview uses the configured engine and model without spawning', () => {
+  const { state, deps } = fixture({ orchestratorProvider: () => 'codex', orchestratorModel: () => 'gpt-x' });
+  const models = dispatchParamount({ type: 'team.models' }, deps);
+  assert.equal(models.models.orchestratorProvider, 'codex');
+  assert.equal(models.models.orchestratorModel, 'gpt-x');
+  const result = dispatchParamount(orchestratorHire(), deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.hire.agentId, 'god');
+  assert.equal(result.hire.role, 'Paramount orchestrator');
+  assert.equal(result.hire.engine, 'codex');
+  assert.equal(result.hire.model, 'gpt-x');
+  assert.match(result.hire.command, /^codex .*--model gpt-x/);
+  assert.equal(result.hire.confirmed, false);
+  assert.equal(state.spawned.length, 0);
+});
+
+test('confirmed orchestrator uses the main-agent identity and preserves explicit model choice', async () => {
+  const { state, deps } = fixture();
+  const command = orchestratorHire(true);
+  command.manifest.model = 'claude-sonnet-4-6';
+  const result = await dispatchParamount(command, deps);
+  assert.equal(result.ok, true);
+  assert.equal(state.spawned.length, 1);
+  assert.equal(state.spawned[0].isGod, true);
+  assert.equal(state.spawned[0].plan.agentId, 'god');
+  assert.equal(state.spawned[0].provider, 'claude');
+  assert.deepEqual(state.spawned[0].args.slice(-2), ['--model', 'claude-sonnet-4-6']);
+});
+
+test('orchestrator rejects an existing main agent or reserved id before spawning', async () => {
+  for (const registered of [{ main: { isGod: true } }, { god: { name: 'Reserved' } }]) {
+    const { state, deps } = fixture();
+    state.agents = registered;
+    for (const confirm of [false, true]) {
+      const result = await dispatchParamount(orchestratorHire(confirm), deps);
+      assert.equal(result.ok, false);
+      assert.equal(result.code, 'CONFLICT');
+    }
+    assert.equal(state.spawned.length, 0);
+  }
+});
+
+test('orchestrator validates its flag and surfaces missing CLI and launch failures', async () => {
+  const { deps } = fixture();
+  assert.equal(dispatchParamount({ ...orchestratorHire(), orchestrator: 'yes' }, deps).code, 'INVALID_INPUT');
+  const absent = fixture({ commandAvailable: () => false });
+  assert.equal((await dispatchParamount(orchestratorHire(true), absent.deps)).code, 'UNSUPPORTED');
+  assert.equal(absent.state.spawned.length, 0);
+  const broken = fixture({ spawnHire: async () => ({ ok: false, error: 'PTY failed' }) });
+  const failure = await dispatchParamount(orchestratorHire(true), broken.deps);
+  assert.equal(failure.code, 'INTERNAL');
+  assert.match(failure.message, /PTY failed/);
+});
+
+test('ordinary hires remain workers with their selected provider', async () => {
+  const { state, deps } = fixture({ orchestratorProvider: () => 'codex' });
+  const result = await dispatchParamount({ type: 'agent.hire', confirm: true,
+    manifest: { spec: 'munder-difflin/hire@1', name: 'Reviewer', provider: 'claude' } }, deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.hire.engine, 'claude');
+  assert.equal(state.spawned[0].isGod, undefined);
+  assert.notEqual(result.hire.agentId, 'god');
+});
+
+test('concurrent orchestrator confirmations cannot start two main agents', async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const { state, deps } = fixture({ spawnHire: async (spawn) => {
+    state.spawned.push(spawn);
+    await pending;
+    return { ok: true };
+  } });
+  const first = dispatchParamount(orchestratorHire(true), deps);
+  // Main creates a fresh adapter per IPC call; the guard must span adapters.
+  const second = dispatchParamount(orchestratorHire(true), { ...deps, team: { ...deps.team } });
+  release();
+  const results = await Promise.all([first, second]);
+  assert.deepEqual(results.map((r) => r.ok ? 'OK' : r.code), ['OK', 'CONFLICT']);
+  assert.equal(state.spawned.length, 1);
+});
+
+test('failed orchestrator launches release the reservation so the user can retry', async () => {
+  for (const spawnHire of [() => { throw new Error('sync failure'); }, async () => { throw new Error('async failure'); }, async () => ({ ok: false, error: 'failed' })]) {
+    const { deps } = fixture({ spawnHire });
+    assert.equal((await dispatchParamount(orchestratorHire(true), deps)).ok, false);
+    deps.team.spawnHire = async () => ({ ok: true });
+    assert.equal((await dispatchParamount(orchestratorHire(true), deps)).ok, true);
+  }
+});
+
+test('an orchestrator cannot start without an enabled hive', async () => {
+  const { state, deps } = fixture({ hiveRoot: () => null });
+  assert.equal((await dispatchParamount(orchestratorHire(true), deps)).code, 'UNSUPPORTED');
+  assert.equal(state.spawned.length, 0);
+});
+
+test('a stopped orchestrator can restart under its durable identity with resume requested', async () => {
+  const { deps, state } = fixture();
+  state.agents.main = { isGod: true, archived: true, live: false };
+  const result = await dispatchParamount(orchestratorHire(true), deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.hire.agentId, 'main');
+  assert.equal(state.spawned[0].resume, true);
+});
+
+test('orchestrator requests its workspace fallback; workers still require a selected project', () => {
+  let requestedFallback;
+  const { deps, work } = fixture();
+  deps.team.defaultCwd = (orchestrator) => { requestedFallback = orchestrator; return orchestrator ? work : null; };
+  assert.equal(dispatchParamount(orchestratorHire(), deps).ok, true);
+  assert.equal(requestedFallback, true);
+  const worker = dispatchParamount({ type: 'agent.hire', manifest: { spec: 'munder-difflin/hire@1', name: 'Worker' } }, deps);
+  assert.equal(worker.code, 'INVALID_INPUT');
+  assert.equal(requestedFallback, false);
 });

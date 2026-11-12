@@ -1,0 +1,32 @@
+name: Typecheck
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: Core and UI types
+    runs-on: macos-14
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+      - name: Typecheck core
+        run: npm run typecheck 2>&1 | tee logs/root-typecheck.log
+      - name: Typecheck UI
+        working-directory: ui
+        run: npm run typecheck 2>&1 | tee ../logs/ui-typecheck.log
+      - name: Upload failed typecheck logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: logs/
+          retention-days: 14

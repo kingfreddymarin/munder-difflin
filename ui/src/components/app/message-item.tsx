@@ -9,9 +9,11 @@ import { AskReply, AskText } from './ask-reply';
 import { useDispatch } from '@/data/store';
 import { ExternalLink } from './external-link';
 import { clock } from './format';
+import { useRouter } from '@/app/router';
 
 /** `onHide` is offered on update cards (pipeline, routing, context, suggestions) so Chats can tuck them away. */
 export function MessageItem({ m, agents, showNames, onHide }: { m: Message; agents: Agent[]; showNames: boolean; onHide?: () => void }) {
+  const { go } = useRouter();
   const you = m.from === 'you';
   const from = agents.find((a) => a.id === m.from);
   const name = you ? 'You' : (from?.name ?? m.from);
@@ -20,6 +22,13 @@ export function MessageItem({ m, agents, showNames, onHide }: { m: Message; agen
     <button type="button" aria-label="Hide this update" title="Hide this update" onClick={onHide} className="text-muted-foreground hover:text-foreground ml-auto rounded p-0.5">
       <X className="size-3.5" />
     </button>
+  );
+  if (m.kind === 'system') return (
+    <div role="status" className="text-muted-foreground flex max-w-full flex-wrap items-center gap-2 self-start rounded-md border border-dashed px-2.5 py-1.5 text-xs">
+      <span>{m.text}</span>
+      {m.terminalAgentId && <button type="button" className="text-primary hover:underline" onClick={() => go('terminal', { a: m.terminalAgentId!, tab: 'updates' })}>Open terminal</button>}
+      {hide}
+    </div>
   );
   if (m.kind === 'route')
     return <div className="text-muted-foreground flex items-center gap-1 self-center text-xs">→ {m.text}{hide}</div>;

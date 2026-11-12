@@ -13,7 +13,7 @@ import { AgentSheet } from '@/features/team/agent-sheet';
 import { ImportAgentsSheet } from '@/features/team/import-agents-sheet';
 import { HireSheet } from '@/features/team/hire-sheet';
 import { NewCardDialog } from '@/features/team/new-card-dialog';
-import { useAgentImport, useDispatch, useTeamApi } from '@/data/store';
+import { useAgentImport, useDispatch, useFloor, useTeamApi } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { Screen } from '@/components/app/screen';
@@ -56,8 +56,11 @@ export function TeamPage() {
   const [importing, setImporting] = React.useState(() => route.params.get('import') === '1');
 
   const teamApi = useTeamApi();
+  const agents = useFloor((s) => s.agents);
+  const terminals = useFloor((s) => s.terminals);
+  const hasOrchestrator = agents.some((agent) => agent.role === 'paramount' && terminals.some((terminal) => terminal.agentId === agent.id));
   // null = closed; otherwise which way the Add-Agent form opens (empty, or pre-filled from a bundle file).
-  const [hiring, setHiring] = React.useState<null | { bundle: boolean; manifest?: Record<string, unknown>; notes?: string[] }>(null);
+  const [hiring, setHiring] = React.useState<null | { bundle: boolean; orchestrator?: boolean; manifest?: Record<string, unknown>; notes?: string[] }>(null);
   const [creating, setCreating] = React.useState(false);
 
   const apply = (next: PanelId[]) => {
@@ -119,6 +122,8 @@ export function TeamPage() {
         <Button variant="outline" onClick={() => setCreating(true)}>New card</Button>
         <Button variant="outline" disabled={!teamApi} onClick={() => setHiring({ bundle: true })}
           title={teamApi ? 'Pre-fill the Add-Agent form from a munder-difflin/hire@1 file' : 'Hiring needs the desktop core.'}>Hire from a bundle</Button>
+        {!hasOrchestrator && <Button variant="outline" disabled={!teamApi} onClick={() => setHiring({ bundle: false, orchestrator: true })}
+          title={teamApi ? 'Start the main Paramount agent using the configured orchestrator engine' : 'Starting the orchestrator needs the desktop core.'}>Start Paramount orchestrator</Button>}
         <Button disabled={!teamApi} onClick={() => setHiring({ bundle: false })}
           title={teamApi ? 'Add an agent: review the exact command, then start it in a terminal' : 'Hiring needs the desktop core.'}>Hire</Button>
       </div>
@@ -129,7 +134,7 @@ export function TeamPage() {
       </div>
       <AgentSheet agentId={open} tab={route.params.get('tab')} onClose={() => go('team')} />
       <ImportAgentsSheet open={importing} onClose={() => setImporting(false)} onImported={(manifest, notes) => { setImporting(false); setHiring({ bundle: false, manifest, notes }); }} />
-      <HireSheet open={!!hiring} bundle={!!hiring?.bundle} manifest={hiring?.manifest} notes={hiring?.notes} onClose={() => setHiring(null)} />
+      <HireSheet open={!!hiring} bundle={!!hiring?.bundle} orchestrator={!!hiring?.orchestrator} manifest={hiring?.manifest} notes={hiring?.notes} onClose={() => setHiring(null)} />
       <NewCardDialog open={creating} onClose={() => setCreating(false)} />
     </Screen>
   );
