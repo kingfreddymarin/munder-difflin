@@ -12,6 +12,18 @@ import { SetupGate } from './setup-gate';
 import { cn } from '@/lib/utils';
 import { AgentAvatar } from '@/components/app/agent-avatar';
 import { AGENT_VIEW, agentViewParams, terminalRoster } from './agent-view';
+import { prewarmTerminals } from '@/components/app/terminal/terminal-pool';
+import { TERMINAL_THEMES } from '@/components/app/terminal/terminal-themes';
+import { getTerminalFontSize } from '@/components/app/terminal/terminalFontSize';
+
+/** Buffer every live agent's output from spawn, as Munder's App does (terminal-pool prewarmTerminals). */
+function usePrewarmTerminals() {
+  const terminals = useFloor((s) => s.terminals);
+  React.useEffect(() => {
+    const theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+    prewarmTerminals(terminals.map((t) => t.ptyId), TERMINAL_THEMES[theme], getTerminalFontSize());
+  }, [terminals]);
+}
 
 /** Every agent, the orchestrator first; a click opens its live terminal (Munder's agent list). */
 function SidebarAgents() {
@@ -75,6 +87,7 @@ function TopBar({ title }: { title: string }) {
 export function AppShell({ children, title }: { children: React.ReactNode; title: string }) {
   const { route, go } = useRouter();
   const badges = useBadges();
+  usePrewarmTerminals();
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon">

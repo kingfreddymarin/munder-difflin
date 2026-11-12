@@ -293,6 +293,13 @@ function repaintAfterRendererLoss(entry: TerminalEntry): void {
   }
 }
 
+/** Munder's App-level pre-warm: a pooled terminal for every live pty, so its output is buffered
+ *  from spawn and the first open shows the whole session, not just what came after. Nothing is
+ *  opened or rendered until a view attaches it. */
+export function prewarmTerminals(ptyIds: Iterable<string | undefined>, theme: ThemeMap, fontSize: number): void {
+  for (const id of ptyIds) if (id) acquireTerminal(id, theme, fontSize);
+}
+
 /** Re-parent a pty's terminal into `container`, opening xterm on first attach. */
 export function attachTerminal(entry: TerminalEntry, container: HTMLElement): void {
   container.appendChild(entry.host);

@@ -111,3 +111,14 @@ test('disposing a terminal releases its renderer', () => {
   assert.equal(webgl.disposed, true);
   assert.equal(entry.term.disposed, true);
 });
+
+test('live agents get a pooled terminal from spawn, buffered but not opened (Munder pre-warm)', () => {
+  pool.prewarmTerminals(['pty-w1', undefined, 'pty-w2'], {}, 13);
+  const w1 = pool.acquireTerminal('pty-w1', {}, 13);
+  assert.equal(w1.opened, false, 'nothing renders until a view attaches it');
+  assert.equal(w1.webgl, undefined);
+  pool.prewarmTerminals(['pty-w1'], {}, 13);
+  assert.equal(pool.acquireTerminal('pty-w1', {}, 13), w1, 'pre-warming again keeps the same terminal and its buffer');
+  const shell = readFileSync(join(ui, 'src/app/app-shell.tsx'), 'utf8');
+  assert.match(shell, /function AppShell[\s\S]*usePrewarmTerminals\(\);/);
+});
