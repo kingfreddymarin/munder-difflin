@@ -23,6 +23,7 @@ export type Command =
   | { type: 'prereq.install'; id: string; confirm?: boolean }
   | { type: 'prereq.start'; id: string; confirm?: boolean }
   | { type: 'setup.dismiss'; degraded: string[] }
+  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean }
   | { type: 'ask.reply'; messageId: string; mode: AskMode; text: string }
   | { type: 'ask.dismiss'; messageId: string }
   | { type: 'home.layout'; layout: HomeLayout }

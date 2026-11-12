@@ -138,6 +138,8 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
       const services = s.services.map((x) => (x.id === c.id ? { ...x, state: 'ok' as const, detail: 'running · checked just now', fix: undefined } : x));
       return audit({ ...s, prerequisites, services }, ev, c.type === 'prereq.install' ? 'Installed prerequisite' : 'Started prerequisite', p.name, (c.type === 'prereq.install' ? p.install : p.start) ?? '', ['pm']);
     }
+    case 'setup.complete':
+      return audit({ ...s, floorSetup: s.floorSetup ? { ...s.floorSetup, complete: true, harnessHome: c.home } : s.floorSetup }, ev, 'Set up this floor', 'Setup', `${c.engine}${c.model ? ` · ${c.model}` : ''} · ${c.home}`, ['pm']);
     case 'setup.dismiss':
       return audit({ ...s, setupDismissed: true }, ev, 'Continued in degraded mode', 'Setup', c.degraded.length ? `not ready: ${c.degraded.join(', ')}` : 'all ready', ['pm']);
     case 'layout.panels':

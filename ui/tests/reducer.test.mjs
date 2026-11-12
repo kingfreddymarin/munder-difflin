@@ -22,3 +22,13 @@ test('a core event for a command the UI does not model (diagnostics.save) keeps 
   const event = { id: 'e1', at: '2026-10-15T19:43:19.343Z', actor: 'you', command: { type: 'diagnostics.save', name: 'x.json' } };
   assert.equal(applyEvent(snapshot, event), snapshot);
 });
+
+test('setup.complete marks the floor set up at the chosen folder and audits it', () => {
+  const snapshot = { agents: [], chats: [], messages: [], audit: [], notifications: [],
+    floorSetup: { complete: false, harnessHome: null, suggestedHome: '/a', engines: [] } };
+  const event = { id: 'e2', at: '2026-11-12T09:00:00.000Z', actor: 'you', command: { type: 'setup.complete', home: '/floor', engine: 'claude', model: 'claude-opus-5-5' } };
+  const next = applyEvent(snapshot, event);
+  assert.equal(next.floorSetup.complete, true);
+  assert.equal(next.floorSetup.harnessHome, '/floor');
+  assert.equal(next.audit.length, 1);
+});

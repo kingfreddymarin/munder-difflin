@@ -282,7 +282,13 @@ export interface Prerequisite {
   docs?: string;
 }
 
+/** First-run floor setup, from the core (Munder parity: no floor until setup completes). */
+export interface FloorSetupEngine { id: string; label: string; orchestrator: boolean; installed: boolean; models: string[] }
+export interface FloorSetup { complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
+
 export interface Snapshot {
+  /** Missing on providers without a setup stage (the sample provider); treat as set up. */
+  floorSetup?: FloorSetup;
   /** False when the core has no token telemetry for the displayed agents. */
   usageReported?: boolean;
   /** Supported, non-secret settings read from the fork. Missing on the sample provider. */

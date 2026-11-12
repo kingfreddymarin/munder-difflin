@@ -5,7 +5,7 @@ import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImpor
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import { askOptions, cardAsks, heartbeatUpdate, logActivity } from './projection';
 import type { Command, DataProvider, FloorEvent } from './protocol';
-import type { Agent, Card, CardRef, CardStatus, Message, Snapshot } from './types';
+import type { Agent, Card, CardRef, CardStatus, FloorSetup, Message, Snapshot } from './types';
 
 type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'saveDiagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn' | 'teamModels' | 'hire' | 'artifacts'>> & { kind: 'electron' };
 
@@ -30,6 +30,21 @@ const string = (value: unknown, fallback = ''): string => typeof value === 'stri
 // An unknown time stays '' (shown as '—'), never "now": an invented time is a hardcoded value and would also
 // make every refresh look changed.
 const date = (value: unknown): string => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : '';
+
+/** The core's first-run setup state. Absent (an older core) means the floor is already set up. */
+function floorSetupOf(value: unknown): FloorSetup | undefined {
+  const v = object(value);
+  if (typeof v.complete !== 'boolean') return undefined;
+  return {
+    complete: v.complete,
+    harnessHome: typeof v.harnessHome === 'string' ? v.harnessHome : null,
+    suggestedHome: string(v.suggestedHome),
+    engines: array(v.engines).map((e) => ({
+      id: string(e.id), label: string(e.label, string(e.id)), orchestrator: e.orchestrator === true, installed: e.installed === true,
+      models: Array.isArray(e.models) ? e.models.filter((m): m is string => typeof m === 'string') : []
+    })).filter((e) => e.id)
+  };
+}
 
 const REF_KINDS: readonly string[] = ['pr', 'build', 'run', 'workitem'];
 const REF_SYSTEMS: readonly string[] = ['github', 'ado'];
@@ -218,7 +233,7 @@ export function createElectronProvider(): ElectronProvider {
       const snapshot: Snapshot = {
         usageReported: false,
         settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
-        prerequisites, setupDismissed: object(preferences.setup).dismissed === true, objectives: [], wins: [],
+        floorSetup: floorSetupOf(native.floorSetup), prerequisites, setupDismissed: object(preferences.setup).dismissed === true, objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
           connections: array(native.integrations).map((item) => ({ id: string(item.id), name: string(item.label, string(item.id)), detail: string(item.kind), connected: item.enabled === true,
             kind: string(item.kind), baseUrl: string(item.baseUrl), authType: string(item.authType), hasSecret: item.hasSecret === true })),

@@ -331,3 +331,18 @@ test('projects non-secret settings and redacted integrations from the core', asy
     kind: 'github', baseUrl: 'https://api.github.com', authType: 'bearer', hasSecret: true });
   assert.equal(JSON.stringify(snapshot).includes('secretRef'), false);
 });
+
+test('first-run setup state is mapped; an older core without it stays set up', async () => {
+  const native = nativeSnapshot();
+  native.floorSetup = { complete: false, harnessHome: null, suggestedHome: '/Users/a/Paramount', engines: [
+    { id: 'claude', label: 'Claude Code', orchestrator: true, installed: true, models: ['claude-opus-5-5', 7] },
+    { label: 'no id' }
+  ] };
+  globalThis.window = { cth: bridge(native) };
+  const snapshot = await createElectronProvider().snapshot();
+  assert.deepEqual(snapshot.floorSetup, { complete: false, harnessHome: null, suggestedHome: '/Users/a/Paramount', engines: [
+    { id: 'claude', label: 'Claude Code', orchestrator: true, installed: true, models: ['claude-opus-5-5'] }
+  ] });
+  globalThis.window = { cth: bridge(nativeSnapshot()) };
+  assert.equal((await createElectronProvider().snapshot()).floorSetup, undefined);
+});

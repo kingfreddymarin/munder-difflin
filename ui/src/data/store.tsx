@@ -186,6 +186,13 @@ export function useSnapshotRefresh() {
   return { refresh: store.retry, refreshedAt };
 }
 
+/** The last command the core refused (code, message, errorId); cleared by the next success. */
+export function useActionError() {
+  const store = useStore();
+  const error = React.useSyncExternalStore(store.subscribe, store.getActionError);
+  return { error, clear: store.clearActionError };
+}
+
 /** agent.update is learned per field: the core refusing one field must not disable the others. */
 function unsupportedKey(c: Command): string {
   return c.type === 'agent.update' ? `agent.update:${Object.keys(c.patch).sort().join(',')}` : c.type;
