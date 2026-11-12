@@ -31,12 +31,29 @@ const string = (value: unknown, fallback = ''): string => typeof value === 'stri
 // make every refresh look changed.
 const date = (value: unknown): string => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : '';
 
+function floorLockOf(value: unknown): FloorSetup['floorLock'] {
+  const v = object(value);
+  if (v.state === 'open') return { state: 'open', floor: string(v.floor) };
+  if (v.state === 'none') return { state: 'none' };
+  if (v.state === 'error') return { state: 'error', floor: string(v.floor), detail: string(v.detail) };
+  if (v.state === 'refused') {
+    const r = object(v.refusal);
+    return { state: 'refused', refusal: { floor: string(r.floor), owner: string(r.owner, 'Another app'), pid: typeof r.pid === 'number' ? r.pid : 0, since: string(r.since), userData: string(r.userData) } };
+  }
+  return undefined;
+}
+function hookSocketOf(value: unknown): Snapshot['hookSocket'] {
+  const v = object(value);
+  if (typeof v.listening !== 'boolean') return undefined;
+  return { listening: v.listening, lastError: typeof v.lastError === 'string' ? v.lastError : null, attempts: typeof v.attempts === 'number' ? v.attempts : 0 };
+}
 /** The core's first-run setup state. Absent (an older core) means the floor is already set up. */
 function floorSetupOf(value: unknown): FloorSetup | undefined {
   const v = object(value);
   if (typeof v.complete !== 'boolean') return undefined;
   return {
     ...(v.launchers ? { launchers: v.launchers as FloorSetup['launchers'] } : {}),
+    ...(floorLockOf(v.floorLock) ? { floorLock: floorLockOf(v.floorLock) } : {}),
     complete: v.complete,
     harnessHome: typeof v.harnessHome === 'string' ? v.harnessHome : null,
     suggestedHome: string(v.suggestedHome),
@@ -234,7 +251,7 @@ export function createElectronProvider(): ElectronProvider {
       const snapshot: Snapshot = {
         usageReported: false,
         settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
-        floorSetup: floorSetupOf(native.floorSetup), prerequisites, setupDismissed: object(preferences.setup).dismissed === true, objectives: [], wins: [],
+        floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: object(preferences.setup).dismissed === true, objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
           connections: array(native.integrations).map((item) => ({ id: string(item.id), name: string(item.label, string(item.id)), detail: string(item.kind), connected: item.enabled === true,
             kind: string(item.kind), baseUrl: string(item.baseUrl), authType: string(item.authType), hasSecret: item.hasSecret === true })),
@@ -295,7 +312,7 @@ export function createElectronProvider(): ElectronProvider {
           const card = (result as OkResult).card;
           const event = { ...result.event, command: card && command.type === 'card.create' ? { ...command, key: card.key } : command } as FloorEvent;
           emit(event);
-          if (['card.create', 'setup.complete', 'orchestrator.ensure', 'launchers.refresh'].includes(command.type)) refresh();
+          if (['card.create', 'setup.complete', 'orchestrator.ensure', 'launchers.refresh', 'floor.retry', 'floor.choose-another'].includes(command.type)) refresh();
           return event;
         }
       } catch (cause) {

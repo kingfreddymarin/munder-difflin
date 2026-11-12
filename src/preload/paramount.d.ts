@@ -35,6 +35,9 @@ export type ParamountCommand =
   | { type: 'prereq.start'; id: string; confirm?: boolean }
   | { type: 'setup.dismiss'; degraded: string[] }
   | { type: 'orchestrator.ensure' }
+  /** The floor another app held: try to claim it again, or go back to setup to pick another. */
+  | { type: 'floor.retry' }
+  | { type: 'floor.choose-another' }
   | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
   /** Read-only: returns a redacted diagnostics bundle on the result. */
   | { type: 'diagnostics.bundle'; logLines?: number }
@@ -277,6 +280,8 @@ export interface ParamountArtifactMap {
   /** The agent's registry cwd; empty when it has none. */
   cwd: string;
   repo: { root: string; branch: string; head: string } | null;
+  /** The cwd exists but is not in a git repository: a normal state (no changed files), not an error. */
+  notRepo?: boolean;
   artifacts: ParamountArtifact[];
   /** Sources that could not be read; each errorId is on a `paramount-terminal` line in log.jsonl. */
   warnings: Array<{ errorId: string; source: string; message: string }>;

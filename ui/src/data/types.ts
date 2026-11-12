@@ -284,11 +284,22 @@ export interface Prerequisite {
 
 /** First-run floor setup, from the core (Munder parity: no floor until setup completes). */
 export interface FloorSetupEngine { id: string; label: string; orchestrator: boolean; installed: boolean; models: string[] }
-export interface FloorSetup { launchers?: import('./paramount-api').CouncilLauncherDiscovery; complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
+/** Munder's floor lock: Council opens a floor only while it holds `<hive>/.floor-lock`. */
+export type FloorLockState =
+  | { state: 'none' } | { state: 'open'; floor: string }
+  | { state: 'refused'; refusal: { floor: string; owner: string; pid: number; since: string; userData: string } }
+  | { state: 'error'; floor: string; detail: string };
+/** The agent hook socket (hooks.sock). Not listening with an error means hooks run unchecked. */
+export interface HookSocketHealth { listening: boolean; lastError: string | null; attempts: number }
+export interface FloorSetup { floorLock?: FloorLockState; launchers?: import('./paramount-api').CouncilLauncherDiscovery; complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
 
 export interface Snapshot {
   /** Missing on providers without a setup stage (the sample provider); treat as set up. */
   floorSetup?: FloorSetup;
+  /** Missing on providers without a core. */
+  hookSocket?: HookSocketHealth;
+  /** Set on test launches (COUNCIL_TEST_LABEL): shown as a banner on every screen. */
+  testLabel?: string;
   /** False when the core has no token telemetry for the displayed agents. */
   usageReported?: boolean;
   /** Supported, non-secret settings read from the fork. Missing on the sample provider. */

@@ -8,6 +8,7 @@ import { discoverLaunchers, publicDiscovery, validateLauncher, saveLauncherPick,
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import type { ParamountCommand, ParamountErrorCode, ParamountEvent, ParamountResult } from '../preload/paramount';
+import type { FloorGateState } from './floor-lock';
 
 export interface FloorSetupEngine {
   id: string;
@@ -26,10 +27,14 @@ export interface FloorSetupState {
   suggestedHome: string;
   engines: FloorSetupEngine[];
   launchers?: LauncherDiscovery;
+  /** Whether this process holds the floor (Munder's .floor-lock); 'refused' names the app that does. */
+  floorLock?: FloorGateState;
 }
 
 export interface FloorSetupDeps {
   launcherDiscovery?(): ReturnType<typeof discoverLaunchers>;
+  /** The floor lock gate (floor-lock.ts): current state, a retry, and a way back to setup. */
+  floor?: { state(): FloorGateState; claim(home: string): FloorGateState; retry(): FloorGateState; chooseAnother(): void };
   config(): { onboardingComplete?: boolean; harnessHome?: string | null };
   suggestedHome(): string;
   engines(): FloorSetupEngine[];
@@ -55,6 +60,7 @@ export function floorSetupState(deps: FloorSetupDeps): FloorSetupState {
     // Every snapshot builds this state, so launchers are read only while the setup
     // screen shows, and only from the injected (cached) discovery: never a shell here.
     ...(!complete && deps.launcherDiscovery ? { launchers: publicDiscovery(deps.launcherDiscovery()) } : {}),
+    ...(deps.floor ? { floorLock: deps.floor.state() } : {}),
     engines: deps.engines()
   };
 }
@@ -64,6 +70,7 @@ const oneLine = (v: unknown, max: number): v is string => typeof v === 'string' 
 
 /** `setup.complete`; null for any other command. */
 export function dispatchFloorSetup(command: Record<string, unknown>, deps: FloorSetupDeps | undefined, span: Span): ParamountResult | null {
+  if (command.type === 'floor.retry' || command.type === 'floor.choose-another') return dispatchFloorLock(command, deps, span);
   if (command.type !== 'setup.complete') return null;
   const fail = (code: ParamountErrorCode, message: string, cause?: unknown): ParamountResult => span.fail(code, message, cause, { commandType: 'setup.complete' });
   if (!deps) return fail('UNSUPPORTED', 'setup.complete is not available in this build');
@@ -94,6 +101,10 @@ export function dispatchFloorSetup(command: Record<string, unknown>, deps: Floor
     }
   } catch (e) { return fail('INVALID_INPUT', e instanceof Error ? e.message : 'Invalid default launcher'); }
   const home = command.home.trim();
+  // Munder's floor lock before anything is written there (launcher picks, the hive itself).
+  const claimed = deps.floor?.claim(home);
+  if (claimed?.state === 'refused') return fail('CONFLICT', `${claimed.refusal.owner} (pid ${claimed.refusal.pid}) has this floor open. Quit it, or choose another floor.`);
+  if (claimed?.state === 'error') return fail('INTERNAL', `The floor lock could not be written: ${claimed.detail}`);
   const made = deps.ensureHome(home);
   if (!made.ok) return fail('INVALID_INPUT', made.error || 'The floor folder could not be created');
   try {
@@ -106,6 +117,24 @@ export function dispatchFloorSetup(command: Record<string, unknown>, deps: Floor
   }
   const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as unknown as ParamountCommand, correlationId: span.cid };
   deps.appendEvent(event);
+  deps.publish(event);
+  return { ok: true, event } as ParamountResult;
+}
+
+/** `floor.retry` (the other app quit: claim the floor now) and `floor.choose-another`
+ *  (back to setup to pick a different folder). Neither touches the refused floor. */
+function dispatchFloorLock(command: Record<string, unknown>, deps: FloorSetupDeps | undefined, span: Span): ParamountResult {
+  const type = String(command.type);
+  const fail = (code: ParamountErrorCode, message: string): ParamountResult => span.fail(code, message, undefined, { commandType: type });
+  if (!deps?.floor) return fail('UNSUPPORTED', `${type} is not available in this build`);
+  if (Object.keys(command).some((k) => k !== 'type')) return fail('INVALID_INPUT', `${type} takes no fields`);
+  if (type === 'floor.retry') {
+    const state = deps.floor.retry();
+    if (state.state === 'refused') return fail('CONFLICT', `${state.refusal.owner} (pid ${state.refusal.pid}) still has this floor open. Quit it, or choose another floor.`);
+    if (state.state === 'error') return fail('INTERNAL', `The floor lock could not be written: ${state.detail}`);
+  } else deps.floor.chooseAnother();
+  const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as unknown as ParamountCommand, correlationId: span.cid };
+  // The refused floor's log is not ours to write: publish to the window only.
   deps.publish(event);
   return { ok: true, event } as ParamountResult;
 }

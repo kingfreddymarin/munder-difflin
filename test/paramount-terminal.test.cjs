@@ -76,3 +76,13 @@ test('terminal.artifacts rejects bad input, unknown agents and builds without it
   const { deps: none } = deps({ jim: {} }, undefined);
   assert.equal(dispatchParamount({ type: 'terminal.artifacts', agentId: 'jim' }, none).code, 'UNSUPPORTED');
 });
+
+test('a working directory outside git is an empty map, not an error (Munder parity)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pm-not-git-'));
+  const steps = [];
+  const map = buildArtifactMap('god', dir, { messages: () => [], logStep: (s) => steps.push(s), git: () => ({ ok: false, stdout: '', error: 'fatal: not a git repository (or any of the parent directories): .git' }) }, 'cid-not-git');
+  assert.equal(map.notRepo, true);
+  assert.equal(map.repo, null);
+  assert.deepEqual(map.warnings, []);
+  assert.equal(steps.length, 0, 'no errorId is logged for a normal state');
+});

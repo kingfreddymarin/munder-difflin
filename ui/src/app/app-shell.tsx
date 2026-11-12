@@ -8,6 +8,7 @@ import { useRouter } from './router';
 import { NotificationsMenu } from './notifications-menu';
 import { AccountMenu } from './account-menu';
 import { YoloBanner } from './yolo-banner';
+import { HookSocketBanner } from './hook-socket-banner';
 import { SetupGate } from './setup-gate';
 import { cn } from '@/lib/utils';
 import { AgentAvatar } from '@/components/app/agent-avatar';
@@ -140,6 +141,7 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
       </Sidebar>
       <SidebarInset className="h-svh min-w-0 overflow-hidden">
         <TopBar title={title} />
+        <HookSocketBanner />
         <YoloBanner />
         <SetupGate />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain p-4">{children}</main>

@@ -45,6 +45,8 @@ function localId() {
 /** Turns anything thrown or rejected into a BackendError. `paramountSnapshot` rejects with "[<errorId>] <code>: <message>". */
 export function toBackendError(cause: unknown, operation?: string): BackendError {
   if (cause instanceof BackendError) return cause;
+  // A core failure (or a warning shaped like one) keeps the core's errorId, code and message.
+  if (isFailure(cause) && (CODES as readonly string[]).includes(cause.code)) return BackendError.fromFailure(cause, operation);
   const raw = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : 'Unknown failure';
   // Electron prefixes IPC rejections with "Error invoking remote method '…': Error: ".
   const match = /\[([^\]\s]+)\]\s+([A-Z_]+):\s*([\s\S]*)$/.exec(raw);

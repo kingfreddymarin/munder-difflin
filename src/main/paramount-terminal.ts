@@ -111,11 +111,13 @@ export function buildArtifactMap(agentId: string, cwd: string, deps: ParamountTe
   };
 
   let repo: ParamountArtifactMap['repo'] = null;
+  let notRepo = false;
   if (!cwd) warn('cwd', 'This agent has no working directory in the registry');
   else if (stat(cwd) !== 'dir') warn('cwd', `Working directory does not exist: ${cwd}`);
   else {
     const top = git(cwd, ['rev-parse', '--show-toplevel']);
-    if (!top.ok) warn('git', `Not a git working tree (${top.error ?? 'git failed'})`);
+    // Munder's panel treats a folder outside git as empty, not broken: no warning, no errorId.
+    if (!top.ok) notRepo = true;
     else {
       const root = top.stdout.trim();
       const branch = git(cwd, ['branch', '--show-current']);
@@ -149,7 +151,7 @@ export function buildArtifactMap(agentId: string, cwd: string, deps: ParamountTe
     for (const path of found.paths) if (isAbsolute(path)) add({ kind: 'mentioned', label: path, path, dir: dirFor(path), at, messageId: str(m.id) || undefined });
     for (const url of found.urls) add({ kind: 'link', label: url, url, at, messageId: str(m.id) || undefined });
   }
-  return { agentId, cwd, repo, artifacts, warnings };
+  return { agentId, cwd, repo, ...(notRepo ? { notRepo: true } : {}), artifacts, warnings };
 }
 
 /** `terminal.artifacts` handler; `cwdOf` resolves the agent's registry cwd. */

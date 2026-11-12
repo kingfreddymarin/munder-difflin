@@ -138,12 +138,14 @@ export async function traced<T>(
   const span = createSpan(op, sink, context);
   const started = now();
   safeLog(sink, { kind: 'paramount-op', phase: 'start', cid: span.cid, op, context: redact(context) });
-  const end = (outcome: 'ok' | 'fail', extra: Record<string, unknown> = {}): void =>
+  // 'error': the command answered, but part of it failed in the core (warnings with errorIds).
+  const end = (outcome: 'ok' | 'fail' | 'error', extra: Record<string, unknown> = {}): void =>
     safeLog(sink, { kind: 'paramount-op', phase: 'end', cid: span.cid, op, outcome, durationMs: now() - started, ...extra });
   try {
     const result = await fn(span);
     const failed = isFailure(result);
-    end(failed ? 'fail' : 'ok', failed ? { errorId: result.errorId, code: result.code } : {});
+    const partial = failed ? [] : warningIds(result);
+    end(failed ? 'fail' : partial.length ? 'error' : 'ok', failed ? { errorId: result.errorId, code: result.code } : partial.length ? { errorIds: partial } : {});
     return result;
   } catch (error) {
     const failure = span.fail('INTERNAL', error instanceof Error ? error.message : 'Operation failed', error);
@@ -151,6 +153,17 @@ export async function traced<T>(
     if (opts.rethrow) throw new Error(`[${failure.errorId}] ${failure.code}: ${failure.message}`);
     return failure;
   }
+}
+
+/** errorIds of `warnings` carried by a successful result's payload (one level down). */
+function warningIds(result: unknown): string[] {
+  if (!result || typeof result !== 'object') return [];
+  const ids: string[] = [];
+  for (const value of Object.values(result as Record<string, unknown>)) {
+    const warnings = value && typeof value === 'object' ? (value as { warnings?: unknown }).warnings : undefined;
+    if (Array.isArray(warnings)) for (const w of warnings) if (w && typeof (w as { errorId?: unknown }).errorId === 'string') ids.push((w as { errorId: string }).errorId);
+  }
+  return ids;
 }
 
 function isFailure(value: unknown): value is ParamountFailure {

@@ -83,6 +83,7 @@ import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, au
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { claimFloor, registerParamountRuntime } from './paramount-runtime';
+import { createFloorGate } from './floor-lock';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
@@ -261,8 +262,14 @@ const ptyToAgent = new Map<string, string>();
  *  install disabled) so the freshly-installed CLI launches in the SAME pty/window —
  *  no user click. Cleared the moment it's consumed, so it can never loop installs. */
 const pendingInstallRelaunch = new Map<string, { opts: AgentSpawnOptions; owner: Electron.WebContents | null; bin: string; rung: string }>();
+// Munder's floor lock (<hive>/.floor-lock): the hive gets its home only while this process
+// holds the floor, so nothing touches a floor Munder (or another Council) has open.
+/** Test launches set COUNCIL_TEST_LABEL (e.g. "Council TEST - isolated"): it becomes the window title and a
+ *  banner on every screen, so a test window is never mistaken for the owner's own app. */
+const TEST_LABEL = (process.env.COUNCIL_TEST_LABEL ?? '').trim().slice(0, 80) || null;
+const floorGate = createFloorGate({ pid: process.pid, userData: app.getPath('userData'), version: `Paramount ${app.getVersion()}` });
 const hive = new HiveManager(
-  () => readConfig().harnessHome,
+  () => floorGate.homeFor(readConfig().harnessHome),
   (channel, payload) => {
     const wc = liveWebContents();
     if (!wc) return false;
@@ -2308,7 +2315,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
     ...(geom && geom.x !== undefined && geom.y !== undefined ? { x: geom.x, y: geom.y } : {}),
     minWidth: MIN_WIN.width,
     minHeight: MIN_WIN.height,
-    title: isFloor ? 'Paramount — Floor' : 'Paramount',
+    title: TEST_LABEL ?? (isFloor ? 'Paramount — Floor' : 'Paramount'),
     backgroundColor: '#FFF8E7',
     titleBarStyle: 'hiddenInset',
     show: false,
@@ -2334,6 +2341,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   // Capture the webContents once: after 'closed' the window is gone, but this
   // reference stays valid as the per-PTY ownership key.
   const wc = win.webContents;
+  if (TEST_LABEL) win.on('page-title-updated', (e) => e.preventDefault()); // keep the test label
 
   allWindows.add(win);
   // Global timer events follow the user — the most-recently-focused window is
@@ -3241,6 +3249,7 @@ function applyConfigUpdate(patch: Partial<HarnessConfig>): HarnessConfig {
   // relaunch, so bootstrap here on the null → set transition. Gated on the
   // transition so ordinary config writes never re-enter it.
   const hiveWasEnabled = hive.enabled();
+  const homeBefore = readConfig().harnessHome;
   const wasOnboarded = readConfig().onboardingComplete;
   // A plain YOLO toggle ends any timed window; re-arm so a stale timer never fires.
   const next = writeConfig(normalizeAutoModePatch(patch));
@@ -3257,7 +3266,8 @@ function applyConfigUpdate(patch: Partial<HarnessConfig>): HarnessConfig {
   // config per tick so it gates immediately; this is for the PROMPT, which is
   // built per spawn, so flipping the toggle reaches god the next time he starts.
   if (typeof patch?.orchestratorMaySpawn === 'boolean') hive.setOrchestratorMaySpawn(patch.orchestratorMaySpawn);
-  if (!hiveWasEnabled && hive.enabled()) {
+  // The hive is enabled only once the floor lock is held, so a new floor is detected from config.
+  if (!hiveWasEnabled && next.harnessHome && (next.harnessHome !== homeBefore || floorGate.state().state !== 'refused')) {
     console.log('[hive] harnessHome configured — bootstrapping hive services');
     try { bootstrapHiveServices(); } catch (e) { console.error('[hive] bootstrap after onboarding:', e); }
   }
@@ -3604,6 +3614,8 @@ function paramountSetIntegrationConnected(connectionId: string, connected: boole
 const paramountLog: LogSink = (event) => hive.appendLog(event);
 ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => ({
   floorSetup: floorSetupState(paramountFloorSetupDeps(evt.sender)),
+  hookSocket: hookServer.health(),
+  ...(TEST_LABEL ? { testLabel: TEST_LABEL } : {}),
   registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
   log: hive.logTail(500), roster: roster.read(),
   config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode, autoModeExpiresAt: readConfig().autoModeExpiresAt, accessMatrix: readConfig().accessMatrix ?? {},
@@ -3656,6 +3668,13 @@ function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
   const team = paramountTeamDeps(sender);
   return {
     launcherDiscovery: () => launcherDiscovery.current(),
+    floor: {
+      state: () => floorGate.state(),
+      claim: (home) => floorGate.claim(home),
+      retry: () => { bootstrapHiveServices(); broadcastParamountInvalidation('floor-lock'); return floorGate.state(); },
+      // Back to setup: the refused floor is left exactly as it is.
+      chooseAnother: () => { writeConfig({ onboardingComplete: false }); broadcastParamountInvalidation('floor-lock'); },
+    },
     config: () => readConfig(),
     suggestedHome: () => paramountHome(),
     engines: () => {
@@ -5449,6 +5468,14 @@ ipcMain.handle('workers:stop', (_evt, workerId: string): { ok: boolean; error?: 
  *  Called on boot, and again to recover in place if a folder-change copy fails
  *  (config:changeHome tears these down before copying). No-op without a home. */
 function bootstrapHiveServices(): void {
+  // The floor lock comes first: no migration, archive, socket bind or commit before it is held.
+  const floor = floorGate.claim(readConfig().harnessHome);
+  if (floor.state === 'refused') {
+    console.error(`[floor] ${floor.refusal.owner} (pid ${floor.refusal.pid}) holds ${floor.refusal.floor}; not opening it`);
+    broadcastParamountInvalidation('floor-lock');
+    return;
+  }
+  if (floor.state === 'error') { console.error('[floor] lock not written:', floor.detail); broadcastParamountInvalidation('floor-lock'); return; }
   if (!hive.enabled()) return;
   hive.ensureHive();
   hive.refreshGeneratedDocs();
@@ -5852,6 +5879,8 @@ app.on('window-all-closed', () => {
 // run and the flush has finished or timed out, so an unconditional exit is
 // exactly what's left to do.
 let analyticsFlushed = false;
+// Give the floor back so Munder (or another Council) can open it.
+app.on('will-quit', () => { floorGate.release(); });
 app.on('will-quit', (e) => {
   if (analyticsFlushed) return;
   analyticsFlushed = true;

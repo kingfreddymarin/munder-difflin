@@ -11,6 +11,7 @@ import { mainNav, footerNav } from '@/config/navigation';
 import { record } from '@/lib/perf';
 import { useOrchestratorStartup } from '@/app/use-orchestrator-startup';
 import { SetupFlow } from '@/app/setup-flow';
+import { FloorRefused } from '@/app/floor-refused';
 
 // The real core when the Electron preload is present (window.paramount, or the fork's window.cth); fixtures otherwise.
 const provider = findBridge() ? createElectronProvider() : createMockProvider();
@@ -52,11 +53,23 @@ function Routes() {
   );
 }
 
+/** A test launch (COUNCIL_TEST_LABEL) is labelled on every screen, so it is never taken for the real app. */
+function TestLabel() {
+  const label = useFloor((s) => s.testLabel);
+  if (!label) return null;
+  return <div data-testid="test-label" className="sticky top-0 z-50 bg-amber-400 px-4 py-1 text-center text-xs font-bold tracking-wide text-black">{label}</div>;
+}
+
 /** Munder parity: until the core reports a set-up floor, only first-run setup is shown. */
 function SetupGateOrApp() {
+  return <><TestLabel /><SetupGateOrAppBody /></>;
+}
+function SetupGateOrAppBody() {
   const setup = useFloor((s) => s.floorSetup);
   useOrchestratorStartup(setup);
   if (setup && !setup.complete) return <SetupFlow setup={setup} />;
+  // Another app holds this floor (Munder's .floor-lock): nothing of it is shown or touched.
+  if (setup?.floorLock?.state === 'refused' || setup?.floorLock?.state === 'error') return <FloorRefused lock={setup.floorLock} />;
   return (
     <RouterProvider>
       <Routes />

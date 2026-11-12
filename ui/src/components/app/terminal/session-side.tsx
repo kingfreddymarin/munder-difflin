@@ -11,7 +11,7 @@ import { AgentAvatar } from '@/components/app/agent-avatar';
 import { ErrorNotice } from '@/components/app/error-notice';
 import { clock, stamp } from '@/components/app/format';
 import type { ParamountArtifact, ParamountArtifactMap } from '@/data/paramount-api';
-import { toBackendError } from '@/data/errors';
+import { BackendError, toBackendError } from '@/data/errors';
 import { useDispatch, useFloor, useTerminalTools } from '@/data/store';
 import type { Agent, Message } from '@/data/types';
 import { cn } from '@/lib/utils';
@@ -157,8 +157,9 @@ function ArtifactList({ agent }: { agent: Agent }) {
       {!!openError && <ErrorNotice error={openError} />}
       {load.status === 'error' && <ErrorNotice error={load.error} />}
       {load.status === 'ready' && <>
-        {load.map.warnings.map((w) => <ErrorNotice key={w.errorId} error={{ errorId: w.errorId, code: 'UNCERTAIN_STATE', message: `${w.source}: ${w.message}`, ok: false }} />)}
-        {!load.map.artifacts.length && <p role="status" className="text-muted-foreground p-2 text-sm">Nothing touched yet.</p>}
+        {load.map.warnings.map((w) => <ErrorNotice key={w.errorId} error={new BackendError({ errorId: w.errorId, code: 'UNCERTAIN_STATE', message: `${w.source}: ${w.message}`, operation: 'terminal.artifacts' })} />)}
+        {load.map.notRepo && <p role="status" className="text-muted-foreground p-2 text-sm">This folder is not a git repository, so there are no changed files to show.</p>}
+        {!load.map.artifacts.length && !load.map.notRepo && <p role="status" className="text-muted-foreground p-2 text-sm">Nothing touched yet.</p>}
         {groupArtifacts(load.map.artifacts).map((g) => (
           <section key={g.id} className="flex flex-col gap-1">
             <h3 className="text-muted-foreground px-1 text-[11px] font-medium uppercase tracking-wide">{g.label} · {g.items.length}</h3>

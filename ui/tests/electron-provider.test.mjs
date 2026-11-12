@@ -398,3 +398,15 @@ test('setup and automatic startup commands refresh the live snapshot and preserv
     return true;
   });
 });
+
+test('a floor another app holds and a failed hook socket reach the UI as explicit states', async () => {
+  const native = nativeSnapshot();
+  native.floorSetup = { complete: true, harnessHome: '/floor', suggestedHome: '/floor', engines: [],
+    floorLock: { state: 'refused', refusal: { floor: '/floor', owner: 'Munder Difflin 0.5.7', pid: 71506, since: '2026-11-12T14:14:41.949Z', userData: '/u/munder-difflin/floors/a' } } };
+  native.hookSocket = { listening: false, lastError: 'EADDRINUSE', attempts: 4, path: '/floor/hive/hooks.sock' };
+  globalThis.window = { cth: bridge(native) };
+  const snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.floorSetup.floorLock.state, 'refused');
+  assert.equal(snapshot.floorSetup.floorLock.refusal.owner, 'Munder Difflin 0.5.7');
+  assert.deepEqual(snapshot.hookSocket, { listening: false, lastError: 'EADDRINUSE', attempts: 4 });
+});

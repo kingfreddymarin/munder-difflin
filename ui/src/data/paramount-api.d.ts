@@ -338,6 +338,8 @@ export interface ParamountArtifactMap {
   /** The agent's registry cwd; empty when it has none. */
   cwd: string;
   repo: { root: string; branch: string; head: string } | null;
+  /** The cwd exists but is not in a git repository: a normal state (no changed files), not an error. */
+  notRepo?: boolean;
   artifacts: ParamountArtifact[];
   /** Sources that could not be read; each errorId is on a `paramount-terminal` line in log.jsonl. */
   warnings: Array<{ errorId: string; source: string; message: string }>;

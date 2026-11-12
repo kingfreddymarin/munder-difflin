@@ -388,3 +388,15 @@ test('main process routes Paramount IPC and process failures through observabili
   assert.match(src, /\}, span\);\n\}\)\);/, 'dispatch receives the traced span');
   assert.match(src, /diagnostics: \(\{ logLines, cid \}\) => buildDiagnostics\(/);
 });
+
+test('an op whose answer carries core errors ends with outcome error and their errorIds, not ok', async () => {
+  const lines = [];
+  const result = await obs.traced('paramount.dispatch', (l) => lines.push(l), {}, () => ({ ok: true, artifacts: { warnings: [{ errorId: 'E-git-1', source: 'git-status', message: 'boom' }] } }));
+  assert.equal(result.ok, true);
+  const end = lines.find((l) => l.phase === 'end');
+  assert.equal(end.outcome, 'error');
+  assert.deepEqual(end.errorIds, ['E-git-1']);
+  const clean = [];
+  await obs.traced('paramount.dispatch', (l) => clean.push(l), {}, () => ({ ok: true, artifacts: { warnings: [] } }));
+  assert.equal(clean.find((l) => l.phase === 'end').outcome, 'ok');
+});
