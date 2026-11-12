@@ -15,6 +15,7 @@ import { ImportAgentsSheet } from '@/features/team/import-agents-sheet';
 import { HireSheet } from '@/features/team/hire-sheet';
 import { NewCardDialog } from '@/features/team/new-card-dialog';
 import { useAgentImport, useDispatch, useFloor, useTeamApi } from '@/data/store';
+import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { Screen } from '@/components/app/screen';
@@ -77,7 +78,7 @@ export function TeamPage() {
     [next[i], next[j]] = [next[j], next[i]];
     apply(next);
   };
-  const openAgent = (id: string) => go('team', { agent: id });
+  const openAgent = (id: string) => go(AGENT_VIEW, agentViewParams(id));
 
   const body = (id: PanelId) => {
     switch (id) {

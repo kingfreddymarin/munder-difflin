@@ -11,6 +11,7 @@ import { stateDot } from '@/components/app/status';
 import { useDispatch, useFloor, useLiveRefresh } from '@/data/store';
 import { AskPreview, isOpenAsk } from '@/features/home/ask-preview';
 import { CustomizeHome, resolveTiles, type HomeTileId } from '@/features/home/customize-home';
+import { AGENT_VIEW, agentViewParams, orchestratorOf } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { ActivityKind, HomeDensity, HomeLayout, TileSize } from '@/data/types';
@@ -56,7 +57,8 @@ export function HomePage() {
 
   const agent = (id: string) => agents.find((a) => a.id === id);
   const who = (id: string) => agent(id)?.name ?? id;
-  const openAgent = (id: string) => go('team', { agent: id, tab: 'profile' });
+  const openAgent = (id: string) => go(AGENT_VIEW, agentViewParams(id));
+  const lead = orchestratorOf(agents);
   const asks = React.useMemo(() => messages.filter(isOpenAsk).sort((a, b) => b.at.localeCompare(a.at)), [messages]);
   const askers = [...new Set(asks.map((m) => who(m.from)))];
   const closed = React.useMemo(() => cards.filter((c) => c.status === 'done').sort((a, b) => b.updated.localeCompare(a.updated)), [cards]);
@@ -68,7 +70,6 @@ export function HomePage() {
   const hour = new Date(now).getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   // The Paramount's chat: the chat led by the agent with the paramount role, else the first pinned one.
-  const paramountChat = chats.find((c) => agent(c.agentIds[0])?.role === 'paramount') ?? chats.find((c) => c.pinned);
   const tiles = resolveTiles(layout).filter((t) => !t.hidden);
   const space = density[layout?.density ?? 'comfortable'];
   const saveLayout = (next: HomeLayout) => void dispatch({ type: 'home.layout', layout: next });
@@ -128,7 +129,7 @@ export function HomePage() {
               {feed.slice(0, 30).map((e) => {
                 const a = agent(e.agentId);
                 return (
-                  <button key={e.id} type="button" onClick={() => go('team', { agent: e.agentId })} className="hover:bg-accent flex items-center gap-2 rounded-md px-1 py-1 text-left">
+                  <button key={e.id} type="button" onClick={() => openAgent(e.agentId)} className="hover:bg-accent flex items-center gap-2 rounded-md px-1 py-1 text-left">
                     {a && <AgentAvatar agent={a} size="sm" tooltip={false} />}
                     <span className="min-w-0 flex-1 truncate text-xs"><span className={kindTone[e.kind]}>{a?.name ?? e.agentId}</span> · {e.text}</span>
                     <span className="text-muted-foreground font-mono text-[11px]">{clock(e.at)}</span>
@@ -199,7 +200,7 @@ export function HomePage() {
           </Button>
           <Button variant="outline" className="h-12" onClick={() => go('team', { import: '1' })} title="Import agents from Claude, Codex or Munder Difflin">Import agents</Button>
           <CustomizeHome layout={layout} onChange={saveLayout} />
-          {paramountChat && <Button className="h-12" onClick={() => go('chats', { c: paramountChat.id })}>Brief {paramountChat.title}</Button>}
+          {lead && <Button className="h-12" onClick={() => openAgent(lead.id)}>Brief {lead.name}</Button>}
         </div>
       </div>
 

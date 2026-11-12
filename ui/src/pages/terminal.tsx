@@ -1,4 +1,5 @@
-// Live view of each agent's real terminal. The core streams the PTY; here you read it, act on what it asks, or type into it.
+// Talking to an agent: its live PTY terminal, as in Munder. Keystrokes go straight into xterm;
+// switching agents re-parents each pooled terminal, so scrollback survives. The orchestrator is first.
 import * as React from 'react';
 import { Code, CodeBlock, CodeHeader } from '@/components/animate-ui/components/animate/code';
 import { Button } from '@/components/animate-ui/components/buttons/button';
@@ -11,6 +12,7 @@ import { statusMeta } from '@/components/app/status';
 import { useDispatch, useFloor } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
+import { agentViewParams, AGENT_VIEW, selectedAgentId, terminalRoster } from '@/app/agent-view';
 import { Screen } from '@/components/app/screen';
 import { PtyTerminalView } from '@/components/app/terminal/pty-terminal-view';
 import { SessionSide } from '@/components/app/terminal/session-side';
@@ -21,7 +23,8 @@ export function TerminalPage() {
   const dispatch = useDispatch();
   const { route, go } = useRouter();
   const [draft, setDraft] = React.useState('');
-  const current = route.params.get('a') ?? terminals[0]?.agentId;
+  const current = selectedAgentId(route.params.get('a'), agents, terminals);
+  const roster = React.useMemo(() => terminalRoster(agents, terminals).filter((r) => r.live), [agents, terminals]);
   const session = terminals.find((t) => t.agentId === current);
   const agent = agents.find((a) => a.id === current);
   const text = session ? session.lines.slice(-40).map((l) => (l.stream === 'err' ? `# ${l.text}` : l.text)).join('\n') : '';
@@ -36,11 +39,10 @@ export function TerminalPage() {
     <Screen fill className="grid h-full min-h-0 grid-cols-1 gap-3 overflow-y-auto lg:grid-cols-[240px_1fr] lg:overflow-hidden xl:grid-cols-[240px_1fr_340px]">
       <nav aria-label="Sessions" className="bg-card flex max-h-64 min-h-0 flex-col gap-1 overflow-y-auto rounded-xl border p-2 lg:max-h-none">
         <span className="text-muted-foreground px-2 py-1 text-xs">Live sessions</span>
-        {terminals.map((t) => {
-          const a = agents.find((x) => x.id === t.agentId);
-          if (!a) return null;
+        {roster.map(({ agent: a }) => {
+          const t = terminals.find((x) => x.agentId === a.id)!;
           return (
-            <button key={t.agentId} type="button" onClick={() => go('terminal', { a: a.id })} className={cn('hover:bg-accent flex items-center gap-2.5 rounded-lg p-2 text-left', a.id === current && 'bg-accent')}>
+            <button key={a.id} type="button" onClick={() => go(AGENT_VIEW, agentViewParams(a.id))} className={cn('hover:bg-accent flex items-center gap-2.5 rounded-lg p-2 text-left', a.id === current && 'bg-accent')}>
               <AgentAvatar agent={a} size="sm" tooltip={false} />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-sm">{a.name}</span>
@@ -50,9 +52,20 @@ export function TerminalPage() {
           );
         })}
       </nav>
-      {!session && <section className="flex items-center justify-center rounded-xl border p-6 text-sm text-muted-foreground" role="status">No live terminal is available. Start an agent to see its session here.</section>}
+      {!session && <section className="flex flex-col items-center justify-center gap-3 rounded-xl border p-6 text-sm text-muted-foreground" role="status">
+        {agent ? <>
+          <span>{agent.name} has no live terminal. Start it from its profile or from Team.</span>
+          <Button size="sm" variant="outline" onClick={() => go('team', { agent: agent.id, tab: 'profile' })}>Open {agent.name}'s profile</Button>
+        </> : <span>No live terminal is available. Start an agent to see its session here.</span>}
+      </section>}
       {session && agent && (
         <section className="flex min-h-[420px] flex-col gap-3 lg:min-h-0">
+          <div className="flex items-center gap-2">
+            <AgentAvatar agent={agent} size="sm" tooltip={false} />
+            <span className="truncate font-medium">{agent.name}</span>
+            <span className={cn('truncate text-xs', statusMeta[agent.status].text)}>{statusMeta[agent.status].label}</span>
+            <Button size="sm" variant="ghost" className="ml-auto" onClick={() => go('team', { agent: agent.id, tab: 'profile' })}>Profile</Button>
+          </div>
           {session.ptyId ? <div className="min-h-[320px] flex-1 overflow-hidden rounded-xl border"><PtyTerminalView ptyId={session.ptyId} cwd={session.cwd} label={`${agent.name} live terminal`} /></div> : <Code code={text} className="min-h-0 flex-1 overflow-hidden rounded-xl border">
             <CodeHeader icon={Terminal} copyButton>
               {agent.name} · {session.cwd}

@@ -7,18 +7,20 @@
  * Each pty gets ONE Terminal for the app's lifetime, subscribed to the stream once; a
  * view re-parents its host element in and out.
  *
- * Left out on purpose: queue automation, Arabic rendering and analytics (Munder-only),
- * and the WebGL / Unicode 11 addons, which are not installed in this app yet (see
- * TERMINAL-why.md). xterm falls back to its DOM renderer and Unicode 6 widths.
+ * Same renderer as Munder: xterm 5.5 with fit, Unicode 11 widths and a WebGL renderer
+ * leased on attach (DOM renderer as the fallback). Left out on purpose: queue automation,
+ * Arabic rendering and analytics (Munder-only). See TERMINAL-why.md.
  */
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import './terminal-font.css';
 import { findBridge } from '@/data/bridge';
 import { BackendError, checkOk, toBackendError } from '@/data/errors';
 import { classifyPathToken, isPathToken, stripPathToken, terminalLinkSpans } from './terminalPaths';
-import { createTerminalRecoveryState, normalizePtyChunk, requestInitialPtyRedraw, type TerminalRecoveryState } from './terminalRecovery';
+import { createTerminalRecoveryState, normalizePtyChunk, requestInitialPtyRedraw, scheduleWebglRecovery, type TerminalRecoveryState } from './terminalRecovery';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { terminalKeySequence } from './terminalKeys';
 import { isDarkBackground, oscColorBody, parseHexColor } from './termColor';
@@ -33,6 +35,10 @@ export interface TerminalEntry {
   host: HTMLDivElement;
   /** xterm is only `open()`ed once its host is first attached to the document. */
   opened: boolean;
+  /** The WebGL renderer, leased while the terminal is on screen (see leaseWebglRenderer). */
+  webgl?: WebglAddon;
+  /** The DOM renderer took over (lease released or context lost) and has not repainted yet. */
+  needsRendererRepaint: boolean;
   exited: boolean;
   unsub: Array<() => void>;
   recovery: TerminalRecoveryState;
@@ -107,8 +113,12 @@ export function acquireTerminal(ptyId: string, theme: ThemeMap, fontSize: number
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  // Unicode 11 widths: with xterm's default (Unicode 6) an emoji is one cell, but Claude Code
+  // lays text out with modern widths, so the glyph overflows into the next character.
+  term.loadAddon(new Unicode11Addon());
+  term.unicode.activeVersion = '11';
 
-  const entry: TerminalEntry = { ptyId, term, fit, host, opened: false, exited: false, unsub: [], recovery: createTerminalRecoveryState(), themeNotify: false };
+  const entry: TerminalEntry = { ptyId, term, fit, host, opened: false, needsRendererRepaint: false, exited: false, unsub: [], recovery: createTerminalRecoveryState(), themeNotify: false };
   registerLinkProvider(entry);
 
   if (bridge) {
@@ -218,13 +228,81 @@ export function acquireTerminal(ptyId: string, theme: ThemeMap, fontSize: number
   return entry;
 }
 
+/** Take a WebGL renderer while the terminal is on screen. It is a lease, released on detach:
+ *  Chromium keeps about 16 live WebGL contexts and silently drops the oldest past that, which
+ *  left a background terminal black while its pty kept streaming (Munder terminalPool.ts).
+ *  On init failure or context loss, the DOM renderer takes over instead of a black terminal. */
+function leaseWebglRenderer(entry: TerminalEntry): void {
+  if (entry.webgl) return;
+  try {
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => {
+      if (entry.webgl !== webgl) return;
+      console.warn('[terminal] webgl context lost; using the DOM renderer');
+      entry.webgl = undefined;
+      entry.needsRendererRepaint = true;
+      try { webgl.dispose(); } catch { /* noop */ }
+      // Sleep and wake lose the GPU context and leave xterm's cell metrics stale.
+      scheduleWebglRecovery(entry.recovery, requestAnimationFrame, () => repaintAfterRendererLoss(entry));
+    });
+    // Set before loadAddon: a context lost during init must be seen as the active renderer.
+    entry.webgl = webgl;
+    entry.term.loadAddon(webgl);
+  } catch (e) {
+    try { entry.webgl?.dispose(); } catch { /* noop */ }
+    entry.webgl = undefined;
+    console.warn('[terminal] webgl renderer unavailable; using the DOM renderer', e);
+  }
+}
+
+/** The live webgl2 context in this terminal's own element (dispose() alone leaks it, xterm.js#6068). */
+function webglContextOf(term: Terminal): WebGL2RenderingContext | null {
+  const el = term.element;
+  if (!el) return null;
+  for (const canvas of Array.from(el.querySelectorAll('canvas'))) {
+    let gl: WebGL2RenderingContext | null = null;
+    try { gl = canvas.getContext('webgl2'); } catch { gl = null; }
+    if (gl && !gl.isContextLost()) return gl;
+  }
+  return null;
+}
+
+/** Give the GPU context back when the terminal leaves the screen; buffer and pty stay. */
+function releaseWebglRenderer(entry: TerminalEntry): void {
+  const webgl = entry.webgl;
+  if (!webgl) return;
+  entry.webgl = undefined;
+  const gl = webglContextOf(entry.term);
+  try { webgl.dispose(); } catch { /* noop */ }
+  try { gl?.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* noop */ }
+  entry.needsRendererRepaint = true;
+}
+
+/** Repaint once the host is on screen and sized; until then the marker stays set. */
+function repaintAfterRendererLoss(entry: TerminalEntry): void {
+  if (!entry.opened || !entry.host.isConnected || !entry.host.clientWidth || !entry.host.clientHeight) {
+    entry.needsRendererRepaint = true;
+    return;
+  }
+  reflowTerminal(entry);
+  try {
+    entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
+    entry.needsRendererRepaint = false;
+  } catch {
+    entry.needsRendererRepaint = true;
+  }
+}
+
 /** Re-parent a pty's terminal into `container`, opening xterm on first attach. */
 export function attachTerminal(entry: TerminalEntry, container: HTMLElement): void {
   container.appendChild(entry.host);
   if (!entry.opened) {
+    // open() first: the WebGL addon loads only onto an opened terminal.
     entry.term.open(entry.host);
     entry.opened = true;
   }
+  leaseWebglRenderer(entry);
+  if (entry.needsRendererRepaint) scheduleWebglRecovery(entry.recovery, requestAnimationFrame, () => repaintAfterRendererLoss(entry));
   // Output from before we subscribed is gone: ask the TUI for one fresh frame at its current size.
   // This is the step whose absence left Paramount's pane blank or half-drawn on attach.
   requestInitialPtyRedraw(entry.recovery, () => {
@@ -244,6 +322,7 @@ export function attachTerminal(entry: TerminalEntry, container: HTMLElement): vo
 export function detachTerminal(entry: TerminalEntry, container: HTMLElement): void {
   // Another view may already own the host (React can mount the new owner first).
   if (entry.host.parentElement !== container) return;
+  releaseWebglRenderer(entry);
   container.removeChild(entry.host);
 }
 
@@ -280,6 +359,7 @@ export function disposeTerminal(ptyId: string): void {
   const entry = pool.get(ptyId);
   if (!entry) return;
   entry.unsub.forEach((u) => { try { u(); } catch { /* noop */ } });
+  releaseWebglRenderer(entry);
   try { entry.term.dispose(); } catch { /* noop */ }
   entry.host.remove();
   pool.delete(ptyId);

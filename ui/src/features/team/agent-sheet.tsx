@@ -21,6 +21,7 @@ import { useDispatch, useFloor, useTeamApi, useUnsupported } from '@/data/store'
 import { toBackendError, type BackendError } from '@/data/errors';
 import type { ParamountTeamModels } from '@/data/paramount-api';
 import type { Agent } from '@/data/types';
+import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 
@@ -94,8 +95,7 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
                   <AgentSummary agent={agent} />
                   <LauncherSettings agentId={agent.id} provider={engineId} scope={agent.id === models?.orchestratorId || agent.id === 'god' ? 'orchestrator' : 'agent'} />
                   <div className="mt-3 flex gap-2">
-                    <Button className="flex-1" onClick={() => { const c = `c-${agent.id}`; go('chats', { c }); }}>Message (priority)</Button>
-                    <Button variant="outline" className="flex-1" onClick={() => go('terminal', { a: agent.id })}>Terminal</Button>
+                    <Button className="flex-1" onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}>Open terminal</Button>
                   </div>
                 </TabsContent>
                 <TabsContent value="tasks" className="flex flex-col gap-2">

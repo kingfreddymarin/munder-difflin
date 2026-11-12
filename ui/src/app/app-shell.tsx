@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarTrigger, useSidebar } from '@/components/animate-ui/components/radix/sidebar';
+import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarTrigger, useSidebar } from '@/components/animate-ui/components/radix/sidebar';
 import { ThemeTogglerButton } from '@/components/animate-ui/components/buttons/theme-toggler';
 import { Separator } from '@/components/ui/separator';
 import { footerNav, mainNav, type RouteId } from '@/config/navigation';
@@ -10,6 +10,36 @@ import { AccountMenu } from './account-menu';
 import { YoloBanner } from './yolo-banner';
 import { SetupGate } from './setup-gate';
 import { cn } from '@/lib/utils';
+import { AgentAvatar } from '@/components/app/agent-avatar';
+import { AGENT_VIEW, agentViewParams, terminalRoster } from './agent-view';
+
+/** Every agent, the orchestrator first; a click opens its live terminal (Munder's agent list). */
+function SidebarAgents() {
+  const { route, go } = useRouter();
+  const agents = useFloor((s) => s.agents);
+  const terminals = useFloor((s) => s.terminals);
+  const roster = React.useMemo(() => terminalRoster(agents, terminals), [agents, terminals]);
+  if (roster.length === 0) return null;
+  const current = route.id === AGENT_VIEW ? route.params.get('a') : null;
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Agents</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {roster.map(({ agent, live }) => (
+            <SidebarMenuItem key={agent.id}>
+              <SidebarMenuButton isActive={current === agent.id} tooltip={`${agent.name}${live ? '' : ' (not running)'}`} onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}>
+                <AgentAvatar agent={agent} size="sm" tooltip={false} />
+                <span className={cn('truncate', !live && 'text-muted-foreground')}>{agent.name}</span>
+                <span aria-label={live ? 'live terminal' : 'not running'} className={cn('ml-auto size-1.5 shrink-0 rounded-full', live ? 'bg-emerald-500' : 'bg-muted-foreground/40')} />
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  );
+}
 
 function useBadges(): Partial<Record<RouteId, number>> {
   const messages = useFloor((s) => s.messages);
@@ -79,6 +109,7 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
+          <SidebarAgents />
         </SidebarContent>
         <SidebarFooter>
           <SidebarMenu>
