@@ -12,3 +12,16 @@ export function HookSocketBanner() {
     </div>
   );
 }
+
+// The orchestrator Council started exited while starting, for example a resume with no such
+// session. Its registry entry was kept as it was; say so instead of archiving it silently.
+export function OrchestratorFailureBanner() {
+  const failure = useFloor((s) => s.orchestratorFailure);
+  if (!failure) return null;
+  return (
+    <div role="alert" data-testid="orchestrator-start-error" className="border-destructive/40 bg-destructive/10 flex flex-wrap items-center gap-2 border-b px-4 py-2 text-sm">
+      <span className="text-destructive font-semibold">The orchestrator did not start</span>
+      <span className="text-muted-foreground flex-1">{failure.message}</span>
+    </div>
+  );
+}

@@ -291,6 +291,8 @@ export type FloorLockState =
   | { state: 'error'; floor: string; detail: string };
 /** The agent hook socket (hooks.sock). Not listening with an error means hooks run unchecked. */
 export interface HookSocketHealth { listening: boolean; lastError: string | null; attempts: number }
+/** The orchestrator Council started exited while starting (e.g. a failed resume); its entry was kept. */
+export interface OrchestratorFailure { agentId: string; provider: string; resumed: boolean; exitCode?: number; message: string; at: string }
 export interface FloorSetup { floorLock?: FloorLockState; launchers?: import('./paramount-api').CouncilLauncherDiscovery; complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
 
 export interface Snapshot {
@@ -298,6 +300,7 @@ export interface Snapshot {
   floorSetup?: FloorSetup;
   /** Missing on providers without a core. */
   hookSocket?: HookSocketHealth;
+  orchestratorFailure?: OrchestratorFailure;
   /** Set on test launches (COUNCIL_TEST_LABEL): shown as a banner on every screen. */
   testLabel?: string;
   /** False when the core has no token telemetry for the displayed agents. */

@@ -6,6 +6,9 @@ const require = createRequire(new URL('../../package.json', import.meta.url));
 const ts = require('typescript');
 const source = readFileSync(new URL('../src/app/setup-flow.tsx', import.meta.url), 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, esModuleInterop: true } }).outputText;
+// The real engine default (setup-defaults.ts), not a stub.
+const defaultsJs = ts.transpileModule(readFileSync(new URL('../src/app/setup-defaults.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+const setupDefaults = { exports: {} }; new Function('module', 'exports', 'require', defaultsJs)(setupDefaults, setupDefaults.exports, () => ({}));
 function harness(setup) {
   const values = []; let cursor = 0, refreshed = 0; const commands = [];
   const react = { createElement: (tag, props, ...children) => ({ tag, props: { ...props, children } }), useState: (initial) => {
@@ -14,7 +17,7 @@ function harness(setup) {
   } };
   const store = { useDispatch: () => async (command) => { commands.push(command); return true; }, useSnapshotRefresh: () => ({ refresh: () => refreshed++ }), useActionError: () => ({ error: null, clear() {} }), useFloor: (selector) => selector({ me: { yolo: { on: false } } }) };
   const mod = { exports: {} };
-  new Function('module', 'exports', 'require', js)(mod, mod.exports, (id) => id === 'react' ? react : id === '@/data/store' ? store : id.includes('launcher-select') ? { LauncherSelect: 'LauncherSelect' } : new Proxy({}, { get: (_target, key) => key }));
+  new Function('module', 'exports', 'require', js)(mod, mod.exports, (id) => id === 'react' ? react : id === '@/data/store' ? store : id.includes('launcher-select') ? { LauncherSelect: 'LauncherSelect' } : id === './setup-defaults' ? setupDefaults.exports : new Proxy({}, { get: (_target, key) => key }));
   const render = () => { cursor = 0; return mod.exports.SetupFlow({ setup }); };
   return { render, commands, refreshed: () => refreshed };
 }

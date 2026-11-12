@@ -27,6 +27,7 @@ import { parseModelCatalog } from '../shared/modelCatalogPayload';
 import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } from './autoModeExpiry';
 import { defaultMunderHive, type AgentSourceRoots } from './agentSources';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
+import { createOrchestratorStartWatch } from './orchestrator-start';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
@@ -349,6 +350,9 @@ function standingGoalFromRoster(agentId: string): string | null {
 const workerWake = new WorkerWakeWatchdog();
 // These hires use Paramount's UI, which does not mount Munder's useHive loop.
 const paramountOrchestrators = new Set<string>();
+/** Orchestrators Council just started: an abnormal exit inside the start window is a failed
+ *  start, reported and NOT archived (see orchestrator-start.ts). */
+const orchestratorStart = createOrchestratorStartWatch();
 // HookServer needs BOTH: Oscar's control registry (HITL pause/gate/steer/halt via
 // hook returns) AND Jim's breaker (feed recordToolUse on each PostToolUse).
 const hookServer = new HookServer(
@@ -492,7 +496,7 @@ const preservedWorktrees = new Map<string, PreservedWorktree>();
  * step is wrapped so a teardown error can never crash the caller (an IPC
  * handler or node-pty's onExit).
  */
-function teardownPty(id: string): void {
+function teardownPty(id: string, opts: { keepEntry?: boolean } = {}): void {
   // Ephemeral-worker flag, read BEFORE the cleanup below deletes the entry. All
   // worker deaths (done-release, idle/token reap, manual stop, crash) funnel
   // through here, so this is the one place their floor card gets archived
@@ -519,7 +523,8 @@ function teardownPty(id: string): void {
     // W1 — kill this agent's proxy-bridge sidecar (qwen), if any, so a dead
     // PTY never leaves an orphan loopback listener. No-op for non-proxy agents.
     try { hive.stopProxyBridge(agentId); } catch (e) { console.error('[hive] stopProxyBridge failed:', e); }
-    if (hive.enabled()) {
+    // A failed orchestrator start keeps its registry entry as it was (provider, role, session).
+    if (hive.enabled() && !opts.keepEntry) {
       try { hive.setArchived(agentId, true); } catch (e) { console.error('[hive] setArchived failed:', e); }
     }
   }
@@ -682,7 +687,14 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     // Non-zero exit = install failed; leave its honest manual-fix message on screen.
     analytics.track('agent_install_finished', { provider, rung: pending.rung, outcome: 'install_failed' });
   }
-  teardownPty(id);
+  const exitingAgent = ptyToAgent.get(id);
+  const failedStart = exitingAgent && paramountOrchestrators.has(exitingAgent)
+    ? orchestratorStart.exited(exitingAgent, exitCode, info?.signal) : null;
+  if (failedStart) {
+    try { paramountLog({ kind: 'paramount-error', errorId: newErrorId(), op: 'orchestrator.start', code: 'INTERNAL', agentId: failedStart.agentId, provider: failedStart.provider, resumed: failedStart.resumed, exitCode: failedStart.exitCode, signal: failedStart.signal, message: failedStart.message }); }
+    catch (e) { console.error('[paramount] orchestrator start failure log failed:', e); }
+  }
+  teardownPty(id, { keepEntry: !!failedStart });
 });
 
 /** Keep the system from suspending the harness while agents are running.
@@ -3615,6 +3627,7 @@ const paramountLog: LogSink = (event) => hive.appendLog(event);
 ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => ({
   floorSetup: floorSetupState(paramountFloorSetupDeps(evt.sender)),
   hookSocket: hookServer.health(),
+  ...(orchestratorStart.failure() ? { orchestratorFailure: orchestratorStart.failure() } : {}),
   ...(TEST_LABEL ? { testLabel: TEST_LABEL } : {}),
   registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
   log: hive.logTail(500), roster: roster.read(),
@@ -3721,6 +3734,7 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
     orchestratorProvider: () => readConfig().godProvider,
     orchestratorModel: () => paramountResolveModel(readConfig().godProvider ?? 'claude', [modelForRole({ isGod: true }, readConfig())]),
     orchestratorId: () => hive.registry().godId ?? undefined,
+    orchestratorStartFailure: () => orchestratorStart.failure(),
     hasLivePty: (id) => ptyManager.list().some((pty) => ptyToAgent.get(pty.id) === id),
     ticketKeyPrefix: () => readConfig().ticketKeyPrefix,
     defaultCommand: () => readConfig().defaultCommand,
@@ -3747,6 +3761,7 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
       }
       if (isGod) {
         paramountOrchestrators.add(plan.agentId);
+        orchestratorStart.started(plan.agentId, provider, res.resumed === true);
         // Durable work request + main-owned, busy-aware wake. The CLI receives
         // its first prompt only after the established boot/idle/HITL guards.
         hive.send({ to: plan.agentId, act: 'request', subject: 'Start orchestrator', body: [

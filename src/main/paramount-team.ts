@@ -50,6 +50,8 @@ export interface ParamountTeamDeps {
   orchestratorProvider(): string | undefined;
   orchestratorModel(): string | undefined;
   orchestratorId(): string | undefined;
+  /** The last failed orchestrator start (main's exit watch); automatic startup does not retry it. */
+  orchestratorStartFailure?(): { message: string } | null;
   hasLivePty(agentId: string): boolean;
   ticketKeyPrefix?(): string | undefined;
   /** config.defaultCommand, the fallback engine command. */
@@ -91,6 +93,27 @@ function onlyKeys(command: Record<string, unknown>, allowed: string[]): boolean 
 }
 
 /** True when this command belongs to the team module. agent.update is ours only for a model change. */
+/** The engine an orchestrator starts on. A registered one keeps the provider, model, name and
+ *  role it was recorded with (its session id stays in the registry and resumes on that
+ *  provider); the floor's setting applies only to a new orchestrator. Incident 2026-11-12:
+ *  Council restarted a claude god as gemini (the floor setting), the resume failed and the
+ *  entry was rewritten to provider gemini, role "Paramount orchestrator". */
+export function orchestratorEngine(team: Pick<ParamountTeamDeps, 'orchestratorProvider' | 'orchestratorModel' | 'hiveRoot'>, raw: unknown, id: string | undefined): { provider: ReturnType<typeof normalizeAgentProvider>; model?: string; name?: string; role?: string } {
+  const configured = normalizeAgentProvider(team.orchestratorProvider());
+  const recorded = object(raw) && typeof raw.provider === 'string' ? normalizeAgentProvider(raw.provider) : undefined;
+  if (!object(raw) || !id) return { provider: configured, model: team.orchestratorModel() };
+  // A recorded entry without a provider is a legacy claude agent (AgentMeta's default).
+  const provider = recorded ?? (raw.provider === undefined ? 'claude' : undefined);
+  let picked: string | undefined;
+  try { picked = agentModelPick(team.hiveRoot(), id); } catch { picked = undefined; }
+  const model = picked ?? (provider === configured ? team.orchestratorModel() : undefined);
+  return {
+    provider, ...(model ? { model } : {}),
+    ...(typeof raw.name === 'string' && raw.name ? { name: raw.name } : {}),
+    ...(typeof raw.role === 'string' && raw.role.trim() ? { role: raw.role } : {}),
+  };
+}
+
 export function isTeamCommand(command: Record<string, unknown>): boolean {
   if (TEAM_TYPES.has(command.type as string)) return true;
   return command.type === 'agent.update' && object(command.patch) && Object.hasOwn(command.patch, 'model');
@@ -222,6 +245,8 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         // Not latched and not counted: once the other process quits, the next ensure starts it.
         if (team.claimFloor && !team.claimFloor()) return fail('CONFLICT', OTHER_RUNTIME);
         if (state.failure) return state.failure;
+        const startFailure = team.orchestratorStartFailure?.();
+        if (startFailure) return fail('CONFLICT', startFailure.message);
         if (state.starts >= 2) {
           state.failure = fail('CONFLICT', 'The orchestrator stopped after bounded automatic recovery. Open Team and explicitly start it again.');
           return state.failure;
@@ -236,10 +261,11 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           const registered = team.orchestratorId() ?? Object.entries(agents).find(([, a]) => object(a) && a.isGod === true)?.[0];
           if (registered && team.hasLivePty(registered)) { step('already-running'); return done({}); }
           step('readiness-check');
-          const provider = normalizeAgentProvider(team.orchestratorProvider());
+          const engine = orchestratorEngine(team, registered ? agents[registered] : undefined, registered);
+          const provider = engine.provider;
           const preset = AGENT_PROVIDER_PRESETS.find((p) => p.id === provider);
           if (!preset?.supportsModel || !preset.canReceiveInbox) return fail('INVALID_INPUT', 'The configured orchestrator engine is unsupported. Correct the floor engine configuration and reopen this floor');
-          const model = resolveAgentModel(provider!, [team.orchestratorModel()], (engine) => teamModels(team.modelCatalog(), team.appVersion).find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
+          const model = resolveAgentModel(provider!, [engine.model], (id) => teamModels(team.modelCatalog(), team.appVersion).find((e) => e.id === id)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
           const raw = registered ? agents[registered] : undefined;
           const name = object(raw) && typeof raw.name === 'string' ? raw.name : 'Paramount';
           step('launch-requested');
@@ -376,8 +402,11 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         const cwd = typeof command.cwd === 'string' && command.cwd.trim() ? command.cwd.trim() : team.defaultCwd(isGod);
         if (!cwd) return fail('INVALID_INPUT', 'Choose the folder the agent works in');
         if (!isAbsolute(cwd) || cwd.length > 4096 || !team.isDirectory(cwd)) return fail('INVALID_INPUT', `Folder not found: ${cwd}`);
-        const provider = isGod
-          ? normalizeAgentProvider(team.orchestratorProvider()) ?? 'claude'
+        const recorded = isGod ? orchestratorEngine(team, registeredGod ? agents[registeredGod] : undefined, registeredGod) : undefined;
+        // A new orchestrator falls back to claude as before; a registered one is never switched.
+        if (recorded && registeredGod && !recorded.provider) return fail('INVALID_INPUT', `The registered orchestrator "${registeredGod}" runs on an engine this app cannot start; it was left unchanged`);
+        const provider = recorded
+          ? recorded.provider ?? 'claude'
           : normalizeAgentProvider(manifest.provider) ?? 'claude';
         const offered = (engine: string) => teamModels(team.modelCatalog(), team.appVersion).find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? [];
         const rawFlags = manifest.commandFlags ?? [];
@@ -392,7 +421,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           } else flags.push(flag);
         }
         if (manifest.model && (!resolveAgentModel(provider, [manifest.model], offered) || flagModel && flagModel !== manifest.model)) return fail('INVALID_INPUT', 'Pick one model supported by this provider');
-        const model = resolveAgentModel(provider, [flagModel, manifest.model, isGod ? team.orchestratorModel() : team.defaultModel()], offered);
+        const model = resolveAgentModel(provider, [flagModel, manifest.model, recorded ? recorded.model : team.defaultModel()], offered);
         let launcherPick: LauncherPick | null | undefined;
         let profile;
         try {
@@ -412,7 +441,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         const agentId = isGod ? registeredGod ?? 'god' : uniqueAgentId(manifest.name, Object.keys(agents));
         const isolate = manifest.isolate === true;
         const plan: ParamountHirePlan = {
-          agentId, name: manifest.name, ...(isGod ? { role: 'Paramount orchestrator' } : manifest.description ? { role: manifest.description } : {}),
+          agentId, name: recorded?.name ?? manifest.name, ...(recorded ? { role: recorded.role ?? 'Paramount orchestrator' } : manifest.description ? { role: manifest.description } : {}),
           engine: provider, ...(model ? { model } : {}), cwd, isolate,
           ...(profile ? { launcher: profile.label } : {}),
           command: profile ? launcherDisplayCommand([profile.bin, ...profile.args, ...args].join(' ')) : [launch.bin, ...args].join(' '), engineInstalled: team.commandAvailable(profile?.bin ?? launch.bin),

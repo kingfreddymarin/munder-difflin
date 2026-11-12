@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useActionError, useDispatch, useFloor, useSnapshotRefresh } from '@/data/store';
 import type { FloorSetup } from '@/data/types';
+import { defaultOrchestratorEngine } from './setup-defaults';
 
 type Stage = 'workspace' | 'launchers' | 'orchestrator';
 
@@ -20,8 +21,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
   const autoModeDefault = useFloor((s) => s.me.yolo.on);
   const [stage, setStage] = React.useState<Stage>('workspace');
   const [home, setHome] = React.useState(setup.suggestedHome);
-  const firstReady = setup.engines.find((e) => e.orchestrator && e.installed);
-  const [engineId, setEngineId] = React.useState(firstReady?.id ?? '');
+  const [engineId, setEngineId] = React.useState(defaultOrchestratorEngine(setup.engines));
   const [launcher, setLauncher] = React.useState<CouncilLauncherPick | null>(null);
   const [launcherDefaults, setLauncherDefaults] = React.useState<Record<string, CouncilLauncherPick | null>>({});
   const [tempLauncher, setTempLauncher] = React.useState<CouncilLauncherPick | null>(null);
@@ -86,7 +86,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
                 );
               })}
             </div>
-            {!firstReady && (
+            {!setup.engines.some((e) => e.orchestrator && e.installed) && (
               <p className="text-destructive text-sm">
                 No orchestrator engine is installed. Install one (for example Claude Code), then
                 <Button variant="link" size="sm" onClick={() => refresh()}>check again</Button>.

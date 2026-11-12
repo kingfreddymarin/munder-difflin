@@ -47,6 +47,11 @@ function hookSocketOf(value: unknown): Snapshot['hookSocket'] {
   if (typeof v.listening !== 'boolean') return undefined;
   return { listening: v.listening, lastError: typeof v.lastError === 'string' ? v.lastError : null, attempts: typeof v.attempts === 'number' ? v.attempts : 0 };
 }
+function orchestratorFailureOf(value: unknown): Snapshot['orchestratorFailure'] {
+  const v = object(value);
+  if (typeof v.message !== 'string' || !v.message || typeof v.agentId !== 'string') return undefined;
+  return { agentId: v.agentId, provider: string(v.provider), resumed: v.resumed === true, ...(typeof v.exitCode === 'number' ? { exitCode: v.exitCode } : {}), message: v.message, at: string(v.at) };
+}
 /** The core's first-run setup state. Absent (an older core) means the floor is already set up. */
 function floorSetupOf(value: unknown): FloorSetup | undefined {
   const v = object(value);
@@ -251,7 +256,7 @@ export function createElectronProvider(): ElectronProvider {
       const snapshot: Snapshot = {
         usageReported: false,
         settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
-        floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: object(preferences.setup).dismissed === true, objectives: [], wins: [],
+        floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(orchestratorFailureOf(native.orchestratorFailure) ? { orchestratorFailure: orchestratorFailureOf(native.orchestratorFailure) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: object(preferences.setup).dismissed === true, objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
           connections: array(native.integrations).map((item) => ({ id: string(item.id), name: string(item.label, string(item.id)), detail: string(item.kind), connected: item.enabled === true,
             kind: string(item.kind), baseUrl: string(item.baseUrl), authType: string(item.authType), hasSecret: item.hasSecret === true })),
