@@ -126,6 +126,8 @@ test('index.ts: the runtime stops recording only once a quit is certain, before 
   // Not on before-quit: with agents running, main defers that quit to the warning, which can be cancelled.
   assert.doesNotMatch(code, /registerParamountRuntime\([^\n]*onQuit: \(fn\) => app\.on\('before-quit', fn\)/);
   assert.match(code, /onQuit: \(fn\) => \{ beforeTeardown\.push\(fn\); app\.on\('will-quit', fn\);( keepFloorReleaseLast\(\);)? \}/);
-  const teardown = code.slice(code.indexOf('function teardownAndQuit(): void {'));
+  const start = code.indexOf('function teardownAndQuit(');
+  assert.ok(start > 0);
+  const teardown = code.slice(start);
   assert.ok(teardown.indexOf('for (const fn of beforeTeardown)') < teardown.indexOf('ptyManager.killAll()'));
 });

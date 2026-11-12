@@ -21,7 +21,7 @@ require.cache[electron] = {
     app: {
       setName: () => {},
       commandLine: { getSwitchValue: (name) => (name === 'user-data-dir' ? disposable : '') },
-      getPath: (name) => (name === 'appData' ? appData : calls.at(-1)),
+      getPath: (name) => (name === 'appData' ? appData : name === 'home' ? '/Users/someone' : calls.at(-1)),
       setPath: (name, p) => {
         if (!fs.existsSync(p)) throw new Error(`Failed to set path: ${p} does not exist`);
         calls.push(p);
@@ -35,7 +35,9 @@ require.cache[electron] = {
 test('--user-data-dir: the disposable profile is used and the real one is never created', () => {
   const { paramountHome } = loadTs('src/main/paramountShell.ts');
   assert.deepEqual(calls, [disposable]);
-  assert.equal(paramountHome(), disposable);
+  // Owner report 2026-11-12: the suggested floor is never the data folder itself.
+  assert.notEqual(paramountHome(), disposable);
+  assert.equal(paramountHome(), path.join('/Users/someone', 'Paramount'));
   assert.equal(fs.statSync(disposable).isDirectory(), true);
   assert.equal(fs.existsSync(path.join(appData, 'Paramount')), false);
 });

@@ -293,7 +293,11 @@ export type FloorLockState =
 export interface HookSocketHealth { listening: boolean; lastError: string | null; attempts: number }
 /** The orchestrator Council started exited while starting (e.g. a failed resume); its entry was kept. */
 export interface OrchestratorFailure { agentId: string; provider: string; resumed: boolean; exitCode?: number; message: string; at: string }
-export interface FloorSetup { floorLock?: FloorLockState; launchers?: import('./paramount-api').CouncilLauncherDiscovery; complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
+/** The floor picker (owner requests 2026-11-12, Munder 0.5.7 parity). `pending`: no floor open in this
+ *  window yet (launch); `newFloor`: New Floor… is choosing a floor to start as its own process. */
+export type FloorProbeState = 'free' | 'held' | 'missing' | 'current' | 'data-folder';
+export interface FloorChoice { pending: boolean; newFloor: boolean; last: string | null; recents: Array<{ path: string; exists: boolean; state: FloorProbeState; heldBy?: string }> }
+export interface FloorSetup { floorLock?: FloorLockState; choice?: FloorChoice; launchers?: import('./paramount-api').CouncilLauncherDiscovery; complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
 
 export interface Snapshot {
   /** Missing on providers without a setup stage (the sample provider); treat as set up. */

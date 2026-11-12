@@ -27,6 +27,9 @@ export type Command =
   | { type: 'orchestrator.ensure' }
   | { type: 'floor.retry' }
   | { type: 'floor.choose-another' }
+  | { type: 'floor.open'; home: string }
+  | { type: 'floor.picker'; open: boolean }
+  | { type: 'floor.switch' }
   | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
   | { type: 'launchers.refresh' }
   | { type: 'launchers.configure'; scope: 'agent' | 'temps' | 'orchestrator' | 'default'; agentId?: string; provider?: string; launcher: CouncilLauncherPick | null }

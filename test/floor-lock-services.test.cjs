@@ -53,12 +53,14 @@ test('F2: index.ts gives every floor-bound service the gated home and refuses fl
 
 // The real config:changeHome handler from index.ts, with app teardown stubbed and real files in
 // temporary folders (the review's command B, with the real floor gate).
-function changeHome(oldHome, gate) {
+function changeHome(oldHome, gate) { return changeHomeWith(oldHome, gate, () => null); }
+function changeHomeWith(oldHome, gate, refusal) {
   const filterSrc = INDEX.slice(INDEX.indexOf('function isNotFloorLockPath('), INDEX.indexOf('// Change the harnessHome folder.'));
   const handlerSrc = INDEX.slice(INDEX.indexOf("ipcMain.handle('config:changeHome'"), INDEX.indexOf('// ─── IPC: filesystem'));
   let handler; const calls = [];
   const noop = () => {};
-  const ctx = { ...fs, ...path, console, FLOOR_LOCK_FILE, floorGate: gate,
+  const ctx = { ...fs, ...path, console, process, FLOOR_LOCK_FILE, floorGate: gate, OPEN_LAST_FLOOR_FLAG: '--council-open-floor',
+    dataFolderRefusal: (home) => refusal(home), appDataDirs: () => [],
     ipcMain: { handle: (_, fn) => { handler = fn; } },
     readConfig: () => ({ harnessHome: oldHome }), expandTilde: (x) => x,
     ensureHarnessHome: (h) => { fs.mkdirSync(path.join(h, 'hive'), { recursive: true }); return { ok: true }; },
@@ -67,7 +69,7 @@ function changeHome(oldHome, gate) {
     stopWebhookServer: noop, memory: { stop: noop, drain: async () => {} }, reflector: { stop: noop, drain: async () => {} }, bootstrapHiveServices: noop,
     startSlackServer: noop, reconcileWebhookServer: noop,
     writeConfig: (c) => calls.push(['writeConfig', c]), ptyManager: { killAll: () => calls.push(['killAll']) },
-    app: { relaunch: () => calls.push(['relaunch']), exit: () => calls.push(['exit']) }, allowQuit: false };
+    app: { relaunch: (o) => calls.push(['relaunch', o]), exit: () => calls.push(['exit']) }, allowQuit: false };
   vm.runInNewContext(ts.transpileModule(filterSrc + handlerSrc, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, ctx);
   return { run: (payload) => handler({}, payload), calls };
 }
@@ -119,4 +121,34 @@ test('F3: the old claim is released only after agents are killed', () => {
   const reserve = handler.indexOf('floorGate.reserve(newHome)');
   assert.ok(reserve > 0 && reserve < handler.indexOf('ensureHarnessHome(newHome)'));
   assert.ok(handler.indexOf('ptyManager.killAll()') < handler.indexOf('floorGate.release();'));
+});
+
+test("owner 2026-11-12: Settings' floor location cannot move to the app's own data folder", async (t) => {
+  const { old } = homes(t);
+  const data = path.join(path.dirname(old), 'Paramount');
+  fs.mkdirSync(data);
+  const gate = createFloorGate(council, () => true);
+  assert.equal(gate.claim(old).state, 'open');
+  const { dataFolderRefusal } = loadTs('src/main/floors.ts');
+  // The real refusal, with this test's data folder.
+  const ctxHandler = changeHomeWith(old, gate, (home) => dataFolderRefusal(home, [data]));
+  for (const target of [data, path.join(data, 'floor')]) {
+    const r = await ctxHandler.run({ newHome: target, mode: 'fresh' });
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "A floor cannot use this floor's own data folder.");
+  }
+  assert.deepEqual(ctxHandler.calls, []);
+  assert.deepEqual(fs.readdirSync(data), [], 'nothing made there');
+  assert.equal(gate.homeFor(old), old);
+  gate.release();
+});
+
+test('a location change relaunches straight onto the new floor', async (t) => {
+  const { old, dest } = homes(t);
+  const gate = createFloorGate(council, () => true);
+  gate.claim(old);
+  const h = changeHomeWith(old, gate, () => null);
+  assert.equal((await h.run({ newHome: dest, mode: 'fresh' })).ok, true);
+  const relaunch = h.calls.find((c) => c[0] === 'relaunch');
+  assert.ok(relaunch[1].args.includes('--council-open-floor'));
 });

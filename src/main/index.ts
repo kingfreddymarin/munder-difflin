@@ -1,6 +1,7 @@
 // Paramount identity (name, userData, UI scheme) — must evaluate before any
 // other module reads userData, so it is the first import.
-import { paramountHome, paramountUiUrl, registerParamountProtocol } from './paramountShell';
+import { floorProcessHome, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
+import { dataFolderRefusal, floorDataDirFor, floorSpawnPlan, normaliseHome, probeFloor, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
 import { resolveLauncherForSpawn, createLauncherDiscoveryCache, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
@@ -21,7 +22,7 @@ import { createBoardDeps } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
 import { offeredModelIds, resolveAgentModel } from './paramount-models';
 import { agentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
-import { floorSetupState, type FloorSetupDeps } from './paramount-floor-setup';
+import { floorSetupState, type FloorChoice, type FloorSetupDeps } from './paramount-floor-setup';
 import bakedModelCatalog from '../shared/modelCatalog.json';
 import { parseModelCatalog } from '../shared/modelCatalogPayload';
 import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } from './autoModeExpiry';
@@ -84,7 +85,7 @@ import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, au
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { claimFloor, registerParamountRuntime } from './paramount-runtime';
-import { createFloorGate, FLOOR_LOCK_FILE, removeFloorContents } from './floor-lock';
+import { createFloorGate, FLOOR_LOCK_FILE, floorOwnerName, removeFloorContents, type FloorGateState } from './floor-lock';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
@@ -2341,7 +2342,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
     ...(geom && geom.x !== undefined && geom.y !== undefined ? { x: geom.x, y: geom.y } : {}),
     minWidth: MIN_WIN.width,
     minHeight: MIN_WIN.height,
-    title: TEST_LABEL ?? (isFloor ? 'Paramount — Floor' : 'Paramount'),
+    title: floorWindowTitle(),
     backgroundColor: '#FFF8E7',
     titleBarStyle: 'hiddenInset',
     show: false,
@@ -2503,24 +2504,27 @@ function openFloor(): BrowserWindow | null {
   return createWindow({ floor: true });
 }
 
-/** Build + install the application menu. Only called when multiWindow is on, so
- *  flag-off keeps Electron's default menu (zero behavior change). Uses standard
- *  role-based items so copy/paste/quit/etc. work per-platform, and adds the
- *  "New Floor" item (Cmd/Ctrl+Shift+N). */
+/** Build + install the application menu. Uses standard role-based items so
+ *  copy/paste/quit/etc. work per-platform, and adds "New Floor…" (Cmd/Ctrl+Shift+N),
+ *  which opens the floor picker, and "Switch floor…". */
 function installAppMenu(): void {
   const isMac = process.platform === 'darwin';
+  // Munder 0.5.3+: New Floor asks where to start (the floor picker in this window); the chosen
+  // floor runs as its own process. A second window of the same floor stays on window:newFloor.
   const newFloorItem = {
-    label: 'New Floor',
+    label: 'New Floor…',
     accelerator: 'CmdOrCtrl+Shift+N',
-    click: () => { openFloor(); }
+    click: () => { requestFloorPicker(); }
   };
+  const switchFloorItem = { label: 'Switch floor…', click: () => { void confirmSwitchFloor(); } };
+
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{ role: 'appMenu' as const }] : []),
     {
       label: 'File',
       submenu: isMac
-        ? [newFloorItem, { type: 'separator' as const }, { role: 'close' as const }]
-        : [newFloorItem, { type: 'separator' as const }, { role: 'quit' as const }]
+        ? [newFloorItem, switchFloorItem, { type: 'separator' as const }, { role: 'close' as const }]
+        : [newFloorItem, switchFloorItem, { type: 'separator' as const }, { role: 'quit' as const }]
     },
     // The Edit menu is spelled out rather than `{ role: 'editMenu' }` for one
     // reason: `registerAccelerator: false` on the clipboard items.
@@ -3342,6 +3346,8 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   // and the app would relaunch against a real directory named "~". Same
   // defence-in-depth-at-the-consumer rule as expandTilde's own doc.
   const newHome = resolve(expandTilde(p.newHome));
+  const ownData = dataFolderRefusal(newHome, appDataDirs());
+  if (ownData) return { ok: false, error: ownData };
   const oldRaw = readConfig().harnessHome;
   const oldHome = oldRaw ? resolve(oldRaw) : null;
 
@@ -3415,7 +3421,8 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   // Agents and services on the old floor have stopped: release it. The destination stays
   // reserved for the relaunch (same profile, so the new process takes it over as its own).
   floorGate.release();
-  app.relaunch();
+  // Straight back onto the new folder: the relaunch opens it instead of stopping at the picker.
+  app.relaunch({ args: [...process.argv.slice(1).filter((a) => a !== OPEN_LAST_FLOOR_FLAG), OPEN_LAST_FLOOR_FLAG] });
   app.exit(0);
   return { ok: true as const }; // unreachable (process exits) — typed for the renderer
 });
@@ -3721,6 +3728,115 @@ function paramountPublish(event: ParamountEvent): void {
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', event);
   }
 }
+// ─── Floors (owner requests 2026-11-12; Munder 0.5.7 parity, floors.ts) ────────
+// The floor is chosen on every launch: the main process claims nothing at boot, and the picker
+// opens a floor in this process (openChosenFloor). With a floor open, New Floor… (Cmd+Shift+N)
+// shows the same picker, and the chosen floor starts as its own app process (openFloorProcess),
+// so several floors run at once. A floor process is started for one home and opens it directly.
+let floorChosen = false;
+let newFloorPicker = false;
+/** Set on the relaunch after a Floor location change: open the configured floor without the picker. */
+const OPEN_LAST_FLOOR_FLAG = '--council-open-floor';
+/** The app's data folders a floor may never use (this process's, and the shared main one). */
+const appDataDirs = (): string[] => [...new Set([app.getPath('userData'), sharedDataDir()])];
+function floorContext(): FloorContext {
+  const held = floorGate.state();
+  return { currentHome: held.state === 'open' ? held.floor : null, me: { pid: process.pid, userData: app.getPath('userData'), version: `Paramount ${app.getVersion()}` }, dataDirs: appDataDirs() };
+}
+function probeRecentFloors(): Array<{ path: string } & FloorProbe> {
+  const cfg = readConfig();
+  const ctx = floorContext();
+  return [...new Set([...(cfg.harnessHome ? [cfg.harnessHome] : []), ...(cfg.recentHives ?? [])])].map((path) => ({ path, ...probeFloor(path, ctx) }));
+}
+function floorChoice(): FloorChoice {
+  const pending = !floorChosen;
+  const picker = pending || newFloorPicker;
+  const recents = picker ? probeRecentFloors().map((r) => ({ path: r.path, exists: r.state !== 'missing', state: r.state, ...(r.state === 'held' ? { heldBy: `${floorOwnerName(r.lock)} (pid ${r.lock.pid})` } : {}) })) : [];
+  return { pending, newFloor: !pending && newFloorPicker, last: readConfig().harnessHome ?? null, recents };
+}
+/** Open a floor in this process (the launch picker). The lock comes first: a held floor is refused
+ *  with nothing on it written and the config unchanged; then the folder, the config and the services. */
+function openChosenFloor(home: string): FloorGateState {
+  const target = normaliseHome(home);
+  const data = dataFolderRefusal(target, appDataDirs());
+  if (data) return { state: 'error', floor: target, detail: data };
+  const claimed = floorGate.claim(target);
+  if (claimed.state !== 'open') { broadcastParamountInvalidation('floor-lock'); return claimed; }
+  const made = ensureHarnessHome(target);
+  if (!made.ok) { floorGate.release(); broadcastParamountInvalidation('floor-lock'); return { state: 'error', floor: target, detail: made.error ?? 'The folder could not be created' }; }
+  floorChosen = true;
+  writeConfig({ harnessHome: target }); // also puts it first in recentHives
+  bootstrapHiveServices();
+  applyFloorTitle();
+  broadcastParamountInvalidation('floor-lock');
+  return floorGate.state();
+}
+/** New Floor…: start the chosen floor as its own detached app process with its own data folder. */
+async function openFloorProcess(home: string): Promise<{ ok: true; home: string } | { ok: false; error: string; refusal?: string }> {
+  const v = validateFloorRequest(home, floorContext());
+  if (!v.ok) return { ok: false, error: v.message, refusal: v.refusal };
+  const made = ensureHarnessHome(v.home);
+  if (!made.ok) return { ok: false, error: made.error ?? 'The folder could not be created' };
+  const shared = sharedDataDir();
+  const dataDir = floorDataDirFor(shared, v.home);
+  const plan = floorSpawnPlan({ execPath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged, dataDir, sharedDir: shared, home: v.home });
+  return new Promise((done) => {
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      const child = spawn(plan.command, plan.args, { detached: true, stdio: 'ignore', env: process.env });
+      child.once('spawn', () => {
+        child.unref();
+        console.log(`[floor] started pid ${child.pid} on ${v.home} (data ${dataDir})`);
+        // Shown in this floor's recents too, so it can be found again.
+        const cfg = readConfig();
+        writeConfig({ recentHives: [...new Set([...(cfg.recentHives ?? []), v.home])] });
+        newFloorPicker = false;
+        broadcastParamountInvalidation('floor-lock');
+        done({ ok: true, home: v.home });
+      });
+      child.once('error', (e) => done({ ok: false, error: e.message }));
+    } catch (e) { done({ ok: false, error: e instanceof Error ? e.message : String(e) }); }
+  });
+}
+/** Switch floor (god-confirmed 2026-11-12, matches Munder's hive switch): stop this floor's agents
+ *  exactly as quit does (the runtime records who was live first, so reopening the floor restores
+ *  them; the floor is released last), then the app starts again at the launch picker. Other floor
+ *  processes keep running. Without an open floor there is nothing to stop: show the picker. */
+function switchFloor(): void {
+  if (floorGate.state().state !== 'open') { floorChosen = false; broadcastParamountInvalidation('floor-lock'); return; }
+  closingTime.cancel();
+  teardownAndQuit({ relaunch: true });
+}
+async function confirmSwitchFloor(): Promise<void> {
+  if (floorGate.state().state !== 'open') { switchFloor(); return; }
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
+  const opts: Electron.MessageBoxOptions = { type: 'question', buttons: ['Stop agents and switch', 'Cancel'], defaultId: 0, cancelId: 1,
+    message: 'Switch floor?', detail: 'Every agent on this floor stops. They start again when you open this floor again. Paramount then asks which floor to open. Floors open in other windows keep running.' };
+  const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+  if (r.response === 0) switchFloor();
+}
+/** New Floor… (menu, Cmd+Shift+N, Settings): show the picker in this window. */
+function requestFloorPicker(open = true): void {
+  if (!floorChosen) return; // the launch picker is already showing
+  newFloorPicker = open;
+  broadcastParamountInvalidation('floor-lock');
+}
+/** Each window says which floor it is: "Paramount — <folder>" (the test label keeps its prefix). */
+function floorWindowTitle(): string {
+  const held = floorGate.state();
+  const name = held.state === 'open' ? basename(held.floor) : null;
+  return [TEST_LABEL ?? 'Paramount', name].filter(Boolean).join(' — ');
+}
+function applyFloorTitle(): void {
+  const title = floorWindowTitle();
+  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.getTitle() !== title) w.setTitle(title);
+}
+// Munder's IPC names, for the preload and scripts; the UI uses floor.open / floor.picker.
+ipcMain.handle('floor:probe', (_evt, paths: unknown) => {
+  const ctx = floorContext();
+  return (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string' && !!p) : []).map((p) => ({ path: p, ...probeFloor(p, ctx) }));
+});
+ipcMain.handle('floor:open', (_evt, arg: unknown) => openFloorProcess(typeof (arg as { harnessHome?: unknown })?.harnessHome === 'string' ? (arg as { harnessHome: string }).harnessHome : ''));
 /** First-run floor setup (paramount-floor-setup.ts): engines from the presets, models from the configured catalog. */
 function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
   const team = paramountTeamDeps(sender);
@@ -3731,7 +3847,14 @@ function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
       claim: (home) => floorGate.claim(home),
       retry: () => { bootstrapHiveServices(); broadcastParamountInvalidation('floor-lock'); return floorGate.state(); },
       // Back to setup: the refused floor is left exactly as it is.
-      chooseAnother: () => { writeConfig({ onboardingComplete: false }); broadcastParamountInvalidation('floor-lock'); },
+      // A set-up profile goes back to the floor picker; during setup, back to setup's folder step.
+      chooseAnother: () => { if (readConfig().onboardingComplete) floorChosen = false; else writeConfig({ onboardingComplete: false }); broadcastParamountInvalidation('floor-lock'); },
+      dataFolderRefusal: (home) => dataFolderRefusal(home, appDataDirs()),
+      choice: floorChoice,
+      open: openChosenFloor,
+      openProcess: openFloorProcess,
+      picker: requestFloorPicker,
+      switchFloor,
     },
     config: () => readConfig(),
     suggestedHome: () => paramountHome(),
@@ -3745,7 +3868,8 @@ function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
     },
     ensureHome: (path) => ensureHarnessHome(path),
     // godProvider was validated against AGENT_PROVIDER_PRESETS by dispatchFloorSetup.
-    complete: (patch) => { applyConfigUpdate({ ...patch, godProvider: patch.godProvider as AgentProvider }); },
+    // Setup opens the floor it created: no chooser in this run.
+    complete: (patch) => { floorChosen = true; applyConfigUpdate({ ...patch, godProvider: patch.godProvider as AgentProvider }); },
     appendEvent: paramountAppendEvent,
     publish: paramountPublish
   };
@@ -4203,7 +4327,7 @@ ipcMain.handle('history:search', (_evt, query: unknown, limit: unknown) =>
 const beforeTeardown: Array<() => void> = [];
 /** Tear the harness down and quit. Shared by the hard "kill all & quit" path
  *  and the closing-time conclusion (after the god confirmed the floor saved). */
-function teardownAndQuit(): void {
+function teardownAndQuit(opts: { relaunch?: boolean } = {}): void {
   allowQuit = true;
   // First, before any terminal is killed: the runtime records who was live (restored next launch).
   for (const fn of beforeTeardown) { try { fn(); } catch (e) { console.error('[quit] before teardown:', e); } }
@@ -4224,6 +4348,8 @@ function teardownAndQuit(): void {
   try { persist.close(); } catch (e) { console.error('[quit] persist.close:', e); }
   try { hive.stopAllProxyBridges(); } catch (e) { console.error('[quit] stopAllProxyBridges:', e); }
   try { ptyManager.killAll(); } catch (e) { console.error('[quit] killAll:', e); }
+  // Switch floor: the same quit (will-quit still releases the floor last), then start again at the picker.
+  if (opts.relaunch) app.relaunch();
   app.quit();
 }
 ipcMain.handle('app:confirmClose', () => {
@@ -5873,9 +5999,14 @@ app.whenReady().then(() => {
   // suggested folder, so setup never points at Munder Difflin's hive.
   // Upgrade: builds before this one set harnessHome at startup without setup, so
   // such a profile already has a floor. It is set up; never send it back through setup.
-  { const cfg = readConfig(); if (cfg.harnessHome && !cfg.onboardingComplete) writeConfig({ onboardingComplete: true }); }
-  // Bootstrap the hive (if harnessHome is configured) and start the message router.
-  bootstrapHiveServices();
+  // Never for a home in the app's own data folder (owner report 2026-11-12): that profile goes back
+  // through setup, which refuses it.
+  { const cfg = readConfig(); if (cfg.harnessHome && !cfg.onboardingComplete && !dataFolderRefusal(cfg.harnessHome, appDataDirs())) writeConfig({ onboardingComplete: true }); }
+  // Owner request 2026-11-12: the main process claims no floor at boot. The picker opens one
+  // (openChosenFloor) and first-run setup opens the floor it creates. A floor process was started
+  // for one home (floor.open in another floor) and opens it now.
+  if (floorProcessHome()) { floorChosen = true; bootstrapHiveServices(); }
+  else if (process.argv.includes(OPEN_LAST_FLOOR_FLAG) && readConfig().harnessHome) openChosenFloor(readConfig().harnessHome as string);
   registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, log: (step) => paramountLog(step), onQuit: (fn) => { beforeTeardown.push(fn); app.on('will-quit', fn); keepFloorReleaseLast(); } }); // Munder useRestoreTeam parity (paramount-runtime.ts)
   // A timed YOLO window that ended while the app was closed turns autoMode off now.
   armAutoModeExpiry();
@@ -5890,7 +6021,8 @@ app.whenReady().then(() => {
   powerMonitor.on('lock-screen', () => { lastSuspendAt = Date.now(); console.log('[power] lock-screen'); });
   // Multi-window floors (opt-in): install the menu carrying "New Floor". When
   // off, the app keeps Electron's default menu — zero behavior change.
-  if (readConfig().multiWindow) installAppMenu();
+  // Always installed: File carries New Floor… (the floor picker).
+  installAppMenu();
   createWindow();
   // Auto-start the Slack webhook server when configured. Best-effort: a tunnel
   // failure (offline) is logged, not fatal. The tunnel URL is ephemeral and

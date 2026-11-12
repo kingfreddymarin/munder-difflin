@@ -23,6 +23,8 @@ export type ElectronBridge = ParamountPreloadAPI & {
   openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
   /** Shows a file in Finder, or opens a directory. Never opens a file with its default app. */
   revealPath?(path: string): Promise<{ ok: boolean; error?: string }>;
+  /** Main's config:changeHome: stops agents, honours .floor-lock, relaunches on success (never returns then). */
+  changeHome?(newHome: string, mode: 'move' | 'fresh'): Promise<{ ok: boolean; error?: string }>;
   pathForFile?(file: File): string;
   statAbs?(path: string): Promise<{ exists: boolean; isFile: boolean; path: string }>;
   providerKeyHas?(backend: string): Promise<boolean>;

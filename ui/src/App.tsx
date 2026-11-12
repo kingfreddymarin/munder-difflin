@@ -11,6 +11,7 @@ import { mainNav, footerNav } from '@/config/navigation';
 import { record } from '@/lib/perf';
 import { useOrchestratorStartup } from '@/app/use-orchestrator-startup';
 import { SetupFlow } from '@/app/setup-flow';
+import { FloorChooser } from '@/app/floor-chooser';
 import { FloorRefused } from '@/app/floor-refused';
 import { QuitConfirm } from '@/app/quit-confirm';
 
@@ -69,12 +70,18 @@ function SetupGateOrAppBody() {
   const setup = useFloor((s) => s.floorSetup);
   useOrchestratorStartup(setup);
   if (setup && !setup.complete) return <SetupFlow setup={setup} />;
+  // Owner request 2026-11-12: every launch asks which floor to open; nothing is claimed before.
+  if (setup?.choice?.pending) return <FloorChooser choice={setup.choice} lock={setup.floorLock} />;
   // Another app holds this floor (Munder's .floor-lock): nothing of it is shown or touched.
   if (setup?.floorLock?.state === 'refused' || setup?.floorLock?.state === 'error') return <FloorRefused lock={setup.floorLock} />;
   return (
-    <RouterProvider>
-      <Routes />
-    </RouterProvider>
+    <>
+      <RouterProvider>
+        <Routes />
+      </RouterProvider>
+      {/* New Floor… (Cmd+Shift+N): the picker over this floor, which keeps running. */}
+      {setup?.choice?.newFloor && <FloorChooser key="new-floor" choice={setup.choice} lock={setup.floorLock} />}
+    </>
   );
 }
 

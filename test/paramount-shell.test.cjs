@@ -20,7 +20,7 @@ require.cache[electron] = {
     app: {
       setName: () => {},
       commandLine: { getSwitchValue: () => '' },
-      getPath: (name) => (name === 'appData' ? appData : calls.at(-1)),
+      getPath: (name) => (name === 'appData' ? appData : name === 'home' ? '/Users/someone' : calls.at(-1)),
       // Mirror Electron: setPath on a missing directory throws.
       setPath: (name, p) => {
         if (!fs.existsSync(p)) throw new Error(`Failed to set path: ${p} does not exist`);
@@ -38,5 +38,7 @@ test('clean profile: missing Paramount userData dir is created, then set', () =>
   const { paramountHome } = loadTs('src/main/paramountShell.ts');
   assert.equal(fs.statSync(expected).isDirectory(), true);
   assert.deepEqual(calls, [expected]);
-  assert.equal(paramountHome(), expected);
+  // Owner report 2026-11-12: the suggested floor is never the data folder itself.
+  assert.notEqual(paramountHome(), expected);
+  assert.equal(paramountHome(), path.join('/Users/someone', 'Paramount'));
 });

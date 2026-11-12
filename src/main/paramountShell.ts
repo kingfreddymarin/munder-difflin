@@ -8,8 +8,9 @@
 // setName/setPath below land before any other module can read userData.
 import { app, net, protocol, session, type Session } from 'electron';
 import { join, resolve, sep } from 'node:path';
-import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { parseFloorArgs, readSharedConfig, seedFloorConfig } from './floors';
 
 export const PARAMOUNT_NAME = 'Paramount';
 /** Custom scheme the packaged UI is served from. A file:// load would break
@@ -20,24 +21,39 @@ const HOST = 'app';
 const DEFAULT_DEV_URL = 'http://127.0.0.1:5173';
 
 app.setName(PARAMOUNT_NAME);
-// ~/Library/Application Support/Paramount on macOS. Config, the window DB and
-// (by default) the hive all live under here, apart from Munder Difflin's.
+// ~/Library/Application Support/Paramount on macOS. Config and the window DB live
+// under here, apart from Munder Difflin's. A floor never does (floors.ts dataFolderRefusal).
 // setPath throws for a missing directory, so create it first: on a clean
 // profile it does not exist yet and the shell would die before any window.
 // An explicit --user-data-dir (a disposable test profile) wins. Without this
 // the forced path below silently points every run at the real profile.
 const explicitUserData = app.commandLine.getSwitchValue('user-data-dir');
-const userDataDir = explicitUserData ? resolve(explicitUserData) : join(app.getPath('appData'), PARAMOUNT_NAME);
+// Several floors at once (floors.ts, Munder 0.5.7 parity): a floor process is started with
+// --floor-data/--floor-shared/--floor-home and uses its own data folder, so its single-instance
+// lock, config and window state are its own. Its first config is the shared one without the
+// per-floor settings.
+const floorArgs = parseFloorArgs(process.argv);
+const userDataDir = floorArgs ? floorArgs.dataDir : explicitUserData ? resolve(explicitUserData) : join(app.getPath('appData'), PARAMOUNT_NAME);
 mkdirSync(userDataDir, { recursive: true });
 app.setPath('userData', userDataDir);
+if (floorArgs?.home && !existsSync(join(floorArgs.dataDir, 'config.json'))) {
+  writeFileSync(join(floorArgs.dataDir, 'config.json'), JSON.stringify(seedFloorConfig(readSharedConfig(floorArgs.sharedDir), floorArgs.home), null, 2), { encoding: 'utf8', mode: 0o600 });
+}
+/** The main process's data folder; every floor's data folder sits under it. */
+export function sharedDataDir(): string { return floorArgs ? floorArgs.sharedDir : userDataDir; }
+/** True in a floor process (started by floor.open for one home folder). */
+export function isFloorProcess(): boolean { return floorArgs !== null; }
+/** The home a floor process was started for; null in the main process. */
+export function floorProcessHome(): string | null { return floorArgs?.home ?? null; }
 
 protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
 ]);
 
-/** The default harnessHome: the hive root is `<this>/hive`. */
+/** The folder setup suggests for a first floor. Never the data folder: a floor there mixes its
+ *  hive with config and every floor's data (owner report 2026-11-12). */
 export function paramountHome(): string {
-  return app.getPath('userData');
+  return join(app.getPath('home'), PARAMOUNT_NAME);
 }
 
 /** The bundled Paramount `dist`, copied in by electron-builder extraResources. */

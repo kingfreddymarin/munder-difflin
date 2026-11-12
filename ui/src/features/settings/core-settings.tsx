@@ -6,6 +6,7 @@ import { Button } from '@/components/animate-ui/components/buttons/button';
 import { useDispatch, useFloor, useTeamApi } from '@/data/store';
 import type { ParamountTeamModels } from '@/data/paramount-api';
 import { defaultModelRows, orchestratorModelRow } from '@/lib/default-models';
+import { FloorLocationTile } from './floor-location';
 
 const number = (value: unknown) => typeof value === 'number' ? String(value) : '';
 const boolean = (value: unknown) => value === true;
@@ -39,6 +40,7 @@ export function CoreSettings() {
   const breakerToggle = (key: string, label: string) => <div className="flex items-center gap-3 py-2" key={key}><span className="flex-1 text-sm">{label}</span><Switch checked={boolean(breaker[key])} onCheckedChange={(on) => save('circuitBreaker', { [key]: on })} aria-label={label} /></div>;
   const breakerNumber = (key: string, label: string) => <div className="grid gap-1.5" key={key}><label className="text-sm" htmlFor={`breaker-${key}`}>{label}</label><div className="flex gap-2"><Input id={`breaker-${key}`} type="number" min={1} max={1000000} value={drafts[key] ?? number(breaker[key])} onChange={(e) => setDrafts({ ...drafts, [key]: e.target.value })} /><Button variant="outline" disabled={!Number.isSafeInteger(Number(drafts[key])) || Number(drafts[key]) < 1 || Number(drafts[key]) > 1000000} onClick={() => { save('circuitBreaker', { [key]: Number(drafts[key]) }); setDrafts((d) => { const next = { ...d }; delete next[key]; return next; }); }}>Save</Button></div></div>;
   return <div className="grid gap-3 lg:grid-cols-2">
+    <FloorLocationTile />
     <Tile title="Agents & models" hint="applies to future agents">
       <span className="text-sm">Default agent model</span>
       <span className="text-muted-foreground text-xs">New agents on each engine start on this model unless picked per agent. Claude's is the harness default.</span>

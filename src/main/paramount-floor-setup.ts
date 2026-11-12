@@ -29,12 +29,38 @@ export interface FloorSetupState {
   launchers?: LauncherDiscovery;
   /** Whether this process holds the floor (Munder's .floor-lock); 'refused' names the app that does. */
   floorLock?: FloorGateState;
+  /** The launch floor chooser: pending until the human opens a floor in this run. */
+  choice?: FloorChoice;
+}
+
+/** The floor picker (owner requests 2026-11-12, Munder 0.5.7 parity). `pending`: no floor is open in
+ *  this process yet (launch); `newFloor`: New Floor… asked for a floor to start as its own process.
+ *  Each recent floor carries its state (floors.ts probeFloor); `last` is preselected. */
+export interface FloorChoice {
+  pending: boolean;
+  newFloor: boolean;
+  last: string | null;
+  recents: Array<{ path: string; exists: boolean; state: 'free' | 'held' | 'missing' | 'current' | 'data-folder'; heldBy?: string }>;
 }
 
 export interface FloorSetupDeps {
   launcherDiscovery?(): ReturnType<typeof discoverLaunchers>;
   /** The floor lock gate (floor-lock.ts): current state, a retry, and a way back to setup. */
-  floor?: { state(): FloorGateState; claim(home: string): FloorGateState; retry(): FloorGateState; chooseAnother(): void };
+  floor?: {
+    state(): FloorGateState; claim(home: string): FloorGateState; retry(): FloorGateState; chooseAnother(): void;
+    /** The launch chooser's state; absent before setup. */
+    choice?(): FloorChoice;
+    /** Claim and open a floor in this process (the launch picker); a held floor is refused untouched. */
+    open?(home: string): FloorGateState;
+    /** New Floor…: start the floor as its own app process (Munder's floor:open). */
+    openProcess?(home: string): Promise<{ ok: true; home: string } | { ok: false; error: string; refusal?: string }>;
+    /** Show or close the New Floor… picker. */
+    picker?(open: boolean): void;
+    /** Stop this floor's agents as quit does and restart at the launch picker. */
+    switchFloor?(): void;
+    /** Why a folder cannot be a floor (it is or holds the app's data folder), else null. */
+    dataFolderRefusal?(home: string): string | null;
+  };
   config(): { onboardingComplete?: boolean; harnessHome?: string | null };
   suggestedHome(): string;
   engines(): FloorSetupEngine[];
@@ -61,6 +87,7 @@ export function floorSetupState(deps: FloorSetupDeps): FloorSetupState {
     // screen shows, and only from the injected (cached) discovery: never a shell here.
     ...(!complete && deps.launcherDiscovery ? { launchers: publicDiscovery(deps.launcherDiscovery()) } : {}),
     ...(deps.floor ? { floorLock: deps.floor.state() } : {}),
+    ...(complete && deps.floor?.choice ? { choice: deps.floor.choice() } : {}),
     engines: deps.engines()
   };
 }
@@ -69,8 +96,9 @@ const ALLOWED = ['type', 'home', 'engine', 'model', 'autoMode', 'launcher', 'lau
 const oneLine = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= max && !/[\r\n\0]/.test(v);
 
 /** `setup.complete`; null for any other command. */
-export function dispatchFloorSetup(command: Record<string, unknown>, deps: FloorSetupDeps | undefined, span: Span): ParamountResult | null {
+export function dispatchFloorSetup(command: Record<string, unknown>, deps: FloorSetupDeps | undefined, span: Span): ParamountResult | Promise<ParamountResult> | null {
   if (command.type === 'floor.retry' || command.type === 'floor.choose-another') return dispatchFloorLock(command, deps, span);
+  if (command.type === 'floor.open' || command.type === 'floor.picker' || command.type === 'floor.switch') return dispatchFloorChoice(command, deps, span);
   if (command.type !== 'setup.complete') return null;
   const fail = (code: ParamountErrorCode, message: string, cause?: unknown): ParamountResult => span.fail(code, message, cause, { commandType: 'setup.complete' });
   if (!deps) return fail('UNSUPPORTED', 'setup.complete is not available in this build');
@@ -101,6 +129,8 @@ export function dispatchFloorSetup(command: Record<string, unknown>, deps: Floor
     }
   } catch (e) { return fail('INVALID_INPUT', e instanceof Error ? e.message : 'Invalid default launcher'); }
   const home = command.home.trim();
+  const ownData = deps.floor?.dataFolderRefusal?.(home);
+  if (ownData) return fail('INVALID_INPUT', ownData);
   // Munder's floor lock before anything is written there (launcher picks, the hive itself).
   const claimed = deps.floor?.claim(home);
   if (claimed?.state === 'refused') return fail('CONFLICT', `${claimed.refusal.owner} (pid ${claimed.refusal.pid}) has this floor open. Quit it, or choose another floor.`);
@@ -137,4 +167,43 @@ function dispatchFloorLock(command: Record<string, unknown>, deps: FloorSetupDep
   // The refused floor's log is not ours to write: publish to the window only.
   deps.publish(event);
   return { ok: true, event } as ParamountResult;
+}
+
+/** `floor.open {home}`: from the launch picker, open the floor in this process; with a floor already
+ *  open (New Floor…), start it as its own app process. `floor.picker {open}` shows or closes the
+ *  New Floor… picker; `floor.switch` stops this floor's agents and restarts at the launch picker. A refused floor is left exactly as it is. */
+function dispatchFloorChoice(command: Record<string, unknown>, deps: FloorSetupDeps | undefined, span: Span): ParamountResult | Promise<ParamountResult> {
+  const type = String(command.type);
+  const fail = (code: ParamountErrorCode, message: string): ParamountResult => span.fail(code, message, undefined, { commandType: type });
+  const floor = deps?.floor;
+  if (!deps || !floor?.open || !floor.openProcess || !floor.picker || !floor.choice) return fail('UNSUPPORTED', `${type} is not available in this build`);
+  if (!floorSetupState(deps).complete) return fail('CONFLICT', 'Finish setting up a floor first');
+  const done = (): ParamountResult => {
+    const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as unknown as ParamountCommand, correlationId: span.cid };
+    // To the window only: an opened floor's log is written by its own services.
+    deps.publish(event);
+    return { ok: true, event } as ParamountResult;
+  };
+  if (type === 'floor.switch') {
+    if (Object.keys(command).some((k) => k !== 'type')) return fail('INVALID_INPUT', 'floor.switch takes no fields');
+    if (!floor.switchFloor) return fail('UNSUPPORTED', 'floor.switch is not available in this build');
+    floor.switchFloor();
+    return done();
+  }
+  if (type === 'floor.picker') {
+    if (Object.keys(command).some((k) => k !== 'type' && k !== 'open') || typeof command.open !== 'boolean') return fail('INVALID_INPUT', 'floor.picker takes open: true or false');
+    floor.picker(command.open);
+    return done();
+  }
+  if (Object.keys(command).some((k) => k !== 'type' && k !== 'home')) return fail('INVALID_INPUT', 'floor.open takes home');
+  if (!oneLine(command.home, 1024) || !isAbsolute(command.home.trim())) return fail('INVALID_INPUT', 'Choose a full folder path for the floor');
+  const home = command.home.trim();
+  if (!floor.choice().pending) {
+    return floor.openProcess(home).then((r) => r.ok ? done() : fail(r.refusal === 'held' ? 'CONFLICT' : r.refusal === 'data-folder' || r.refusal === 'invalid' || r.refusal === 'current' ? 'INVALID_INPUT' : 'INTERNAL', r.error));
+  }
+  const state = floor.open(home);
+  if (state.state === 'refused') return fail('CONFLICT', `${state.refusal.owner} (pid ${state.refusal.pid}) has this floor open. Quit it, or choose another floor.`);
+  if (state.state === 'error') return fail('INTERNAL', `The floor could not be opened: ${state.detail}`);
+  if (state.state !== 'open') return fail('INTERNAL', 'The floor could not be opened');
+  return done();
 }
