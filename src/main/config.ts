@@ -440,11 +440,11 @@ const DEFAULTS: HarnessConfig = {
   orchestratorMaySpawn: false,
   defaultCommand: 'claude',
   godProvider: 'claude',
-  godModel: 'claude-opus-4-8',
-  // Global default model for every agent that hasn't picked one explicitly — wins
-  // over the role-based tiers (modelForRole) in the spawn handler, so all agents
-  // (incl. god) default to Fable 5. A per-agent model choice still overrides it.
-  defaultModel: 'claude-fable-5',
+  // Munder 0.5.7 parity: god and every agent default to Opus 5.5 (its shipped
+  // DEFAULTS). Spawn paths keep a model only when the configured catalog offers it
+  // (paramount-models.ts); a per-agent model choice still overrides it.
+  godModel: 'claude-opus-5-5',
+  defaultModel: 'claude-opus-5-5',
   // Seeded from the MCP catalog so the consent defaults never drift from it
   // (safe-readonly ON, write/secret OFF).
   mcpDefaults: defaultMcpDefaults(),

@@ -10,6 +10,7 @@
 // started twice. Spawn requests and inbox wake already run in main (index.ts).
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { resolveAgentModel } from './paramount-models';
 
 export const RUNTIME_FILE = 'paramount-runtime.json';
 export const LOCK_FILE = '.paramount-runtime.lock';
@@ -172,7 +173,10 @@ export interface RuntimeHost {
   hive: { root(): string | null; registry(): { godId?: string | null; agents?: Record<string, { name?: string; provider?: string; cwd?: string; role?: string; isGod?: boolean; archived?: boolean }> } };
   ptyForAgent(agentId: string): string | undefined;
   config(): { defaultCommand?: string; autoMode?: boolean; defaultModel?: string; godProvider?: string; godModel?: string };
-  modelFor(agentId: string, meta: { role?: string; isGod?: boolean }): string | undefined;
+  /** Model choices in priority order (per-agent pick, configured default, role tier). */
+  modelChoices(agentId: string, meta: { role?: string; isGod?: boolean }): Array<string | undefined>;
+  /** Model ids the configured catalog offers for an engine. */
+  offeredModels(provider: string): string[];
   buildLaunch(opts: { requestProvider: string; requestModel?: string; defaultCommand?: string; autoMode: boolean }): { bin: string; args: string[] };
   spawn(opts: { id: string; cwd: string; command: string; args: string[]; cols: number; rows: number; provider: string; isolate: false; resume: true;
     hive: { id: string; name: string; provider: string; cwd: string; role?: string } }): Promise<{ ok: boolean; error?: string }>;
@@ -194,7 +198,7 @@ export function registerParamountRuntime(host: RuntimeHost): ParamountRuntime {
     isDirectory: host.isDirectory,
     respawn: (agent) => {
       const config = host.config();
-      const launch = host.buildLaunch({ requestProvider: agent.provider, requestModel: host.modelFor(agent.id, { role: agent.role }),
+      const launch = host.buildLaunch({ requestProvider: agent.provider, requestModel: resolveAgentModel(agent.provider, host.modelChoices(agent.id, { role: agent.role }), host.offeredModels),
         defaultCommand: config.defaultCommand, autoMode: config.autoMode !== false });
       return host.spawn({ id: agent.id, cwd: agent.cwd, command: launch.bin, args: launch.args, cols: 120, rows: 32, provider: agent.provider,
         isolate: false, resume: true, hive: { id: agent.id, name: agent.name, provider: agent.provider, cwd: agent.cwd, ...(agent.role ? { role: agent.role } : {}) } });
