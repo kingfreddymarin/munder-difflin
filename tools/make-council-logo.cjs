@@ -4,7 +4,7 @@
  * a black rounded tile, gold shading on the inner faces of the strokes.
  *
  * This is a vector REDRAW of the owner-supplied 55px source
- * (logo-preview/owner-source-55.png), not a new design. Every outline point
+ * (tools/council-logo-source-55.png), not a new design. Every outline point
  * below was read off that source's own pixel grid (edge position = partial
  * pixel coverage of the red channel, so gold shading is not mistaken for an
  * edge) and is scaled into the 1024 canvas by SRC. Colours are the source's
@@ -36,7 +36,7 @@ const zlib = require('node:zlib');
 const { execFileSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const SOURCE = 'logo-preview/owner-source-55.png';
+const SOURCE = 'tools/council-logo-source-55.png'; // the owner's mark (previews go to logo-preview/, not tracked)
 
 // ── palette (averaged from the source) ───────────────────────────────────
 const C = {
