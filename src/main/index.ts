@@ -80,6 +80,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
+import { registerParamountRuntime } from './paramount-runtime';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
@@ -5709,6 +5710,7 @@ app.whenReady().then(() => {
   { const cfg = readConfig(); if (cfg.harnessHome && !cfg.onboardingComplete) writeConfig({ onboardingComplete: true }); }
   // Bootstrap the hive (if harnessHome is configured) and start the message router.
   bootstrapHiveServices();
+  registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelFor: (id, meta) => paramountModelPick(id) ?? readConfig().defaultModel ?? modelForRole(meta, readConfig()), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, log: (step) => paramountLog(step), onQuit: (fn) => app.on('before-quit', fn) }); // Munder useRestoreTeam parity (paramount-runtime.ts)
   // A timed YOLO window that ended while the app was closed turns autoMode off now.
   armAutoModeExpiry();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a
