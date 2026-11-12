@@ -146,7 +146,7 @@ test('index.ts: a failed orchestrator start is logged and its entry is not archi
   assert.match(code, /if \(hive\.enabled\(\) && !opts\.keepEntry\) \{\s*try \{ hive\.setArchived\(agentId, true\);/);
   const exit = code.slice(code.indexOf('ptyManager.setExitHandler('));
   const watched = exit.indexOf('orchestratorStart.exited(');
-  assert.ok(watched > 0 && watched < exit.indexOf('teardownPty(id, { keepEntry: !!failedStart });'), 'the exit is checked before teardown');
+  assert.ok(watched > 0 && watched < exit.indexOf('teardownPty(id, { keepEntry: !!failedStart || allowQuit });'), 'the exit is checked before teardown');
   assert.match(exit, /kind: 'paramount-error', errorId: newErrorId\(\), op: 'orchestrator\.start'/);
   assert.match(code, /orchestratorStart\.started\(plan\.agentId, provider, res\.resumed === true, priorArchived\)/);
   assert.match(exit, /if \(failedStart\?\.priorArchived !== undefined\) restoreArchived\(failedStart\.agentId, failedStart\.priorArchived\);/);

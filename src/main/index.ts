@@ -706,7 +706,10 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     try { paramountLog({ kind: 'paramount-error', errorId: newErrorId(), op: 'orchestrator.start', code: 'INTERNAL', agentId: failedStart.agentId, provider: failedStart.provider, resumed: failedStart.resumed, exitCode: failedStart.exitCode, signal: failedStart.signal, message: failedStart.message }); }
     catch (e) { console.error('[paramount] orchestrator start failure log failed:', e); }
   }
-  teardownPty(id, { keepEntry: !!failedStart });
+  // Terminals stopped by a quit, Switch floor or a floor move keep their registry entry: archiving
+  // them made the runtime skip them on the next open, so a switched or quit floor came back without
+  // its agents (isolated check 2026-11-12). A terminal closed while the app runs is archived as before.
+  teardownPty(id, { keepEntry: !!failedStart || allowQuit });
   if (failedStart?.priorArchived !== undefined) restoreArchived(failedStart.agentId, failedStart.priorArchived);
   // A kept entry sends no hive:agentArchived, so tell Council to re-read (the failure banner).
   if (failedStart) broadcastParamountInvalidation('orchestrator-start-failed');

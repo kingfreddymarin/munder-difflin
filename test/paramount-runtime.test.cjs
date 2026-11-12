@@ -131,3 +131,18 @@ test('index.ts: the runtime stops recording only once a quit is certain, before 
   const teardown = code.slice(start);
   assert.ok(teardown.indexOf('for (const fn of beforeTeardown)') < teardown.indexOf('ptyManager.killAll()'));
 });
+
+test('index.ts: terminals a quit, Switch floor or floor move stops keep their registry entry, so the runtime restores them', () => {
+  const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  // Isolated check 2026-11-12 (build d14fe26f): after Switch floor, the hired agent was archived by
+  // its terminal's exit and the reopened floor skipped it ("restored 0, skipped 2").
+  assert.match(code, /teardownPty\(id, \{ keepEntry: !!failedStart \|\| allowQuit \}\);/);
+  // allowQuit is set before any terminal is killed on each of those paths.
+  for (const start of ['function teardownAndQuit(', "ipcMain.handle('config:changeHome'"]) {
+    const body = code.slice(code.indexOf(start));
+    assert.ok(body.indexOf('allowQuit = true;') > 0 && body.indexOf('allowQuit = true;') < body.indexOf('ptyManager.killAll()'), start);
+  }
+  // And a restore skips archived agents, which is why the flag matters.
+  const runtime = fs.readFileSync(path.join(__dirname, '../src/main/paramount-runtime.ts'), 'utf8');
+  assert.match(runtime, /if \(deps\.isLive\(agent\.id\) \|\| deps\.isArchived\(agent\.id\)\) \{ result\.skipped\.push/);
+});
