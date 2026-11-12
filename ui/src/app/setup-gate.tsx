@@ -16,13 +16,13 @@ export function SetupGate() {
         <DialogHeader>
           <DialogTitle>Set up this Mac for Paramount</DialogTitle>
           <DialogDescription>
-            {blockers.length} required {blockers.length === 1 ? 'piece is' : 'pieces are'} not ready. Paramount runs without {blockers.length === 1 ? 'it' : 'them'}, but those jobs fall back to your engines and spend budget tokens.
+            {blockers.length} required {blockers.length === 1 ? 'piece is' : 'pieces are'} not ready on this Mac. Each line says what is missing and what it is for.
           </DialogDescription>
         </DialogHeader>
         <PrereqList compact />
         <DialogFooter>
           <Button variant="ghost" onClick={() => dispatch({ type: 'setup.dismiss', degraded: blockers.map((b) => b.name) })}>
-            Continue in degraded mode
+            Continue anyway
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -1,5 +1,6 @@
 // The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
+import { externalTools } from './external-tools';
 import { findBridge, requireBridge } from './bridge';
 import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
@@ -241,6 +242,9 @@ export function createElectronProvider(): ElectronProvider {
         why: 'Optional local runtime for summarization and memory maintenance. Without it, standard agent work continues through your selected CLI engine.',
         ...(skid.installed === true && !skidReady && string(skid.command) ? { start: string(skid.command) } : {}),
       }] : [];
+      // Outside the app (owner 2026-11-12: the .dmg is the only download): the claude CLI runs every
+      // agent; MemPalace only adds semantic memory search. Resolved on the login PATH by main.
+      prerequisites.push(...externalTools(object(object(native.prereqs).tools)));
       const log: Snapshot['log'] = array(native.log).map((entry, index) => {
         const kind = string(entry.kind, 'event');
         const code = string(entry.code);
@@ -371,4 +375,5 @@ export function createElectronProvider(): ElectronProvider {
     },
   };
 }
+
 

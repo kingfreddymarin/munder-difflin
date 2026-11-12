@@ -3697,7 +3697,10 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   preferences: paramountPreferences(),
   integrations: integrations.listRecordsRedacted(),
   // Service prerequisite state, including a daemon started outside the app.
-  prereqs: { skid: paramountStartPlan('skid', await paramountProbeService('skid', span.cid)) }
+  prereqs: { skid: paramountStartPlan('skid', await paramountProbeService('skid', span.cid)),
+    // What the packaged app needs from outside itself (owner 2026-11-12: the .dmg is the only download),
+    // resolved on the login-shell PATH exactly as an agent spawn resolves it.
+    tools: { claude: { path: ptyManager.commandPath('claude') }, mempalace: { path: ptyManager.commandPath('mempalace') } } }
 }), { rethrow: true }));
 /** Roots for agents.discover/import, resolved per call so a changed CODEX_HOME
  *  or Munder config is picked up. Read-only: agentSources.ts never writes. */
