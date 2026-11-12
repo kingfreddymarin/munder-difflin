@@ -11,6 +11,10 @@ export type ElectronBridge = ParamountPreloadAPI & {
   redrawPty?(id: string): Promise<{ ok: boolean; error?: string }>;
   onPtyRelaunch?(id: string, cb: () => void): () => void;
   copyToClipboard?(text: string): Promise<{ ok: boolean; error?: string }>;
+  // Quit confirmation (Munder's QuitWarningModal): main defers a quit while agents run and asks the window.
+  onCloseRequested?(cb: (info: { ptyCount: number }) => void): () => void;
+  confirmClose?(): Promise<void>;
+  cancelClose?(): Promise<void>;
   readClipboard?(): Promise<string>;
   readClipboardSync?(): string;
   /** https only; the main process re-checks. */

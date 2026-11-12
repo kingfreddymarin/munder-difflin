@@ -12,6 +12,7 @@ import { record } from '@/lib/perf';
 import { useOrchestratorStartup } from '@/app/use-orchestrator-startup';
 import { SetupFlow } from '@/app/setup-flow';
 import { FloorRefused } from '@/app/floor-refused';
+import { QuitConfirm } from '@/app/quit-confirm';
 
 // The real core when the Electron preload is present (window.paramount, or the fork's window.cth); fixtures otherwise.
 const provider = findBridge() ? createElectronProvider() : createMockProvider();
@@ -62,7 +63,7 @@ function TestLabel() {
 
 /** Munder parity: until the core reports a set-up floor, only first-run setup is shown. */
 function SetupGateOrApp() {
-  return <><TestLabel /><SetupGateOrAppBody /></>;
+  return <><TestLabel /><QuitConfirm /><SetupGateOrAppBody /></>;
 }
 function SetupGateOrAppBody() {
   const setup = useFloor((s) => s.floorSetup);

@@ -120,3 +120,12 @@ test('no floor yet (setup not finished): nothing is read or written', async () =
   await createParamountRuntime(h.deps).beat();
   assert.deepEqual(fs.readdirSync(root), []);
 });
+
+test('index.ts: the runtime stops recording only once a quit is certain, before terminals are killed', () => {
+  const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  // Not on before-quit: with agents running, main defers that quit to the warning, which can be cancelled.
+  assert.doesNotMatch(code, /registerParamountRuntime\([^\n]*onQuit: \(fn\) => app\.on\('before-quit', fn\)/);
+  assert.match(code, /onQuit: \(fn\) => \{ beforeTeardown\.push\(fn\); app\.on\('will-quit', fn\); \}/);
+  const teardown = code.slice(code.indexOf('function teardownAndQuit(): void {'));
+  assert.ok(teardown.indexOf('for (const fn of beforeTeardown)') < teardown.indexOf('ptyManager.killAll()'));
+});
