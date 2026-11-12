@@ -25,7 +25,7 @@ require.cache[electron] = {
   filename: electron,
   loaded: true,
   exports: {
-    app: { isPackaged: true, setName() {}, setPath() {}, getPath: () => os.tmpdir() },
+    app: { isPackaged: true, setName() {}, setPath() {}, commandLine: { getSwitchValue: () => '' }, getPath: () => os.tmpdir() },
     protocol: { registerSchemesAsPrivileged() {} },
     session: { defaultSession },
     net: { fetch: async (url) => ({ url }) }
