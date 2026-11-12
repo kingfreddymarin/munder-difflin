@@ -11,7 +11,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { ErrorNotice } from '@/components/app/error-notice';
-import { CopyDiagnosticsButton, useDispatch, useTeamApi } from '@/data/store';
+import { CopyDiagnosticsButton, useDispatch, useFloor, useTeamApi } from '@/data/store';
+import { findBridge } from '@/data/bridge';
+import { chooseFolder } from '@/app/folder-pick';
 import { BackendError, toBackendError } from '@/data/errors';
 import type { ParamountHirePlan, ParamountTeamModels } from '@/data/paramount-api';
 
@@ -46,6 +48,8 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
   const api = useTeamApi();
   const dispatch = useDispatch();
   const [form, setForm] = React.useState<Form>(EMPTY);
+  const floorRoot = useFloor((s) => s.floorSetup?.harnessHome ?? null);
+  const [pickError, setPickError] = React.useState<string | null>(null);
   const [launcher, setLauncher] = React.useState<CouncilLauncherPick | null>(null);
   const [models, setModels] = React.useState<ParamountTeamModels | null>(null);
   const [step, setStep] = React.useState<Step>({ kind: 'form' });
@@ -130,7 +134,17 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
               <ModelSelect id="h-model" models={models} engineId={engine?.id} value={form.model} onChange={(model) => edit({ model })} /></div>
           </div>
           <div className="grid gap-1.5"><Label htmlFor="h-cwd">Folder</Label>
-            <Input id="h-cwd" placeholder={orchestrator ? 'Empty uses your first project or the Paramount workspace' : 'Absolute path; empty uses your first registered repo'} value={form.cwd} onChange={(e) => edit({ cwd: e.target.value })} /></div>
+            <div className="flex gap-2">
+              <Input id="h-cwd" placeholder={`Empty: floor root (${floorRoot ?? 'not open in this app'})`} value={form.cwd} onChange={(e) => edit({ cwd: e.target.value })} />
+              <Button type="button" variant="outline" onClick={async () => {
+                setPickError(null);
+                const r = await chooseFolder(findBridge());
+                if (r.kind === 'chosen') edit({ cwd: r.path });
+                else if (r.kind === 'failed') setPickError(r.message);
+                else if (r.kind === 'unavailable') setPickError('The folder dialog is not available here; type the full path instead.');
+              }}>Choose folder…</Button>
+            </div>
+            {pickError && <p className="text-destructive text-xs">{pickError}</p>}</div>
           <label className="flex items-center gap-3 text-sm"><Switch checked={form.isolate} onCheckedChange={(v) => edit({ isolate: v })} aria-label="Own git worktree" />Work in its own git worktree</label>
 
           {plan && (

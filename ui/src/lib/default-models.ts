@@ -38,3 +38,45 @@ export function defaultModelRows(catalog: DefaultModelCatalog, settings: Record<
     };
   });
 }
+
+// The orchestrator's model, shown in Settings next to the defaults. What the orchestrator starts on
+// (main's orchestratorEngine): its own Team pick if it has one, else the saved godModel when it runs
+// on the configured engine. A switch saves to both, so Settings and the Team card always agree.
+export interface OrchestratorModelInfo extends DefaultModelCatalog {
+  orchestratorProvider?: string;
+  orchestratorId?: string;
+  orchestratorModel?: string;
+  agents?: Record<string, { engine: string; model?: string }>;
+}
+export interface OrchestratorModelRow {
+  engine: string;
+  label: string;
+  value: string;
+  options: DefaultModelOption[];
+  /** The commands that make `model` the orchestrator's model. */
+  commands(model: string): Array<Record<string, unknown>>;
+}
+
+export function orchestratorModelRow(info: OrchestratorModelInfo): OrchestratorModelRow | null {
+  const id = info.orchestratorId;
+  const pick = id ? info.agents?.[id] : undefined;
+  const configuredEngine = info.orchestratorProvider ?? 'claude';
+  const engineId = pick?.engine ?? configuredEngine;
+  const engine = info.engines.find((e) => e.id === engineId);
+  if (!engine) return null;
+  const configured = engineId === configuredEngine;
+  const value = pick?.model ?? (configured ? info.orchestratorModel ?? '' : '');
+  const listed = engine.models.filter((model): model is { id: string; label: string } => !!model.id);
+  const options = listed.map((model) => ({ id: model.id, label: model.id === value ? `${model.label} · current` : model.label }));
+  if (value && !listed.some((model) => model.id === value)) options.push({ id: value, label: `${value} (not in this build's list) · current` });
+  return {
+    engine: engine.id,
+    label: engine.label,
+    value,
+    options,
+    commands: (model: string) => [
+      ...(configured ? [{ type: 'settings.update', patch: { godModel: model } }] : []),
+      ...(id && (pick?.model || !configured) ? [{ type: 'agent.update', agentId: id, patch: { model } }] : []),
+    ],
+  };
+}

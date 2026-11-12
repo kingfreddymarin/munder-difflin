@@ -3784,7 +3784,9 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
     ticketKeyPrefix: () => readConfig().ticketKeyPrefix,
     defaultCommand: () => readConfig().defaultCommand,
     autoMode: () => !!readConfig().autoMode,
-    defaultCwd: (orchestrator) => orchestrator ? readConfig().harnessHome ?? null : readConfig().registeredRepos?.[0] ?? null,
+    // Owner decision 2026-11-12: an empty folder means the floor root for every hire (the gated home:
+    // null only while another app holds the floor), never the first registered repo.
+    defaultCwd: () => floorHome(),
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
     commandAvailable: (bin) => (isSafeCommandName(bin) || isAbsolute(bin)) && ptyManager.isCommandAvailable(bin),
     spawnHire: async ({ plan, bin, args, provider, goal, tokenCap, capabilities, isGod, resume, launcher }, cid) => {

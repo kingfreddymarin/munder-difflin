@@ -229,7 +229,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         const key = keys[0];
         const value = patch[key];
         const bool = ['orchestratorMaySpawn', 'semanticMemory', 'reflectEnabled'];
-        const textFields = ['defaultModel'];
+        const textFields = ['defaultModel', 'godModel'];
         const nonnegative = ['costCapTokens'];
         const providerField = (key === 'providerBaseUrls' || key === 'providerDefaultModels') && object(value) && Object.keys(value).length === 1 && Object.entries(value).every(([provider, entry]) => {
           // Endpoints exist only for the BYOK engines; a default model fits every

@@ -371,7 +371,8 @@ test('Council mounts automatic startup after setup and uses the configured floor
   assert.match(hook, /setup\?\.complete/);
   assert.match(hook, /orchestrator.ensure/);
   const main = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
-  assert.match(main, /defaultCwd: \(orchestrator\) => orchestrator \? readConfig\(\).harnessHome/);
+  // Every hire with an empty folder uses the open floor's root (hire-folder fix, E-mwdspis5-11325983).
+  assert.match(main, /defaultCwd: \(\) => floorHome\(\),/);
 });
 
 test('automatic startup resumes the existing identity/name with configured Codex model', async () => {

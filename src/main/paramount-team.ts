@@ -400,7 +400,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (!check.ok || !check.manifest) return fail('INVALID_INPUT', `The hire form is not valid: ${check.errors.join('; ')}`);
         const manifest: HireManifest = check.manifest;
         const cwd = typeof command.cwd === 'string' && command.cwd.trim() ? command.cwd.trim() : team.defaultCwd(isGod);
-        if (!cwd) return fail('INVALID_INPUT', 'Choose the folder the agent works in');
+        if (!cwd) return fail('INVALID_INPUT', 'This floor is not open in this app, so an empty folder has no floor root to use. Choose the folder the agent works in');
         if (!isAbsolute(cwd) || cwd.length > 4096 || !team.isDirectory(cwd)) return fail('INVALID_INPUT', `Folder not found: ${cwd}`);
         const recorded = isGod ? orchestratorEngine(team, registeredGod ? agents[registeredGod] : undefined, registeredGod) : undefined;
         // A new orchestrator falls back to claude as before; a registered one is never switched.

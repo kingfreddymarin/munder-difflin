@@ -5,7 +5,7 @@ import { Switch } from '@/components/animate-ui/components/radix/switch';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { useDispatch, useFloor, useTeamApi } from '@/data/store';
 import type { ParamountTeamModels } from '@/data/paramount-api';
-import { defaultModelRows } from '@/lib/default-models';
+import { defaultModelRows, orchestratorModelRow } from '@/lib/default-models';
 
 const number = (value: unknown) => typeof value === 'number' ? String(value) : '';
 const boolean = (value: unknown) => value === true;
@@ -48,6 +48,21 @@ export function CoreSettings() {
           <option value="">CLI default</option>{row.options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
         </select>
       </div>) : <span className="text-muted-foreground text-xs">{catalogError || 'Loading model list…'}</span>}
+      {(() => {
+        const row = catalog ? orchestratorModelRow(catalog) : null;
+        if (!row) return null;
+        return <div className="grid gap-1">
+          <label className="text-sm" htmlFor="core-orchestrator-model">Orchestrator model <span className="text-muted-foreground text-xs">({row.label})</span></label>
+          <select id="core-orchestrator-model" className="bg-background w-full rounded-md border px-3 py-2 text-sm" value={row.value} onChange={async (e) => {
+            const model = e.target.value;
+            for (const command of row.commands(model)) await dispatch(command as Parameters<typeof dispatch>[0]);
+            teamApi?.models().then(setCatalog, () => {});
+          }}>
+            <option value="">CLI default</option>{row.options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+          </select>
+          <span className="text-muted-foreground text-xs">Used the next time the orchestrator starts.</span>
+        </div>;
+      })()}
       {toggle('orchestratorMaySpawn', 'Orchestrator may add agents', 'Off leaves spawn requests queued for your decision.')}
       <span className="text-muted-foreground text-xs">{agents.length} active agents · individual models are set on each Team card.</span>
     </Tile>
