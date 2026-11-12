@@ -1,3 +1,6 @@
+export interface CouncilLauncherPick { id: string; fingerprint: string; allowUnrestricted?: boolean }
+export interface CouncilLauncherDiscovery { status: 'ok' | 'failed' | 'timeout'; choices: Array<{ id: string; provider: string; label: string; fingerprint: string; unrestricted: boolean }>; message?: string }
+export interface CouncilLauncherState { version: 1; orchestrator?: CouncilLauncherPick; temps?: CouncilLauncherPick; agents: Record<string, CouncilLauncherPick>; defaults?: Record<string, CouncilLauncherPick> }
 /** Copy this file with the Paramount UI. It has no Electron or fork imports. */
 export type ParamountCardStatus = 'backlog' | 'todo' | 'doing' | 'blocked' | 'review' | 'done';
 export type ParamountAccess = 'rw' | 'r' | 'none';
@@ -31,7 +34,8 @@ export type ParamountCommand =
   /** Read-only unless `confirm: true`; then runs the vetted start command in a visible terminal. */
   | { type: 'prereq.start'; id: string; confirm?: boolean }
   | { type: 'setup.dismiss'; degraded: string[] }
-  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean }
+  | { type: 'orchestrator.ensure' }
+  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
   /** Read-only: returns a redacted diagnostics bundle on the result. */
   | { type: 'diagnostics.bundle'; logLines?: number }
   /** Saves the same redacted bundle as a JSON file through the core's save dialog.
@@ -290,7 +294,8 @@ export type ParamountTeamCommand =
   /** The Add-Agent form. Read-only unless `confirm: true`: without it the core
    *  validates the hire manifest and returns the exact spawn plan for review;
    *  with it the agent starts in a visible terminal. Nothing spawns unconfirmed. */
-  | { type: 'agent.hire'; manifest: Record<string, unknown>; cwd?: string; confirm?: boolean; orchestrator?: boolean };
+  | { type: 'agent.hire'; manifest: Record<string, unknown>; cwd?: string; confirm?: boolean; orchestrator?: boolean; launcher?: CouncilLauncherPick | null }
+  | { type: 'launchers.configure'; scope: 'agent' | 'temps' | 'orchestrator' | 'default'; agentId?: string; provider?: string; launcher: CouncilLauncherPick | null };
 /** `agent.update` with `{ model }` (and optionally the agent's own `engine`) is
  *  handled by the team module: the pick is saved and used at the agent's next
  *  start. An empty model clears the pick so the default applies again. */
@@ -307,11 +312,15 @@ export interface ParamountTeamModels {
   defaultModel?: string;
   /** Configured provider/model used by Munder's main god/orchestrator. */
   orchestratorProvider?: string;
+  orchestratorId?: string;
   orchestratorModel?: string;
+  launchers?: CouncilLauncherDiscovery;
+  launcherState?: CouncilLauncherState;
   /** Model chosen per agent in Paramount; an agent missing here runs the default. */
   agents: Record<string, { engine: string; model?: string }>;
 }
 export interface ParamountHirePlan {
+  launcher?: string;
   agentId: string;
   name: string;
   role?: string;

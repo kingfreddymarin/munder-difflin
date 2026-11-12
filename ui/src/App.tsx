@@ -9,6 +9,7 @@ import { RouterProvider, useRouter } from '@/app/router';
 import { AppShell } from '@/app/app-shell';
 import { mainNav, footerNav } from '@/config/navigation';
 import { record } from '@/lib/perf';
+import { useOrchestratorStartup } from '@/app/use-orchestrator-startup';
 import { SetupFlow } from '@/app/setup-flow';
 
 // The real core when the Electron preload is present (window.paramount, or the fork's window.cth); fixtures otherwise.
@@ -54,6 +55,7 @@ function Routes() {
 /** Munder parity: until the core reports a set-up floor, only first-run setup is shown. */
 function SetupGateOrApp() {
   const setup = useFloor((s) => s.floorSetup);
+  useOrchestratorStartup(setup);
   if (setup && !setup.complete) return <SetupFlow setup={setup} />;
   return (
     <RouterProvider>

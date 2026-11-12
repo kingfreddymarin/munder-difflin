@@ -29,6 +29,7 @@ function fixture(overrides = {}) {
     events: [], steps: [], spawned: []
   };
   const team = {
+    launcherDiscovery: () => ({ status: 'ok', choices: [], profiles: [] }),
     hiveRoot: () => root,
     addTask: (task) => { if (state.tasks.some((t) => t.id === task.id)) return false; state.tasks.push(task); return true; },
     modelCatalog: () => CATALOG,
@@ -43,7 +44,7 @@ function fixture(overrides = {}) {
     defaultCwd: () => work,
     isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
     commandAvailable: () => true,
-    spawnHire: async (spawn) => { state.spawned.push(spawn); return { ok: true }; },
+    spawnHire: async (spawn) => { state.spawned.push(spawn); if (spawn.isGod) state.agents[spawn.plan.agentId] = { name: spawn.plan.name, provider: spawn.provider, isGod: true, live: true }; return { ok: true }; },
     ...overrides
   };
   const deps = {
@@ -314,4 +315,118 @@ test('orchestrator requests its workspace fallback; workers still require a sele
   const worker = dispatchParamount({ type: 'agent.hire', manifest: { spec: 'munder-difflin/hire@1', name: 'Worker' } }, deps);
   assert.equal(worker.code, 'INVALID_INPUT');
   assert.equal(requestedFallback, false);
+});
+
+// Execute the real Council hook with a deterministic effect scheduler. This
+// exercises the setup snapshot -> effect -> IPC dispatch boundary without an app.
+function startupEffect(setup, dispatch) {
+  const ts = require('typescript');
+  const source = fs.readFileSync(path.join(__dirname, '../ui/src/app/use-orchestrator-startup.ts'), 'utf8');
+  const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const mod = { exports: {} };
+  const effects = [];
+  new Function('module', 'exports', 'require', js)(mod, mod.exports, (id) => {
+    if (id === 'react') return { useEffect: (effect) => effects.push(effect) };
+    if (id === '@/data/store') return { useDispatch: () => dispatch };
+    throw new Error(`Unexpected import ${id}`);
+  });
+  mod.exports.useOrchestratorStartup(setup);
+  effects.forEach((effect) => effect());
+}
+
+test('Council setup snapshot requests automatic launch once across duplicate effects/windows', async () => {
+  const { dispatchFloorSetup, floorSetupState } = loadTs('src/main/paramount-floor-setup.ts');
+  const config = { onboardingComplete: false, harnessHome: null };
+  const f = fixture({ setupComplete: () => config.onboardingComplete && !!config.harnessHome });
+  const setup = {
+    config: () => config, suggestedHome: () => f.work,
+    engines: () => [{ id: 'claude', label: 'Claude', orchestrator: true, installed: true, models: ['claude-opus-4-8'] }],
+    ensureHome: () => ({ ok: true }), complete: (patch) => Object.assign(config, patch),
+    appendEvent() {}, publish() {}
+  };
+  const requests = [];
+  const send = (cmd) => { const request = dispatchParamount(cmd, f.deps); requests.push(request); return request; };
+  startupEffect(floorSetupState(setup), send);
+  assert.equal(requests.length, 0);
+  assert.equal((await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps)).ok, false);
+  assert.equal(f.state.spawned.length, 0);
+  assert.equal(dispatchFloorSetup({ type: 'setup.complete', home: f.work, engine: 'claude', model: 'claude-opus-4-8' }, setup,
+    { cid: 'setup', fail: (code, message) => ({ ok: false, code, message }) }).ok, true);
+  assert.equal(floorSetupState(setup).complete, true);
+  for (let i = 0; i < 4; i++) startupEffect(floorSetupState(setup), send);
+  const results = await Promise.all(requests);
+  assert.ok(results.every((r) => r.ok));
+  assert.equal(f.state.spawned.length, 1);
+  assert.equal(f.state.spawned[0].isGod, true);
+  assert.equal(f.state.spawned[0].provider, 'claude');
+  assert.ok(f.state.spawned[0].args.includes('claude-opus-4-8'));
+  assert.equal((await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps)).ok, true);
+  assert.equal(f.state.spawned.length, 1);
+});
+
+test('Council mounts automatic startup after setup and uses the configured floor as its cwd', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../ui/src/App.tsx'), 'utf8');
+  assert.match(app, /useOrchestratorStartup\(setup\)/);
+  const hook = fs.readFileSync(path.join(__dirname, '../ui/src/app/use-orchestrator-startup.ts'), 'utf8');
+  assert.match(hook, /setup\?\.complete/);
+  assert.match(hook, /orchestrator.ensure/);
+  const main = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  assert.match(main, /defaultCwd: \(orchestrator\) => orchestrator \? readConfig\(\).harnessHome/);
+});
+
+test('automatic startup resumes the existing identity/name with configured Codex model', async () => {
+  const f = fixture({ setupComplete: () => true, orchestratorProvider: () => 'codex', orchestratorModel: () => 'gpt-x' });
+  f.state.agents.leader = { name: 'Saved leader', provider: 'codex', isGod: true, archived: true };
+  assert.equal((await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps)).ok, true);
+  assert.equal(f.state.spawned[0].plan.agentId, 'leader');
+  assert.equal(f.state.spawned[0].plan.name, 'Saved leader');
+  assert.equal(f.state.spawned[0].resume, true);
+  assert.equal(f.state.spawned[0].provider, 'codex');
+  assert.ok(f.state.spawned[0].args.includes('gpt-x'));
+  assert.deepEqual(f.state.steps.filter((e) => e.kind === 'paramount-orchestrator').map((e) => e.step),
+    ['setup-ready', 'readiness-check', 'launch-requested', 'launch-accepted']);
+  assert.ok(f.state.steps.every((e) => typeof e.cid === 'string'));
+});
+
+test('automatic startup recognizes an already live god without another spawn', async () => {
+  const f = fixture({ setupComplete: () => true });
+  f.state.agents.god = { isGod: true, name: 'Saved' };
+  assert.equal((await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps)).ok, true);
+  assert.equal(f.state.spawned.length, 0);
+});
+
+for (const [label, overrides, code] of [
+  ['unknown provider', { orchestratorProvider: () => 'unknown' }, 'INVALID_INPUT'],
+  ['missing executable', { commandAvailable: () => false }, 'UNSUPPORTED'],
+  ['failed allocation', { spawnHire: async () => ({ ok: false, error: 'PTY unavailable sk-abcdefghijklmnopqrstuv' }) }, 'INTERNAL'],
+]) {
+  test(`automatic ${label} is actionable, redacted and latched without render retries`, async () => {
+    const f = fixture({ setupComplete: () => true, ...overrides });
+    const first = await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps);
+    assert.equal(first.ok, false);
+    assert.equal(first.code, code);
+    assert.ok(first.errorId);
+    assert.ok(first.correlationId);
+    assert.doesNotMatch(JSON.stringify(first) + JSON.stringify(f.state.steps), /sk-abcdefghijklmnopqrstuv/);
+    const steps = f.state.steps.length;
+    assert.deepEqual(await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps), first);
+    assert.equal(f.state.steps.length, steps);
+    // Failure latching applies only to automatic startup; explicit recovery works.
+    f.deps.team.commandAvailable = () => true;
+    f.deps.team.spawnHire = async () => ({ ok: true });
+    assert.equal((await dispatchParamount(orchestratorHire(true), f.deps)).ok, true);
+  });
+}
+
+test('automatic startup without an explicit model uses the provider default', async () => {
+  const f = fixture({ setupComplete: () => true, orchestratorProvider: () => 'codex', orchestratorModel: () => undefined });
+  assert.equal((await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps)).ok, true);
+  assert.equal(f.state.spawned[0].args.includes('--model'), false);
+});
+
+test('Council diagnostics failure cannot block the reused baseline launch path', async () => {
+  const f = fixture({ setupComplete: () => true });
+  f.deps.logStep = () => { throw new Error('diagnostic sink offline'); };
+  assert.equal((await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps)).ok, true);
+  assert.equal(f.state.spawned.length, 1);
 });

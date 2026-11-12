@@ -1,3 +1,5 @@
+import { resolveAgentModel } from './paramount-models';
+import { discoverLaunchers, publicDiscovery, launcherDisplayCommand, validateLauncher, readLauncherState, saveLauncherPick, type LauncherPick } from './council-account-launchers';
 // Paramount Team screen commands (lane d-team): new cards, per-agent models and
 // the Add-Agent hire form. dispatchParamount hands these over in one line; every
 // failure goes through the same span, so it carries an errorId and a code.
@@ -10,6 +12,7 @@ import { validateHireManifest, type HireManifest } from '../shared/hire';
 import { AGENT_PROVIDER_PRESETS, normalizeAgentProvider } from '../shared/agentProvider';
 import type { CatalogModel, ModelCatalog } from '../shared/modelCatalogPayload';
 import { isNewer } from '../shared/updateState';
+import { redact } from './paramountObservability';
 import { buildWorkerLaunch } from './workerLaunch';
 
 /** What a confirmed hire hands to main, which owns the PTY layer. */
@@ -23,9 +26,11 @@ export interface TeamSpawn {
   capabilities?: string[];
   isGod?: boolean;
   resume?: boolean;
+  launcher?: LauncherPick | null;
 }
 
 export interface ParamountTeamDeps {
+  launcherDiscovery?(): ReturnType<typeof discoverLaunchers>;
   /** The hive directory, where per-agent model picks are stored; null = hive off. */
   hiveRoot(): string | null;
   addTask(task: { id: string; title: string; description?: string; assignee?: string; status: 'todo' | 'blocked';
@@ -35,6 +40,7 @@ export interface ParamountTeamDeps {
   appVersion: string;
   /** config.defaultModel. */
   defaultModel(): string | undefined;
+  setupComplete?(): boolean;
   orchestratorProvider(): string | undefined;
   orchestratorModel(): string | undefined;
   orchestratorId(): string | undefined;
@@ -60,11 +66,15 @@ interface Deps {
   team?: ParamountTeamDeps;
 }
 
-const TEAM_TYPES = new Set(['card.create', 'team.models', 'agent.hire']);
+const TEAM_TYPES = new Set(['card.create', 'team.models', 'agent.hire', 'launchers.configure', 'orchestrator.ensure']);
 const MODELS_FILE = 'paramount-agent-models.json';
 // IPC creates a new adapter per request. Keep reservations by hive so two
 // windows cannot both pass the registry check while ensureAgent is awaiting IO.
 const pendingOrchestrators = new Set<string>();
+// Reconcile success against current PTYs; only in-flight work and failures latch.
+// One initial automatic launch plus one recovery per floor/process, reset by an
+// explicit successful hire. Remounts can never become an unbounded retry loop.
+const automaticOrchestrators = new Map<string, { inFlight?: Promise<ParamountResult>; failure?: ParamountResult; starts: number }>();
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -192,6 +202,55 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
   };
   try {
     switch (commandType) {
+      case 'orchestrator.ensure': {
+        if (!onlyKeys(command, ['type'])) return fail('INVALID_INPUT', 'orchestrator.ensure takes no fields');
+        if (!team.setupComplete?.() || !team.hiveRoot()) return fail('CONFLICT', 'Finish floor setup before starting the orchestrator');
+        const root = team.hiveRoot()!;
+        const state = automaticOrchestrators.get(root) ?? { starts: 0 };
+        automaticOrchestrators.set(root, state);
+        if (state.inFlight) return state.inFlight;
+        const agentsNow = deps.agents();
+        const liveId = team.orchestratorId() ?? Object.entries(agentsNow).find(([, a]) => object(a) && a.isGod === true)?.[0];
+        if (liveId && team.hasLivePty(liveId)) { state.failure = undefined; return done({}); }
+        if (state.failure) return state.failure;
+        if (state.starts >= 2) {
+          state.failure = fail('CONFLICT', 'The orchestrator stopped after bounded automatic recovery. Open Team and explicitly start it again.');
+          return state.failure;
+        }
+        const step = (stage: string) => {
+          try { deps.logStep?.({ kind: 'paramount-orchestrator', cid: span.cid, step: stage }); } catch { /* diagnostics cannot block startup */ }
+        };
+        // Defer all readiness checks until AFTER reserving the attempt.
+        const attempt = Promise.resolve().then(async (): Promise<ParamountResult> => {
+          step('setup-ready');
+          const agents = deps.agents();
+          const registered = team.orchestratorId() ?? Object.entries(agents).find(([, a]) => object(a) && a.isGod === true)?.[0];
+          if (registered && team.hasLivePty(registered)) { step('already-running'); return done({}); }
+          step('readiness-check');
+          const provider = normalizeAgentProvider(team.orchestratorProvider());
+          const preset = AGENT_PROVIDER_PRESETS.find((p) => p.id === provider);
+          if (!preset?.supportsModel || !preset.canReceiveInbox) return fail('INVALID_INPUT', 'The configured orchestrator engine is unsupported. Correct the floor engine configuration and reopen this floor');
+          const model = resolveAgentModel(provider!, [team.orchestratorModel()], (engine) => teamModels(team.modelCatalog(), team.appVersion).find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
+          const raw = registered ? agents[registered] : undefined;
+          const name = object(raw) && typeof raw.name === 'string' ? raw.name : 'Paramount';
+          step('launch-requested');
+          state.starts++;
+          // Reuse provisioning, executable checks, per-hive reservation, resume,
+          // failed-registration rollback and the main-owned guarded inbox wake.
+          return await dispatchTeam({ type: 'agent.hire', orchestrator: true, confirm: true,
+            manifest: { spec: 'munder-difflin/hire@1', name, ...(model ? { model } : {}) }
+          }, { ...deps, logStep: (event) => {
+            try { deps.logStep?.(redact(event) as Record<string, unknown>); } catch { /* diagnostics are optional */ }
+          } }, span)!;
+        }).catch(failCaught).then((result) => {
+          step(result.ok ? 'launch-accepted' : 'startup-failed');
+          if (!result.ok) state.failure = result;
+          state.inFlight = undefined;
+          return result;
+        });
+        state.inFlight = attempt;
+        return attempt;
+      }
       case 'card.create': {
         if (!onlyKeys(command, ['type', 'title', 'description', 'assignee', 'priority', 'status'])) return fail('INVALID_INPUT', 'card.create accepts title, description, assignee, priority and status');
         const title = typeof command.title === 'string' ? command.title.trim() : '';
@@ -212,6 +271,23 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (!added) return fail('CONFLICT', `Card ${key} was created by someone else a moment ago; retry`);
         return done({ card: { key } });
       }
+      case 'launchers.configure': {
+        if (!onlyKeys(command, ['type', 'scope', 'agentId', 'provider', 'launcher'])) return fail('INVALID_INPUT', 'Invalid launcher settings');
+        const root = team.hiveRoot();
+        if (!root) return fail('UNSUPPORTED', 'Enable the Hive to save an account launcher');
+        if (!['orchestrator', 'temps', 'agent', 'default'].includes(command.scope as string)) return fail('INVALID_INPUT', 'Invalid launcher scope');
+        if (command.scope === 'default' && !['claude', 'codex'].includes(command.provider as string)) return fail('INVALID_INPUT', 'Choose Claude or Codex for the default launcher');
+        const id = command.agentId;
+        const raw = typeof id === 'string' ? deps.agents()[id] : undefined;
+        if (command.scope === 'agent' && !object(raw)) return fail('NOT_FOUND', 'Agent not found');
+        if (command.launcher !== null) {
+          const provider = command.scope === 'default' ? String(command.provider ?? '') : command.scope === 'agent' && object(raw) ? String(raw.provider ?? 'claude') : command.scope === 'orchestrator' ? team.orchestratorProvider() ?? 'claude' : publicDiscovery(team.launcherDiscovery?.()).choices.find((c) => c.id === (command.launcher as LauncherPick)?.id)?.provider ?? '';
+          try { validateLauncher(command.launcher, provider, team.launcherDiscovery?.()); } catch (e) { return fail('INVALID_INPUT', e instanceof Error ? e.message : 'Invalid launcher'); }
+        }
+        writeAttempted = true;
+        saveLauncherPick(root, command.scope === 'agent' && (object(raw) && raw.isGod === true || id === team.orchestratorId()) ? 'orchestrator' : command.scope as 'orchestrator' | 'temps' | 'agent' | 'default', command.launcher as LauncherPick | null, command.scope === 'default' ? String(command.provider ?? '') : typeof id === 'string' ? id : undefined);
+        return done({});
+      }
       case 'team.models': {
         if (!onlyKeys(command, ['type'])) return fail('INVALID_INPUT', 'team.models takes no fields');
         const engines = teamModels(team.modelCatalog(), team.appVersion);
@@ -222,11 +298,19 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           const engine = object(raw) && typeof raw.provider === 'string' ? raw.provider : 'claude';
           agents[id] = picks[id] && picks[id].engine === engine ? picks[id] : { engine };
         }
+        let launchers = publicDiscovery(team.launcherDiscovery?.());
+        let launcherState;
+        try { launcherState = readLauncherState(team.hiveRoot()); }
+        catch { launchers = { status: 'failed', choices: [], message: 'Council launcher settings are unreadable or unsupported. Provider defaults remain available; repair the extension file before restoring saved selections.' }; }
+        const orchestratorModel = resolveAgentModel(team.orchestratorProvider() ?? 'claude', [team.orchestratorModel()], (engine) => engines.find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
         return done({ models: {
           engines,
+          launchers,
+          ...(launcherState ? { launcherState } : {}),
           ...(team.defaultModel() ? { defaultModel: team.defaultModel() } : {}),
+          ...(team.orchestratorId() ? { orchestratorId: team.orchestratorId() } : {}),
           orchestratorProvider: team.orchestratorProvider() ?? 'claude',
-          ...(team.orchestratorModel() ? { orchestratorModel: team.orchestratorModel() } : {}),
+          ...(orchestratorModel ? { orchestratorModel } : {}),
           agents
         } });
       }
@@ -257,7 +341,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         return done({});
       }
       case 'agent.hire': {
-        if (!onlyKeys(command, ['type', 'manifest', 'cwd', 'confirm', 'orchestrator'])) return fail('INVALID_INPUT', 'agent.hire accepts manifest, cwd, confirm and orchestrator');
+        if (!onlyKeys(command, ['type', 'manifest', 'cwd', 'confirm', 'orchestrator', 'launcher'])) return fail('INVALID_INPUT', 'agent.hire accepts manifest, cwd, confirm and orchestrator');
         if (command.confirm !== undefined && typeof command.confirm !== 'boolean') return fail('INVALID_INPUT', 'confirm must be a boolean');
         if (command.orchestrator !== undefined && typeof command.orchestrator !== 'boolean') return fail('INVALID_INPUT', 'orchestrator must be a boolean');
         const isGod = command.orchestrator === true;
@@ -281,11 +365,29 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         const provider = isGod
           ? normalizeAgentProvider(team.orchestratorProvider()) ?? 'claude'
           : normalizeAgentProvider(manifest.provider) ?? 'claude';
-        const model = manifest.model ?? (isGod ? team.orchestratorModel() : undefined);
-        const flags = manifest.commandFlags ?? [];
+        const offered = (engine: string) => teamModels(team.modelCatalog(), team.appVersion).find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? [];
+        const rawFlags = manifest.commandFlags ?? [];
+        const flags: string[] = [];
+        let flagModel: string | undefined;
+        for (let i = 0; i < rawFlags.length; i++) {
+          const flag = rawFlags[i];
+          if (flag === '--model' || flag.startsWith('--model=')) {
+            if (flagModel !== undefined) return fail('INVALID_INPUT', 'Choose one model');
+            flagModel = flag === '--model' ? rawFlags[++i] : flag.slice('--model='.length);
+            if (!flagModel || !resolveAgentModel(provider, [flagModel], offered)) return fail('INVALID_INPUT', 'Pick a model supported by this provider');
+          } else flags.push(flag);
+        }
+        if (manifest.model && (!resolveAgentModel(provider, [manifest.model], offered) || flagModel && flagModel !== manifest.model)) return fail('INVALID_INPUT', 'Pick one model supported by this provider');
+        const model = resolveAgentModel(provider, [flagModel, manifest.model, isGod ? team.orchestratorModel() : team.defaultModel()], offered);
+        const launcherPick = command.launcher === undefined ? (isGod ? readLauncherState(team.hiveRoot()).orchestrator : readLauncherState(team.hiveRoot()).defaults?.[provider]) : command.launcher as LauncherPick | undefined;
+        let profile;
+        try { if (launcherPick !== undefined && launcherPick !== null) profile = validateLauncher(launcherPick, provider, team.launcherDiscovery?.()); }
+        catch (e) { return fail('INVALID_INPUT', e instanceof Error ? e.message : 'Invalid launcher'); }
+        if (profile && model && !teamModels(team.modelCatalog(), team.appVersion).find((e) => e.id === provider)?.models.some((m) => m.id === model)) return fail('INVALID_INPUT', 'Pick a model supported by this provider');
+        if (profile && rawFlags.length) return fail('INVALID_INPUT', 'Account launcher hires do not accept extra command flags');
         const launch = buildWorkerLaunch({
           requestProvider: provider,
-          requestModel: flags.includes('--model') ? undefined : model,
+          requestModel: model,
           defaultCommand: team.defaultCommand(),
           autoMode: team.autoMode(),
         });
@@ -296,7 +398,8 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         const plan: ParamountHirePlan = {
           agentId, name: manifest.name, ...(isGod ? { role: 'Paramount orchestrator' } : manifest.description ? { role: manifest.description } : {}),
           engine: provider, ...(model ? { model } : {}), cwd, isolate,
-          command: [launch.bin, ...args].join(' '), engineInstalled: team.commandAvailable(launch.bin),
+          ...(profile ? { launcher: profile.label } : {}),
+          command: profile ? launcherDisplayCommand([profile.bin, ...profile.args, ...args].join(' ')) : [launch.bin, ...args].join(' '), engineInstalled: team.commandAvailable(profile?.bin ?? launch.bin),
           confirmed: command.confirm === true, consentRequired: check.consentRequired ?? [],
           ignored: IGNORED_FIELDS.filter((f) => manifest[f] !== undefined && !(Array.isArray(manifest[f]) && (manifest[f] as unknown[]).length === 0)),
         };
@@ -306,12 +409,13 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         writeAttempted = true;
         if (orchestratorRoot) pendingOrchestrators.add(orchestratorRoot);
         return Promise.resolve().then(() => team.spawnHire({
-          plan, bin: launch.bin, args, provider,
+          plan, bin: launch.bin, args, provider, launcher: launcherPick ?? null,
           ...(manifest.goal ? { goal: manifest.goal } : {}), ...(manifest.tokenCap ? { tokenCap: manifest.tokenCap } : {}), ...(isGod ? { isGod: true } : {}),
-          ...(registeredGod ? { resume: true } : {}),
+          ...(isGod ? { resume: true } : {}),
           ...(manifest.capabilities ? { capabilities: manifest.capabilities } : {}),
         }, span.cid)).then((started) => {
           deps.logStep?.({ kind: 'paramount-hire', cid: span.cid, step: started.ok ? 'spawned' : 'spawn-failed', agentId, error: started.error });
+          if (started.ok && isGod && orchestratorRoot && !automaticOrchestrators.get(orchestratorRoot)?.inFlight) automaticOrchestrators.delete(orchestratorRoot);
           if (!started.ok) { writeAttempted = false; return fail('INTERNAL', `Could not start ${plan.name}: ${started.error ?? 'unknown error'}`); }
           return done({ hire: plan });
         }, failCaught).finally(() => {

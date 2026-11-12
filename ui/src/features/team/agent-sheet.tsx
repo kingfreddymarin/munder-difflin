@@ -1,3 +1,4 @@
+import { LauncherSettings } from './launcher-select';
 import * as React from 'react';
 // An agent's big card: overview, queue, activity and profile in one modal, opened from any agent on the Team screen.
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
@@ -91,6 +92,7 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
               <TabsContents className="min-h-0 flex-1">
                 <TabsContent value="overview">
                   <AgentSummary agent={agent} />
+                  <LauncherSettings agentId={agent.id} provider={engineId} scope={agent.id === models?.orchestratorId || agent.id === 'god' ? 'orchestrator' : 'agent'} />
                   <div className="mt-3 flex gap-2">
                     <Button className="flex-1" onClick={() => { const c = `c-${agent.id}`; go('chats', { c }); }}>Message (priority)</Button>
                     <Button variant="outline" className="flex-1" onClick={() => go('terminal', { a: agent.id })}>Terminal</Button>

@@ -1,3 +1,5 @@
+import { LauncherSelect } from '@/features/team/launcher-select';
+import type { CouncilLauncherPick } from '@/data/paramount-api';
 // First-run setup (Munder parity). Shown instead of the app while the core reports
 // no set-up floor. Nothing is written until Finish: closing the window mid-setup
 // leaves the profile as it was, and the next launch starts here again.
@@ -9,7 +11,7 @@ import { Label } from '@/components/ui/label';
 import { useActionError, useDispatch, useFloor, useSnapshotRefresh } from '@/data/store';
 import type { FloorSetup } from '@/data/types';
 
-type Stage = 'workspace' | 'orchestrator';
+type Stage = 'workspace' | 'launchers' | 'orchestrator';
 
 export function SetupFlow({ setup }: { setup: FloorSetup }) {
   const dispatch = useDispatch();
@@ -20,6 +22,9 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
   const [home, setHome] = React.useState(setup.suggestedHome);
   const firstReady = setup.engines.find((e) => e.orchestrator && e.installed);
   const [engineId, setEngineId] = React.useState(firstReady?.id ?? '');
+  const [launcher, setLauncher] = React.useState<CouncilLauncherPick | null>(null);
+  const [launcherDefaults, setLauncherDefaults] = React.useState<Record<string, CouncilLauncherPick | null>>({});
+  const [tempLauncher, setTempLauncher] = React.useState<CouncilLauncherPick | null>(null);
   const [model, setModel] = React.useState('');
   const [autoMode, setAutoMode] = React.useState(autoModeDefault);
   const [busy, setBusy] = React.useState(false);
@@ -30,7 +35,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
   const finish = async () => {
     if (!engine) return;
     setBusy(true);
-    const ok = await dispatch({ type: 'setup.complete', home: home.trim(), engine: engine.id, ...(model ? { model } : {}), autoMode });
+    const ok = await dispatch({ type: 'setup.complete', home: home.trim(), engine: engine.id, ...(model ? { model } : {}), launcher, launcherDefaults, tempLauncher, autoMode });
     setBusy(false);
     if (ok) refresh();
   };
@@ -39,12 +44,12 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
     <div className="bg-background text-foreground flex min-h-screen items-center justify-center p-6">
       <div className="w-full max-w-xl space-y-6" data-testid="setup-flow" data-stage={stage}>
         <div>
-          <p className="text-muted-foreground text-xs">Step {stage === 'workspace' ? 1 : 2} of 2</p>
-          <h1 className="text-xl font-semibold">{stage === 'workspace' ? 'Choose where this floor lives' : 'Choose the orchestrator'}</h1>
+          <p className="text-muted-foreground text-xs">Step {stage === 'workspace' ? 1 : stage === 'launchers' ? 2 : 3} of 3</p>
+          <h1 className="text-xl font-semibold">{stage === 'workspace' ? 'Choose where this floor lives' : stage === 'launchers' ? 'Discover account launchers' : 'Choose the orchestrator'}</h1>
           <p className="text-muted-foreground text-sm">
             {stage === 'workspace'
               ? 'Agents, tasks, memory and logs for this floor are kept in this folder. Nothing is created until you finish.'
-              : 'The orchestrator reads the floor mail and routes work to agents. It starts when you finish.'}
+              : stage === 'launchers' ? 'Only aliases and functions found on this device appear. Choose account defaults for new agents and temps. Nothing is launched by discovery.' : 'The orchestrator reads the floor mail and routes work to agents. It starts when you finish.'}
           </p>
         </div>
 
@@ -56,6 +61,16 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
           </div>
         )}
 
+        {stage === 'launchers' && <div className="space-y-4">
+          {['claude', 'codex'].map((provider) => <div key={provider} className="space-y-2">
+            <h2 className="font-medium">{provider === 'claude' ? 'Claude' : 'Codex'} agent default</h2>
+            <LauncherSelect discovery={setup.launchers} provider={provider} value={launcherDefaults[provider] ?? null} onChange={(pick) => setLauncherDefaults((current) => ({ ...current, [provider]: pick }))} />
+          </div>)}
+          <h2 className="font-medium">Temp default</h2>
+          <LauncherSelect discovery={setup.launchers} value={tempLauncher} onChange={setTempLauncher} />
+          <Button variant="outline" onClick={() => refresh()}>Refresh device discovery</Button>
+        </div>}
+
         {stage === 'orchestrator' && (
           <div className="space-y-4">
             <div className="space-y-2" role="radiogroup" aria-label="Engine">
@@ -64,7 +79,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
                 return (
                   <label key={e.id} className={`flex items-center gap-3 rounded-md border p-3 text-sm ${reason ? 'opacity-60' : 'cursor-pointer'}`}>
                     <input type="radio" name="engine" value={e.id} checked={engineId === e.id} disabled={!!reason}
-                      onChange={() => { setEngineId(e.id); setModel(''); }} />
+                      onChange={() => { setEngineId(e.id); setModel(''); setLauncher(launcherDefaults[e.id] ?? null); }} />
                     <span className="flex-1">{e.label}</span>
                     {reason && <span className="text-muted-foreground text-xs">{reason}</span>}
                   </label>
@@ -77,6 +92,8 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
                 <Button variant="link" size="sm" onClick={() => refresh()}>check again</Button>.
               </p>
             )}
+            <LauncherSelect discovery={setup.launchers} provider={engineId} value={launcher} onChange={setLauncher} />
+            <Button variant="link" size="sm" onClick={() => refresh()}>Refresh launchers</Button>
             {engine && engine.models.length > 0 && (
               <div className="space-y-2">
                 <Label htmlFor="setup-model">Model</Label>
@@ -101,9 +118,9 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
         )}
 
         <div className="flex justify-between">
-          <Button variant="ghost" disabled={stage === 'workspace' || busy} onClick={() => setStage('workspace')}>Back</Button>
-          {stage === 'workspace'
-            ? <Button disabled={!homeOk} onClick={() => setStage('orchestrator')}>Continue</Button>
+          <Button variant="ghost" disabled={stage === 'workspace' || busy} onClick={() => setStage(stage === 'orchestrator' ? 'launchers' : 'workspace')}>Back</Button>
+          {stage !== 'orchestrator'
+            ? <Button disabled={!homeOk} onClick={() => { if (stage === 'workspace') setStage('launchers'); else { setLauncher(launcherDefaults[engineId] ?? null); setStage('orchestrator'); } }}>Continue</Button>
             : <Button disabled={!canFinish} onClick={() => void finish()}>{busy ? 'Setting up…' : 'Finish setup'}</Button>}
         </div>
       </div>

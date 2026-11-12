@@ -36,6 +36,7 @@ function floorSetupOf(value: unknown): FloorSetup | undefined {
   const v = object(value);
   if (typeof v.complete !== 'boolean') return undefined;
   return {
+    ...(v.launchers ? { launchers: v.launchers as FloorSetup['launchers'] } : {}),
     complete: v.complete,
     harnessHome: typeof v.harnessHome === 'string' ? v.harnessHome : null,
     suggestedHome: string(v.suggestedHome),
@@ -294,7 +295,7 @@ export function createElectronProvider(): ElectronProvider {
           const card = (result as OkResult).card;
           const event = { ...result.event, command: card && command.type === 'card.create' ? { ...command, key: card.key } : command } as FloorEvent;
           emit(event);
-          if (command.type === 'card.create') refresh();
+          if (['card.create', 'setup.complete', 'orchestrator.ensure'].includes(command.type)) refresh();
           return event;
         }
       } catch (cause) {
@@ -326,7 +327,7 @@ export function createElectronProvider(): ElectronProvider {
       return query({ type: 'team.models' }, 'models', 'The core returned no model list.');
     },
     async hire(manifest, options = {}): Promise<ParamountHirePlan> {
-      const plan = await query({ type: 'agent.hire', manifest, ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.confirm ? { confirm: true } : {}), ...(options.orchestrator ? { orchestrator: true } : {}) }, 'hire', 'The core returned no hire plan.');
+      const plan = await query({ type: 'agent.hire', manifest, ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.confirm ? { confirm: true } : {}), ...(options.orchestrator ? { orchestrator: true } : {}), ...(options.launcher !== undefined ? { launcher: options.launcher } : {}) }, 'hire', 'The core returned no hire plan.');
       if (plan.confirmed) refresh();
       return plan;
     },

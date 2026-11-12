@@ -16,6 +16,7 @@ const ENGINES = [
 function fixture(config = { onboardingComplete: false, harnessHome: null }, ensure = { ok: true }) {
   const calls = { complete: [], ensure: [], events: [], published: [] };
   const deps = {
+    launcherDiscovery: () => ({ status: 'ok', choices: [], profiles: [] }),
     config: () => config,
     suggestedHome: () => '/tmp/Paramount',
     engines: () => ENGINES,
@@ -50,10 +51,10 @@ test('setup.complete writes floor, engine, model and onboardingComplete in one c
   assert.equal(f.calls.events[0].correlationId, 'cid-1');
 });
 
-test('no model means the engine default: godModel is not written', () => {
+test('no model clears stale godModel with the existing empty-string representation', () => {
   const f = fixture();
   assert.equal(f.run({ home: '/tmp/floor', engine: 'claude' }).ok, true);
-  assert.equal('godModel' in f.calls.complete[0], false);
+  assert.equal(f.calls.complete[0].godModel, '');
 });
 
 for (const [name, cmd, code] of [

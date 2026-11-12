@@ -1,6 +1,7 @@
 // Paramount identity (name, userData, UI scheme) — must evaluate before any
 // other module reads userData, so it is the first import.
 import { paramountHome, paramountUiUrl, registerParamountProtocol } from './paramountShell';
+import { resolveLauncherForSpawn, validateLauncher, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
@@ -18,6 +19,7 @@ import { PtyManager, type SpawnOptions } from './pty';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
 import { createBoardDeps } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
+import { resolveAgentModel } from './paramount-models';
 import { agentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
 import { floorSetupState, type FloorSetupDeps } from './paramount-floor-setup';
 import bakedModelCatalog from '../shared/modelCatalog.json';
@@ -2584,7 +2586,7 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
 
 /** Spawn options shared by the `pty:spawn` IPC handler and the god-triggered
  *  ephemeral-worker watcher. */
-type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean };
+type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean; councilLauncher?: LauncherPick | null };
 
 /** Map a `ptyManager.spawn` failure string to the closed `agent_spawn_failed.reason`
  *  enum (analytics.ts). The two known strings come from PtyManager.spawn; anything
@@ -2628,6 +2630,28 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // below. Persist the resolved provider onto opts (+ hive meta) so the registry
   // record and downstream provider-aware steps agree on one value.
   const provider = inferAgentProvider(opts.command, opts.provider ?? opts.hive?.provider);
+  // Council extension gate: absent state leaves the baseline path intact. A saved
+  // account is revalidated BEFORE provisioning, installers or process allocation.
+  const accountFailure = (message: string) => {
+    const errorId = newErrorId();
+    paramountLog({ kind: 'paramount-error', errorId, code: 'INVALID_INPUT', message, agentId: opts.hive?.id });
+    return { ok: false, error: `${message} (error ${errorId})` };
+  };
+  let account: ReturnType<typeof validateLauncher> | undefined;
+  try {
+    account = resolveLauncherForSpawn({ root: hive.root(), agentId: opts.hive?.id, isGod: opts.hive?.isGod === true, isTemp: opts.hive?.role === 'worker', provider, explicit: opts.councilLauncher, isNew: !!opts.hive && !Object.hasOwn(hive.registry().agents, opts.hive.id) });
+    if (account) {
+      if (!ptyManager.isCommandAvailable(account.bin)) throw new Error('Selected launcher executable is unavailable. Install its provider and refresh.');
+      const modelArgs = opts.args ?? [];
+      const modelIndex = modelArgs.findIndex((a) => a === '--model' || a === '-m');
+      if (modelIndex >= 0 && !teamModels(paramountModelCatalog(), app.getVersion()).find((e) => e.id === provider)?.models.some((m) => m.id === modelArgs[modelIndex + 1])) throw new Error('Selected model is unsupported by this account launcher provider. Choose a supported model.');
+      opts.command = account.bin;
+      opts.args = [...account.args, ...(opts.args ?? [])];
+      opts.env = { ...(opts.env ?? {}), ...launcherEnvironment(account) };
+      opts.envUnset = [...new Set([...(opts.envUnset ?? []), ...LAUNCHER_AUTH_ENV])];
+      for (const key of LAUNCHER_AUTH_ENV) delete opts.env[key];
+    }
+  } catch (e) { return accountFailure(e instanceof Error ? e.message : 'Account launcher validation failed'); }
   const claudeProvider = isClaudeProvider(provider);
   opts.provider = provider;
   if (opts.hive) opts.hive = { ...opts.hive, provider };
@@ -2768,6 +2792,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       const inj = await hive.ensureAgent(
         { ...opts.hive, cwd: opts.cwd, provider },
         {
+          preserveAccountHome: !!account,
           semanticMemory: memory.active(),
           responseStyleBrief: readConfig().responseStyleBrief,
           claudeOutputStyle: readConfig().claudeOutputStyle,
@@ -2800,6 +2825,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       console.error('[hive] ensureAgent failed:', e);
     }
   }
+  if (account) opts.env = { ...(opts.env ?? {}), ...launcherEnvironment(account) };
   // Long-run guardrails + tiering (Lane A #6.4/#6.6). All additive to the args
   // already assembled (incl. the hive injection); an explicit choice always wins.
   // Set when an explicit Add Agent "resume session" id couldn't be located and we
@@ -2832,8 +2858,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // modelForRole resolves it and that wins over the worker-oriented defaultModel.
     if (!args.includes('--model')) {
       const m = opts.hive.isGod
-        ? modelForRole(opts.hive, cfg)
-        : paramountModelPick(opts.hive.id) ?? cfg.defaultModel ?? modelForRole(opts.hive, cfg);
+        ? paramountResolveModel(provider, [modelForRole(opts.hive, cfg)])
+        : paramountResolveModel(provider, [paramountModelPick(opts.hive.id), cfg.defaultModel, modelForRole(opts.hive, cfg)]);
       if (m) args.push('--model', m);
     }
     // Name the Remote Control session after the agent (Michael, Jim, Dev1…) so it
@@ -2860,7 +2886,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // session rather than launching a `--resume` against a missing id.
     const explicitSid = typeof opts.resumeSessionId === 'string' ? opts.resumeSessionId.trim() : '';
     const sid = explicitSid || (opts.resume === true ? hive.lastSession(opts.hive.id) : undefined);
-    if (sid && !args.includes('--resume')) {
+    if (account && sid && !launcherSessionExists(account.home, provider, sid)) return accountFailure('Session is unavailable in the selected account. Choose that account explicitly or start a new session.');
+    if (account && sid) { if (!args.includes('--resume')) args.push('--resume', sid); didResume = true; }
+    if (!account && sid && !args.includes('--resume')) {
       if (seedSessionTranscript(opts.cwd, sid)) {
         args.push('--resume', sid);
         didResume = true;
@@ -2905,7 +2933,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // home has both the rollout and the sqlite index).
       const myHome = (opts.env ?? {}).CODEX_HOME;
       const agentsRoot = myHome ? dirname(dirname(myHome)) : '';
-      const ownerHome = agentsRoot ? findCodexHomeForSession(sid, agentsRoot) : null;
+      const ownerHome = account ? (launcherSessionExists(account.home, provider, sid) ? account.home : null) : agentsRoot ? findCodexHomeForSession(sid, agentsRoot) : null;
+      if (account && !ownerHome) return accountFailure('Session is unavailable in the selected account. No replacement process was started.');
       if (!ownerHome) {
         console.warn(`[resume] codex session "${sid}" not found in any agent CODEX_HOME - starting fresh`);
         if (typedSid) resumeNotFound = true;
@@ -2941,7 +2970,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // agent (spawned with --permission-mode bypassPermissions) doesn't stall on an
   // interactive prompt it can't answer and exit code 1. Best-effort, never blocks.
   // Claude-only — other CLIs handle their own permission UX.
-  if (claudeProvider) {
+  if (claudeProvider && !account) {
     try { ensureClaudePermissionsAccepted(opts.cwd); } catch { /* never block spawn */ }
   }
   // Suppress first-run interactive prompts for providers that need it (e.g. Codex
@@ -3006,8 +3035,15 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // Start/enable the daemon under this agent's isolated CODEX_HOME and connect
   // the TUI to it so the thread is visible in ChatGPT mobile. Best-effort: an
   // unavailable/older Codex install still gets a normal local terminal.
-  if (provider === 'codex' && opts.hive?.id) {
+  if (provider === 'codex' && opts.hive?.id && !account) {
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
+  }
+  if (account) {
+    try {
+      const frozenPick = { id: account.id, fingerprint: account.fingerprint, ...(account.unrestricted ? { allowUnrestricted: true } : {}) };
+      validateLauncher(frozenPick, provider);
+      if (opts.hive && !opts.hive.isGod && hive.root()) saveLauncherPick(hive.root()!, 'agent', frozenPick, opts.hive.id);
+    } catch (e) { return accountFailure(e instanceof Error ? e.message : 'Selected launcher changed before launch'); }
   }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });
@@ -3637,34 +3673,46 @@ function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
     publish: paramountPublish
   };
 }
+function paramountResolveModel(provider: string, choices: Array<string | undefined>): string | undefined {
+  return resolveAgentModel(provider, choices, (engine) => teamModels(paramountModelCatalog(), app.getVersion()).find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
+}
+function paramountModelCatalog() {
+  try {
+    const cached = JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown };
+    const remote = parseModelCatalog(cached?.catalog);
+    if (remote) return remote;
+  } catch { /* no cached remote copy; the baked one applies */ }
+  return parseModelCatalog(bakedModelCatalog) ?? { version: 1, providers: {} };
+}
 /** Team screen (paramount-team.ts): cards, model catalog and the Add-Agent hire. */
 function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
   return {
     hiveRoot: () => hive.root(),
     addTask: (task) => hive.enabled() && hive.addTask(task as HiveTask),
-    modelCatalog: () => {
-      try {
-        const cached = JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown };
-        const remote = parseModelCatalog(cached?.catalog);
-        if (remote) return remote;
-      } catch { /* no cached remote copy; the baked one applies */ }
-      return parseModelCatalog(bakedModelCatalog) ?? { version: 1, providers: {} };
-    },
+    modelCatalog: paramountModelCatalog,
     appVersion: app.getVersion(),
     defaultModel: () => readConfig().defaultModel,
+    setupComplete: () => readConfig().onboardingComplete === true && !!readConfig().harnessHome,
     orchestratorProvider: () => readConfig().godProvider,
-    orchestratorModel: () => modelForRole({ isGod: true }, readConfig()),
+    orchestratorModel: () => paramountResolveModel(readConfig().godProvider ?? 'claude', [modelForRole({ isGod: true }, readConfig())]),
     orchestratorId: () => hive.registry().godId ?? undefined,
     hasLivePty: (id) => ptyManager.list().some((pty) => ptyToAgent.get(pty.id) === id),
     ticketKeyPrefix: () => readConfig().ticketKeyPrefix,
     defaultCommand: () => readConfig().defaultCommand,
     autoMode: () => !!readConfig().autoMode,
-    defaultCwd: (orchestrator) => readConfig().registeredRepos?.[0] ?? (orchestrator ? readConfig().harnessHome ?? null : null),
+    defaultCwd: (orchestrator) => orchestrator ? readConfig().harnessHome ?? null : readConfig().registeredRepos?.[0] ?? null,
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
     commandAvailable: (bin) => (isSafeCommandName(bin) || isAbsolute(bin)) && ptyManager.isCommandAvailable(bin),
-    spawnHire: async ({ plan, bin, args, provider, goal, tokenCap, capabilities, isGod, resume }, cid) => {
+    spawnHire: async ({ plan, bin, args, provider, goal, tokenCap, capabilities, isGod, resume, launcher }, cid) => {
       const meta: AgentMeta = { id: plan.agentId, name: plan.name, provider: provider as AgentProvider, ...(plan.role ? { role: plan.role } : {}), ...(capabilities ? { capabilities } : {}), ...(isGod ? { isGod: true } : {}), cwd: plan.cwd };
-      const res = await spawnAgentCore({ id: plan.agentId, cwd: plan.cwd, command: bin, args, cols: 120, rows: 32, hive: meta, isolate: plan.isolate, provider: provider as AgentProvider, resume }, sender);
+      if (launcher !== undefined && hive.root()) {
+        try { saveLauncherPick(hive.root()!, isGod ? 'orchestrator' : 'agent', launcher, plan.agentId); }
+        catch (e) {
+          if (launcher !== null) throw e;
+          paramountLog({ kind: 'paramount-error', cid, errorId: newErrorId(), code: 'INVALID_INPUT', message: 'Launcher storage is unreadable. Starting the explicitly selected provider default without changing saved selections.' });
+        }
+      }
+      const res = await spawnAgentCore({ id: plan.agentId, cwd: plan.cwd, command: bin, args, cols: 120, rows: 32, hive: meta, isolate: plan.isolate, provider: provider as AgentProvider, resume, councilLauncher: launcher }, sender);
       if (!res.ok) {
         // Provisioning registers ownership before PTY allocation. A failed
         // allocation has no exit callback, so roll that registration back to
@@ -5493,7 +5541,7 @@ function nudgeWorker(ptyId: string, ids: string[] = [], orchestrator = false): v
 function runWorkerWakeBeat(): void {
   if (!hive.enabled()) return;
   const reg = hive.registry();
-  if (!reg?.agents || !reg.godId) return;
+  if (!reg?.agents) return;
   const now = Date.now();
   const facts: WorkerWakeFacts[] = [];
   for (const [agentId, a] of Object.entries(reg.agents)) {

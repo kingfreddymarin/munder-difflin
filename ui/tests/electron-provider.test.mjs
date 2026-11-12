@@ -346,3 +346,53 @@ test('first-run setup state is mapped; an older core without it stays set up', a
   globalThis.window = { cth: bridge(nativeSnapshot()) };
   assert.equal((await createElectronProvider().snapshot()).floorSetup, undefined);
 });
+
+test('account launcher choices survive setup mapping and selection crosses setup/hire/configuration boundaries', async () => {
+  const pick = { id: 'dcm', fingerprint: 'a'.repeat(64), allowUnrestricted: true };
+  const launchers = { status: 'ok', choices: [{ id: 'dcm', provider: 'claude', label: 'dcm · Alternate', fingerprint: pick.fingerprint, unrestricted: true }] };
+  const native = nativeSnapshot();
+  native.floorSetup = { complete: false, harnessHome: null, suggestedHome: '/fixture', engines: [], launchers };
+  const seen = [];
+  const api = bridge(native);
+  api.paramountDispatch = async (command) => {
+    seen.push(command);
+    return { ok: true, event: { id: 'launcher-event', at: '2026-01-01T00:00:00Z', actor: 'you', command, correlationId: 'fixture' }, hire: { agentId: 'fixture', confirmed: false } };
+  };
+  globalThis.window = { cth: api };
+  const provider = createElectronProvider();
+  assert.deepEqual((await provider.snapshot()).floorSetup.launchers, launchers);
+  await provider.hire({ spec: 'munder-difflin/hire@1', name: 'Fixture' }, { launcher: pick });
+  assert.deepEqual(seen.at(-1).launcher, pick);
+  await provider.hire({ spec: 'munder-difflin/hire@1', name: 'Fixture' }, { launcher: null });
+  assert.equal(seen.at(-1).launcher, null);
+  await provider.dispatch({ type: 'setup.complete', home: '/fixture', engine: 'claude', launcher: pick });
+  assert.deepEqual(seen.at(-1).launcher, pick);
+  const cmd = { type: 'launchers.configure', scope: 'temps', launcher: pick };
+  assert.equal(provider.unsupported(cmd), null);
+  await provider.dispatch(cmd);
+  assert.deepEqual(seen.at(-1), cmd);
+});
+
+test('setup and automatic startup commands refresh the live snapshot and preserve structured errors', async () => {
+  const core = bridge();
+  const commands = [];
+  core.paramountDispatch = async (command) => {
+    commands.push(command);
+    return { ok: true, event: { id: 'startup', at: '', actor: 'you', command } };
+  };
+  globalThis.window = { cth: core };
+  const provider = createElectronProvider();
+  let refreshes = 0;
+  provider.onRefresh(() => refreshes++);
+  await provider.dispatch({ type: 'setup.complete', home: '/fixture/floor', engine: 'codex' });
+  await provider.dispatch({ type: 'orchestrator.ensure' });
+  assert.deepEqual(commands.map((c) => c.type), ['setup.complete', 'orchestrator.ensure']);
+  assert.equal(refreshes, 2);
+  core.paramountDispatch = async () => ({ ok: false, code: 'UNSUPPORTED', errorId: 'E-startup', correlationId: 'startup-cid', message: 'Install the selected CLI from Health, then start from Team' });
+  await assert.rejects(provider.dispatch({ type: 'orchestrator.ensure' }), (error) => {
+    assert.equal(error.code, 'UNSUPPORTED');
+    assert.equal(error.errorId, 'E-startup');
+    assert.equal(error.correlationId, 'startup-cid');
+    return true;
+  });
+});

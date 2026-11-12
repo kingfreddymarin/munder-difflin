@@ -284,7 +284,7 @@ export interface Prerequisite {
 
 /** First-run floor setup, from the core (Munder parity: no floor until setup completes). */
 export interface FloorSetupEngine { id: string; label: string; orchestrator: boolean; installed: boolean; models: string[] }
-export interface FloorSetup { complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
+export interface FloorSetup { launchers?: import('./paramount-api').CouncilLauncherDiscovery; complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
 
 export interface Snapshot {
   /** Missing on providers without a setup stage (the sample provider); treat as set up. */

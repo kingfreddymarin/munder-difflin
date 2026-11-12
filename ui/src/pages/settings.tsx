@@ -1,3 +1,4 @@
+import { LauncherSettings } from '@/features/team/launcher-select';
 import * as React from 'react';
 import { Tabs, TabsContent, TabsContents, TabsList, TabsTrigger } from '@/components/animate-ui/components/radix/tabs';
 import { Switch } from '@/components/animate-ui/components/radix/switch';
@@ -61,6 +62,12 @@ export function SettingsPage() {
         </TabsList>
         <TabsContents className="min-h-0 flex-1">
           <TabsContent value="setup">
+            <Tile title="Account launchers" hint="refresh device discovery and reconfigure saved defaults">
+              <LauncherSettings scope="default" provider="claude" />
+              <LauncherSettings scope="default" provider="codex" />
+              <LauncherSettings scope="temps" />
+              <LauncherSettings scope="orchestrator" />
+            </Tile>
             <Tile title="Runtime checks" hint="checked at every start · optional services are labeled">
               <PrereqList />
             </Tile>

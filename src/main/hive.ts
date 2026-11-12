@@ -721,6 +721,8 @@ export class HiveManager {
   async ensureAgent(
     meta: AgentMeta,
     opts: {
+      /** Council account extension: do not copy auth or install hooks into a chosen account home. */
+      preserveAccountHome?: boolean;
       semanticMemory?: boolean;
       responseStyleBrief?: string;
       claudeOutputStyle?: 'off' | 'concise' | 'explanatory' | 'learning';
@@ -880,6 +882,9 @@ export class HiveManager {
         try {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
+            else if (desc.shim === 'codex' && opts.preserveAccountHome) {
+              degraded = 'Selected account home preserved; Codex hook installation and remote daemon are disabled for this account launcher.';
+            }
             else if (desc.shim === 'codex') {
               env.CODEX_HOME = this.installCodexHooks(dir, meta.id);
               // Codex refuses to run hooks from a config dir without persisted

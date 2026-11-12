@@ -1,3 +1,4 @@
+import type { CouncilLauncherPick } from './paramount-api';
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
 import type { ParamountBoardCommand, ParamountArtifactMap, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountOpenInApp, ParamountHirePlan, ParamountTeamModels } from './paramount-api';
@@ -23,7 +24,9 @@ export type Command =
   | { type: 'prereq.install'; id: string; confirm?: boolean }
   | { type: 'prereq.start'; id: string; confirm?: boolean }
   | { type: 'setup.dismiss'; degraded: string[] }
-  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean }
+  | { type: 'orchestrator.ensure' }
+  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
+  | { type: 'launchers.configure'; scope: 'agent' | 'temps' | 'orchestrator' | 'default'; agentId?: string; provider?: string; launcher: CouncilLauncherPick | null }
   | { type: 'ask.reply'; messageId: string; mode: AskMode; text: string }
   | { type: 'ask.dismiss'; messageId: string }
   | { type: 'home.layout'; layout: HomeLayout }
@@ -64,7 +67,7 @@ export interface DataProvider {
   /** Models per engine, the default model and each agent's pick (`team.models`). */
   teamModels?(): Promise<ParamountTeamModels>;
   /** The Add-Agent hire: without `confirm` it returns the spawn plan for review; with it the agent starts in a visible terminal. */
-  hire?(manifest: Record<string, unknown>, options?: { cwd?: string; confirm?: boolean; orchestrator?: boolean }): Promise<ParamountHirePlan>;
+  hire?(manifest: Record<string, unknown>, options?: { cwd?: string; confirm?: boolean; orchestrator?: boolean; launcher?: CouncilLauncherPick | null }): Promise<ParamountHirePlan>;
   /** Read-only: map artifacts touched by an agent. */
   artifacts?(agentId: string): Promise<ParamountArtifactMap>;
 }

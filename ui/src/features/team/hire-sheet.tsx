@@ -1,3 +1,5 @@
+import { LauncherSelect } from './launcher-select';
+import type { CouncilLauncherPick } from '@/data/paramount-api';
 // The Add-Agent form. "Hire" starts empty; "Hire from a bundle" pre-fills it from a hire manifest file
 // (munder-difflin/hire@1). Review asks the core for the exact spawn plan; nothing starts until the human
 // presses Hire on that plan, and the agent then runs in a visible terminal.
@@ -43,6 +45,7 @@ export function manifestFromForm(form: Form): Record<string, unknown> {
 export function HireSheet({ open, bundle, orchestrator = false, manifest, notes, onClose }: { open: boolean; bundle: boolean; orchestrator?: boolean; manifest?: Record<string, unknown>; notes?: string[]; onClose: () => void }) {
   const api = useTeamApi();
   const [form, setForm] = React.useState<Form>(EMPTY);
+  const [launcher, setLauncher] = React.useState<CouncilLauncherPick | null>(null);
   const [models, setModels] = React.useState<ParamountTeamModels | null>(null);
   const [step, setStep] = React.useState<Step>({ kind: 'form' });
   const [error, setError] = React.useState<BackendError | null>(null);
@@ -56,7 +59,10 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
         ? { ...EMPTY, name: 'Paramount', description: 'Main orchestrator' }
         : EMPTY);
     } catch (cause) { setForm(EMPTY); setError(toBackendError(cause, 'agent.hire')); }
+    setLauncher(null);
     api?.models().then((next) => {
+      if (orchestrator) setLauncher(next.launcherState?.orchestrator ?? null);
+      else setLauncher(next.launcherState?.defaults?.[text(manifest?.provider) || next.engines[0]?.id || 'claude'] ?? null);
       setModels(next);
       if (orchestrator) setForm((current) => ({
         ...current,
@@ -83,7 +89,7 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
     setError(null);
     setStep(confirm && prior ? { kind: 'starting', plan: prior } : { kind: 'reviewing' });
     try {
-      const plan = await api.hire(manifestFromForm(form), { ...(form.cwd.trim() ? { cwd: form.cwd.trim() } : {}), ...(orchestrator ? { orchestrator: true } : {}), confirm });
+      const plan = await api.hire(manifestFromForm(form), { ...(form.cwd.trim() ? { cwd: form.cwd.trim() } : {}), ...(orchestrator ? { orchestrator: true } : {}), confirm, launcher });
       setStep(confirm ? { kind: 'started', plan } : { kind: 'plan', plan });
     } catch (cause) {
       setError(toBackendError(cause, 'agent.hire'));
@@ -112,11 +118,13 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
           <div className="grid gap-1.5"><Label htmlFor="h-goal">Goal</Label><Textarea id="h-goal" rows={3} value={form.goal} onChange={(e) => edit({ goal: e.target.value })} /></div>
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5"><Label htmlFor="h-engine">Engine</Label>
-              <select id="h-engine" disabled={orchestrator} className="border-input bg-background h-9 rounded-md border px-2 text-sm" value={form.provider} onChange={(e) => edit({ provider: e.target.value, model: '' })}>
+              <select id="h-engine" disabled={orchestrator} className="border-input bg-background h-9 rounded-md border px-2 text-sm" value={form.provider} onChange={(e) => { edit({ provider: e.target.value, model: '' }); setLauncher(models?.launcherState?.defaults?.[e.target.value || models.engines[0]?.id || 'claude'] ?? null); }}>
                 <option value="">Default engine</option>
                 {models?.engines.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
                 {form.provider && !models?.engines.some((e) => e.id === form.provider) && <option value={form.provider}>{form.provider}</option>}
               </select></div>
+            <Button variant="link" size="sm" onClick={() => { setStep({ kind: 'form' }); api?.models().then(setModels, (e) => setError(toBackendError(e, 'team.models'))); }}>Refresh launchers</Button>
+            <LauncherSelect discovery={models?.launchers} provider={engine?.id} value={launcher} onChange={(v) => { setLauncher(v); setStep({ kind: 'form' }); }} />
             <div className="grid gap-1.5"><Label htmlFor="h-model">Model</Label>
               <ModelSelect id="h-model" models={models} engineId={engine?.id} value={form.model} onChange={(model) => edit({ model })} /></div>
           </div>
@@ -126,6 +134,7 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
 
           {plan && (
             <div className="flex flex-col gap-1.5 rounded-lg border p-3 text-sm" data-hire-plan={plan.agentId}>
+              <span>Account launcher: {plan.launcher ?? 'Provider default'}</span>
               <span className="font-medium">{plan.name} <span className="text-muted-foreground font-mono text-xs">{plan.agentId}</span></span>
               <code className="bg-muted rounded px-2 py-1 font-mono text-xs break-all">{plan.command}</code>
               <span className="text-muted-foreground text-xs break-all">in {plan.cwd}{plan.isolate ? ' · own worktree' : ''}</span>

@@ -1,3 +1,4 @@
+import { LauncherSettings } from '@/features/team/launcher-select';
 import * as React from 'react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/animate-ui/components/radix/popover';
 import { Switch } from '@/components/animate-ui/components/radix/switch';
@@ -132,6 +133,7 @@ export function TeamPage() {
           <Tile key={id} title={PANELS[id].title} hint={PANELS[id].hint}>{body(id)}</Tile>
         ))}
       </div>
+      <LauncherSettings scope="temps" />
       <AgentSheet agentId={open} tab={route.params.get('tab')} onClose={() => go('team')} />
       <ImportAgentsSheet open={importing} onClose={() => setImporting(false)} onImported={(manifest, notes) => { setImporting(false); setHiring({ bundle: false, manifest, notes }); }} />
       <HireSheet open={!!hiring} bundle={!!hiring?.bundle} orchestrator={!!hiring?.orchestrator} manifest={hiring?.manifest} notes={hiring?.notes} onClose={() => setHiring(null)} />
