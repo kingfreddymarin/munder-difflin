@@ -63,15 +63,17 @@ test('a dead holder\'s lock is taken over; a relaunch of the same profile is our
   const again = createFloorGate({ ...council, pid: 3003 }, () => true);
   assert.equal(again.claim(f.home).state, 'open');
   assert.equal(JSON.parse(fs.readFileSync(f.lockFile, 'utf8')).pid, 3003);
-  // An unreadable lock is replaced.
+  // An unreadable lock is replaced once it is older than a claim in progress could be.
   fs.writeFileSync(f.lockFile, '{ not json');
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(f.lockFile, old, old);
   assert.equal(createFloorGate(council, () => true).claim(f.home).state, 'open');
 });
 
 test('release removes only our own lock', (t) => {
   const f = floor(t);
   fs.writeFileSync(f.lockFile, munderLock(71506));
-  assert.equal(releaseFloorLock(f.hive, council), false);
+  assert.equal(releaseFloorLock(f.hive, JSON.parse(munderLock(2002)), () => true), false);
   assert.ok(fs.existsSync(f.lockFile));
   fs.unlinkSync(f.lockFile);
   const gate = createFloorGate(council, () => true);

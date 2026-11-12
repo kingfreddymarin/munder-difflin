@@ -84,7 +84,7 @@ import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, au
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { claimFloor, registerParamountRuntime } from './paramount-runtime';
-import { createFloorGate } from './floor-lock';
+import { createFloorGate, FLOOR_LOCK_FILE } from './floor-lock';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
@@ -331,7 +331,11 @@ let breakerBeatTimer: ReturnType<typeof setInterval> | null = null;
 telemetry.onApiError((agentId) => breaker.recordError(agentId));
 // Shared roster on disk — created early so HookServer can re-read standing goals
 // on every UserPromptSubmit (Edit Agent saves land here via persistAgents).
-const roster = new RosterStore(() => readConfig().harnessHome);
+/** The floor's home only while this process holds its .floor-lock (review F2): every floor-bound
+ *  service resolves its home through this, so a refused floor gets no roster, memory or reflector
+ *  writes, exactly like the hive. */
+const floorHome = (): string | null => floorGate.homeFor(readConfig().harnessHome);
+const roster = new RosterStore(floorHome);
 function standingGoalFromRoster(agentId: string): string | null {
   const snap = roster.read();
   if (!snap || !Array.isArray(snap.agents)) return null;
@@ -365,7 +369,7 @@ const hookServer = new HookServer(
   (agentId, event, message) => workerWake.noteHook(agentId, event, message)
 );
 const memory = new MemoryManager(
-  () => readConfig().harnessHome,
+  floorHome,
   () => { const c = readConfig(); return { enabled: c.semanticMemory !== false, model: c.embeddingModel ?? 'minilm' }; }
 );
 // Enterprise Knowledge Graph — file-backed store + agent CLI (default OFF).
@@ -386,7 +390,7 @@ function reflectSettings(): ReflectSettings {
 // Finishes the janitor's missing condense half: bounds each agent's memory.md
 // (Haiku tail-summary, backup→verify→atomic-swap) so it never grows unbounded.
 const reflector = new MemoryReflector(
-  () => readConfig().harnessHome,
+  floorHome,
   () => readConfig().defaultCommand ?? 'claude',
   () => memory.env(),
   reflectSettings,
@@ -2627,6 +2631,16 @@ ipcMain.handle('pty:spawn', async (evt, opts: AgentSpawnOptions) => {
   return spawnAgentCore(opts, owner);
 });
 
+/** A floor agent (one with hive identity) spawns only while this process holds the floor; a plain
+ *  terminal (no hive identity) stays available, as in Munder with no floor configured. */
+function floorSpawnRefusal(opts: { hive?: unknown }): string | null {
+  if (!opts.hive || !readConfig().harnessHome || floorHome()) return null;
+  const s = floorGate.state();
+  return s.state === 'refused'
+    ? `${s.refusal.owner} (pid ${s.refusal.pid}) has this floor open. No agent was started.`
+    : 'This floor is not open in this app. No agent was started.';
+}
+
 /** Core agent-spawn logic — provider inference, the missing-CLI installer
  *  short-circuit, git-worktree isolation, hive provisioning, model/resume flags,
  *  and the final PTY spawn. Extracted VERBATIM from the `pty:spawn` IPC handler so
@@ -2642,6 +2656,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // with `cwd does not exist`. Expanding BEFORE hive provisioning is what makes the
   // registry store an ABSOLUTE cwd (and `cwdValid: true`). The resolved value is
   // returned to the caller so the renderer records the same absolute path.
+  const refused = floorSpawnRefusal(opts);
+  if (refused) return { ok: false, error: refused };
   opts.cwd = expandTilde(opts.cwd);
   if (opts.hive) opts.hive = { ...opts.hive, cwd: expandTilde(opts.hive.cwd) };
   // Which CLI is this? Explicit wins; else inferred from the binary
@@ -2761,7 +2777,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   if (opts.isolate === true && await isRepo(opts.cwd)) {
     try {
       const origCwd = opts.cwd;
-      const wtRoot = join(readConfig().harnessHome ?? origCwd, 'worktrees');
+      const wtRoot = join(floorHome() ?? origCwd, 'worktrees');
       // The id is renderer-supplied (validated only as a string). Slugify it so a
       // crafted id can't inject path separators, then assert the resolved path
       // stays under the worktrees root (defends against bare '..' that slugify
@@ -3295,6 +3311,12 @@ ipcMain.handle('config:ensureHome', (_evt, path: unknown) => {
   return ensureHarnessHome(path);
 });
 
+/** cpSync filter for a floor move: the lock, its claim mutex and claim temp files stay behind. */
+function isNotFloorLockPath(src: string): boolean {
+  const name = basename(src);
+  return name !== FLOOR_LOCK_FILE && !name.startsWith(`${FLOOR_LOCK_FILE}.`);
+}
+
 // Change the harnessHome folder. Because every derived path (hive root, palace,
 // sock, agent dirs) resolves lazily through getHome(), the only real work is
 // optionally MOVING the existing hive + palace and relaunching so every service
@@ -3322,8 +3344,14 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
     }
   }
 
+  // Review F3: claim the destination floor before anything is written there. A floor another
+  // live app holds is refused untouched; the current floor's claim is kept until its services
+  // and agents have stopped, and is released only right before the relaunch.
+  const destination = floorGate.reserve(newHome);
+  if (destination.state === 'refused') return { ok: false, error: `${destination.refusal.owner} (pid ${destination.refusal.pid}) has that folder's floor open. Quit it, or choose another folder.` };
+  if (destination.state !== 'open') return { ok: false, error: `The destination floor could not be locked: ${destination.state === 'error' ? destination.detail : 'unknown error'}` };
   const ensured = ensureHarnessHome(newHome);
-  if (!ensured.ok) return ensured;
+  if (!ensured.ok) { floorGate.unreserve(); return ensured; }
 
   // Tear down everything bound to the OLD root before copying, so nothing writes
   // mid-copy — a live git commit into hive/.git would otherwise be copied as a
@@ -3352,11 +3380,13 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
         // cpSync copies the whole tree incl. .git and is cross-device safe (unlike
         // renameSync, which throws EXDEV across volumes). We COPY, never delete —
         // the old folder stays as a safety net the user removes manually.
-        cpSync(src, join(newHome, sub), { recursive: true, force: true, dereference: false });
+        // Never copy floor ownership: the destination's lock is the one reserved above.
+        cpSync(src, join(newHome, sub), { recursive: true, force: true, dereference: false, filter: isNotFloorLockPath });
       }
     } catch (e) {
       // Copy failed: recover IN PLACE against the unchanged old home (config never
       // repointed) so the user loses nothing, and surface the error — no relaunch.
+      floorGate.unreserve();
       bootstrapHiveServices();
       const cfg = readConfig();
       if (cfg.slackEnabled && cfg.slackSigningSecret) void startSlackServer();
@@ -3370,6 +3400,9 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   allowQuit = true;
   writeConfig({ harnessHome: newHome });
   try { ptyManager.killAll(); } catch (e) { console.error('[changeHome] killAll:', e); }
+  // Agents and services on the old floor have stopped: release it. The destination stays
+  // reserved for the relaunch (same profile, so the new process takes it over as its own).
+  floorGate.release();
   app.relaunch();
   app.exit(0);
   return { ok: true as const }; // unreachable (process exits) — typed for the renderer
