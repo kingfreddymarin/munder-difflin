@@ -699,6 +699,8 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     catch (e) { console.error('[paramount] orchestrator start failure log failed:', e); }
   }
   teardownPty(id, { keepEntry: !!failedStart });
+  // A kept entry sends no hive:agentArchived, so tell Council to re-read (the failure banner).
+  if (failedStart) broadcastParamountInvalidation('orchestrator-start-failed');
 });
 
 /** Keep the system from suspending the harness while agents are running.
@@ -5844,7 +5846,7 @@ app.whenReady().then(() => {
   { const cfg = readConfig(); if (cfg.harnessHome && !cfg.onboardingComplete) writeConfig({ onboardingComplete: true }); }
   // Bootstrap the hive (if harnessHome is configured) and start the message router.
   bootstrapHiveServices();
-  registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, log: (step) => paramountLog(step), onQuit: (fn) => { beforeTeardown.push(fn); app.on('will-quit', fn); } }); // Munder useRestoreTeam parity (paramount-runtime.ts)
+  registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, log: (step) => paramountLog(step), onQuit: (fn) => { beforeTeardown.push(fn); app.on('will-quit', fn); keepFloorReleaseLast(); } }); // Munder useRestoreTeam parity (paramount-runtime.ts)
   // A timed YOLO window that ended while the app was closed turns autoMode off now.
   armAutoModeExpiry();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a
@@ -5932,7 +5934,11 @@ app.on('window-all-closed', () => {
 // exactly what's left to do.
 let analyticsFlushed = false;
 // Give the floor back so Munder (or another Council) can open it.
-app.on('will-quit', () => { floorGate.release(); });
+// The floor lock is released LAST on quit: will-quit listeners run in registration order, and
+// hooks registered later (the runtime's) still need hive.root() to remove their own files.
+function releaseFloorOnQuit(): void { floorGate.release(); }
+function keepFloorReleaseLast(): void { app.removeListener('will-quit', releaseFloorOnQuit); app.on('will-quit', releaseFloorOnQuit); }
+app.on('will-quit', releaseFloorOnQuit);
 app.on('will-quit', (e) => {
   if (analyticsFlushed) return;
   analyticsFlushed = true;

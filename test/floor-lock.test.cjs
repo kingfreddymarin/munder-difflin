@@ -119,5 +119,10 @@ test('index.ts: the hive gets its home through the floor gate, and the lock come
   for (const service of ['hive.ensureHive()', 'archiveOrphanedAgents()', 'hive.startRouter()', 'hookServer.start()', 'startEphemeralWorkerWatcher()']) {
     assert.ok(boot.indexOf(service) > claim, `${service} runs after the floor lock is held`);
   }
-  assert.match(code, /app\.on\('will-quit', \(\) => \{ floorGate\.release\(\); \}\)/);
+  assert.match(code, /function releaseFloorOnQuit\(\): void \{ floorGate\.release\(\); \}/);
+  assert.match(code, /app\.on\('will-quit', releaseFloorOnQuit\);/);
+  // Released after the runtime's quit hook, which still needs hive.root() (real-app check of 2c450de6
+  // left .paramount-runtime.lock behind).
+  assert.match(code, /onQuit: \(fn\) => \{ beforeTeardown\.push\(fn\); app\.on\('will-quit', fn\); keepFloorReleaseLast\(\); \}/);
+  assert.match(code, /function keepFloorReleaseLast\(\): void \{ app\.removeListener\('will-quit', releaseFloorOnQuit\); app\.on\('will-quit', releaseFloorOnQuit\); \}/);
 });

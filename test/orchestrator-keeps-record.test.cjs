@@ -149,6 +149,8 @@ test('index.ts: a failed orchestrator start is logged and its entry is not archi
   assert.ok(watched > 0 && watched < exit.indexOf('teardownPty(id, { keepEntry: !!failedStart });'), 'the exit is checked before teardown');
   assert.match(exit, /kind: 'paramount-error', errorId: newErrorId\(\), op: 'orchestrator\.start'/);
   assert.match(code, /orchestratorStart\.started\(plan\.agentId, provider, res\.resumed === true\)/);
+  // Found in the isolated real-app check of 2c450de6: without this the banner never appeared.
+  assert.match(exit, /if \(failedStart\) broadcastParamountInvalidation\('orchestrator-start-failed'\);/);
   assert.match(code, /orchestratorFailure: orchestratorStart\.failure\(\)/);
   assert.match(code, /orchestratorStartFailure: \(\) => orchestratorStart\.failure\(\)/);
 });
