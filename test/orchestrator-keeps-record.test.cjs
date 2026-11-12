@@ -148,9 +148,58 @@ test('index.ts: a failed orchestrator start is logged and its entry is not archi
   const watched = exit.indexOf('orchestratorStart.exited(');
   assert.ok(watched > 0 && watched < exit.indexOf('teardownPty(id, { keepEntry: !!failedStart });'), 'the exit is checked before teardown');
   assert.match(exit, /kind: 'paramount-error', errorId: newErrorId\(\), op: 'orchestrator\.start'/);
-  assert.match(code, /orchestratorStart\.started\(plan\.agentId, provider, res\.resumed === true\)/);
+  assert.match(code, /orchestratorStart\.started\(plan\.agentId, provider, res\.resumed === true, priorArchived\)/);
+  assert.match(exit, /if \(failedStart\?\.priorArchived !== undefined\) restoreArchived\(failedStart\.agentId, failedStart\.priorArchived\);/);
   // Found in the isolated real-app check of 2c450de6: without this the banner never appeared.
   assert.match(exit, /if \(failedStart\) broadcastParamountInvalidation\('orchestrator-start-failed'\);/);
   assert.match(code, /orchestratorFailure: orchestratorStart\.failure\(\)/);
   assert.match(code, /orchestratorStartFailure: \(\) => orchestratorStart\.failure\(\)/);
+});
+
+// Re-review R4: a failed PTY allocation (spawnHire's !res.ok branch) still archived an existing god.
+// Runs the real spawnHire callback, restoreArchived and teardownPty from index.ts with a real
+// HiveManager; only the spawn core is stubbed (it provisions the entry, then fails to allocate).
+function indexPieces(hive, spawnCore) {
+  const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  const cut = (from, to) => { const a = code.indexOf(from); const b = code.indexOf(to, a); return code.slice(a, b + to.length); };
+  const restore = cut('function restoreArchived(', '\n}\n');
+  const teardown = cut('function teardownPty(', '\n}\n');
+  const hire = cut('spawnHire: async (', '      return { ok: true };\n    }');
+  const src = `${restore}\n${teardown}\nconst deps = { ${hire} };\nmodule.exports = deps;`;
+  const ts = require('typescript');
+  const js = ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const ptyToAgent = new Map();
+  const noop = () => {};
+  const ctx = { module: { exports: {} }, console, hive, ptyToAgent, liveWorkers: new Map(), worktreePaths: new Map(), worktreeOrigins: new Map(),
+    paramountOrchestrators: new Set(), integrationBroker: { revoke: noop }, workerWake: { forget: noop }, breaker: { forget: noop },
+    telemetry: { forgetAgent: noop }, grokLedgerGate: { forget: noop }, orchestratorStart: createOrchestratorStartWatch(),
+    saveLauncherPick: noop, paramountLog: noop, broadcastParamountInvalidation: noop, syncKeepAwake: noop, liveWebContents: () => null, finalizeWorkerWorktree: noop, removeWorktree: async () => ({}), newErrorId: () => 'E-test', setAgentTokenCap: noop, sender: null,
+    spawnAgentCore: async (o) => { await hive.ensureAgent(o.hive); ptyToAgent.set(o.id, o.id); return spawnCore(o); } };
+  require('node:vm').runInNewContext(js, ctx);
+  return ctx.module.exports;
+}
+
+for (const [label, priorArchived] of [['a live shared god (Munder\'s)', false], ['a stopped god', true]]) {
+  test(`R4: a failed PTY allocation leaves ${label} exactly as it was`, async (t) => {
+    const f = await floor(t);
+    f.hive.setArchived('god', priorArchived);
+    const before = f.hive.registry().agents.god;
+    const deps = indexPieces(f.hive, async () => ({ ok: false, error: 'PTY allocation failed' }));
+    const plan = { agentId: 'god', name: 'Michael', role: 'Floor lead', engine: 'claude', cwd: f.home, isolate: false };
+    const r = await deps.spawnHire({ plan, bin: 'claude', args: [], provider: 'claude', isGod: true, resume: true, launcher: undefined }, 'cid');
+    assert.equal(r.ok, false);
+    const god = f.hive.registry().agents.god;
+    assert.equal(god.archived, priorArchived, 'archived flag as before the start');
+    for (const k of ['provider', 'role', 'name', 'sessionId', 'isGod']) assert.equal(god[k], before[k], k);
+  });
+}
+
+test('R4: a NEW orchestrator whose allocation fails is still rolled back to stopped', async (t) => {
+  const f = await floor(t);
+  const reg = path.join(f.home, 'hive', 'registry.json');
+  fs.writeFileSync(reg, JSON.stringify({ godId: null, agents: {} }));
+  const deps = indexPieces(f.hive, async () => ({ ok: false, error: 'PTY allocation failed' }));
+  const plan = { agentId: 'god', name: 'Paramount', role: 'Paramount orchestrator', engine: 'claude', cwd: f.home, isolate: false };
+  assert.equal((await deps.spawnHire({ plan, bin: 'claude', args: [], provider: 'claude', isGod: true, resume: true }, 'cid')).ok, false);
+  assert.equal(f.hive.registry().agents.god.archived, true);
 });

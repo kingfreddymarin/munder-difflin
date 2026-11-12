@@ -59,15 +59,23 @@ test('a dead holder\'s lock is taken over; a relaunch of the same profile is our
   assert.equal(gate.claim(f.home).state, 'open');
   assert.equal(gate.homeFor(f.home), f.home);
   assert.equal(JSON.parse(fs.readFileSync(f.lockFile, 'utf8')).pid, 2002);
-  // Council crashed and relaunched with the same profile (new pid, old pid still recorded).
+  gate.release();
+  // Council crashed: a real process claims with this profile and dies without releasing.
+  const child = `const { createFloorGate } = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))})('src/main/floor-lock.ts');
+    createFloorGate({ pid: process.pid, userData: ${JSON.stringify(council.userData)}, version: 'Paramount 0.4.6' }).claim(process.argv[1]); process.exit(0);`;
+  require('node:child_process').execFileSync(process.execPath, ['-e', child, f.home], { cwd: path.join(__dirname, '..') });
+  // Relaunched with the same profile (new pid, the dead pid still recorded).
   const again = createFloorGate({ ...council, pid: 3003 }, () => true);
   assert.equal(again.claim(f.home).state, 'open');
   assert.equal(JSON.parse(fs.readFileSync(f.lockFile, 'utf8')).pid, 3003);
+  again.release();
   // An unreadable lock is replaced once it is older than a claim in progress could be.
   fs.writeFileSync(f.lockFile, '{ not json');
   const old = new Date(Date.now() - 60_000);
   fs.utimesSync(f.lockFile, old, old);
-  assert.equal(createFloorGate(council, () => true).claim(f.home).state, 'open');
+  const third = createFloorGate(council, () => true);
+  assert.equal(third.claim(f.home).state, 'open');
+  third.release();
 });
 
 test('release removes only our own lock', (t) => {
@@ -119,7 +127,7 @@ test('index.ts: the hive gets its home through the floor gate, and the lock come
   for (const service of ['hive.ensureHive()', 'archiveOrphanedAgents()', 'hive.startRouter()', 'hookServer.start()', 'startEphemeralWorkerWatcher()']) {
     assert.ok(boot.indexOf(service) > claim, `${service} runs after the floor lock is held`);
   }
-  assert.match(code, /function releaseFloorOnQuit\(\): void \{ floorGate\.release\(\); \}/);
+  assert.match(code, /function releaseFloorOnQuit\(\): void \{[\s\S]{0,300}?floorGate\.release\(\);\s*\}/);
   assert.match(code, /app\.on\('will-quit', releaseFloorOnQuit\);/);
   // Released after the runtime's quit hook, which still needs hive.root() (real-app check of 2c450de6
   // left .paramount-runtime.lock behind).

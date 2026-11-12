@@ -122,6 +122,11 @@ export class MemoryManager {
   private initStarted = false;
   /** True while a mineNow() pass is in flight — serializes palace writers. */
   private mining = false;
+  /** Review R3: stop() kills the running miner and ends the pass, so nothing writes to the floor
+   *  after it is released; drain() resolves once the pass has finished. */
+  private stopGen = 0;
+  private miner: ReturnType<typeof spawn> | null = null;
+  private pass: Promise<void> | null = null;
   /** agentId → memory.md mtimeMs at last successful mine (skip unchanged). */
   private lastMined = new Map<string, number>();
 
@@ -236,7 +241,13 @@ export class MemoryManager {
   stop(): void {
     this.mineStopped = true;
     if (this.mineTimer) { clearTimeout(this.mineTimer); this.mineTimer = null; }
+    this.stopGen++;
+    const proc = this.miner;
+    if (proc) { try { proc.kill('SIGTERM'); } catch { /* gone */ } ensureKilled(proc.pid); }
   }
+
+  /** Resolves when no mine pass is running (call after stop()). */
+  drain(): Promise<void> { return this.pass ?? Promise.resolve(); }
 
   /**
    * Re-resolve the CLI, arm the mine loop if it is only now possible, and report.
@@ -296,8 +307,12 @@ export class MemoryManager {
     let ids: string[];
     try { ids = readdirSync(agentsDir); } catch { return; }
     this.mining = true;
+    const gen = this.stopGen;
+    let done!: () => void;
+    this.pass = new Promise<void>((r) => { done = r; });
     try {
       for (const id of ids) {
+        if (gen !== this.stopGen || this.getHome() !== home) break; // stopped or the floor was released
         const agentDir = join(agentsDir, id);
         const mem = join(agentDir, 'memory.md');
         if (!existsSync(mem)) continue;
@@ -309,7 +324,10 @@ export class MemoryManager {
       }
     } finally {
       this.mining = false;
+      this.pass = null;
+      done();
     }
+    if (gen !== this.stopGen || this.getHome() !== home) return;
     // Every pass above may have left another copy behind, and whether it did
     // decides how long we wait before the next one.
     const quarantined = this.reapPalace();
@@ -368,6 +386,7 @@ export class MemoryManager {
       const proc = spawn(bin, ['mine', agentDir, '--wing', id, '--agent', id], {
         env: this.childEnv(), stdio: ['ignore', 'ignore', 'pipe']
       });
+      this.miner = proc;
       let err = '';
       proc.stderr?.on('data', (d) => { err += d.toString(); });
       // Hard ceiling: a wedged mine used to hold its PID forever AND leave
@@ -381,13 +400,14 @@ export class MemoryManager {
       timer.unref?.();
       proc.on('close', (code) => {
         clearTimeout(timer);
+        if (this.miner === proc) this.miner = null;
         if (code !== 0) {
           console.error(`[memory] mine ${id} exited ${code}: ${err.slice(-300)}`);
           this.lastMined.delete(id); // let the next tick retry
         }
         resolve();
       });
-      proc.on('error', () => { clearTimeout(timer); this.lastMined.delete(id); resolve(); });
+      proc.on('error', () => { clearTimeout(timer); if (this.miner === proc) this.miner = null; this.lastMined.delete(id); resolve(); });
     });
   }
 

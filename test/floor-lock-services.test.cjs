@@ -64,7 +64,7 @@ function changeHome(oldHome, gate) {
     ensureHarnessHome: (h) => { fs.mkdirSync(path.join(h, 'hive'), { recursive: true }); return { ok: true }; },
     clearMissionTimers: noop, clearContextTimers: noop, stopWebhookDoneObserver: noop, stopEphemeralWorkerWatcher: noop,
     integrationBroker: { stop: noop }, hive: { stopRouter: noop }, hookServer: { stop: noop }, stopSlackServer: noop,
-    stopWebhookServer: noop, memory: { stop: noop }, reflector: { stop: noop }, bootstrapHiveServices: noop,
+    stopWebhookServer: noop, memory: { stop: noop, drain: async () => {} }, reflector: { stop: noop, drain: async () => {} }, bootstrapHiveServices: noop,
     startSlackServer: noop, reconcileWebhookServer: noop,
     writeConfig: (c) => calls.push(['writeConfig', c]), ptyManager: { killAll: () => calls.push(['killAll']) },
     app: { relaunch: () => calls.push(['relaunch']), exit: () => calls.push(['exit']) }, allowQuit: false };

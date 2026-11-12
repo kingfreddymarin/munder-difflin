@@ -92,15 +92,14 @@ test('release never removes a successor\'s lock or an unreadable file', (t) => {
   const f = floor(t);
   const old = createFloorGate(me(111, 'A'), () => true);
   assert.equal(old.claim(f.home).state, 'open');
-  // Same profile relaunched (or another holder after a takeover) replaces the lock.
-  assert.equal(acquireFloorLock(f.hive, me(333, 'A'), () => true).ok, true);
-  const successor = fs.readFileSync(f.lockFile, 'utf8');
+  // Another app (Munder does not take Council's kernel claim) replaced the lock meanwhile.
+  const successor = JSON.stringify({ pid: 333, userData: '/tmp/profile-A', since: '2026-11-12T17:00:00.000Z', version: '0.5.7' }, null, 2);
+  fs.writeFileSync(f.lockFile, successor);
   old.release();
   assert.equal(fs.readFileSync(f.lockFile, 'utf8'), successor, 'the successor keeps the floor');
   // An unreadable file is not proof of ownership.
   fs.writeFileSync(f.lockFile, '{ partial');
-  const lock = JSON.parse(successor);
-  assert.equal(releaseFloorLock(f.hive, lock, () => true), false);
+  assert.equal(releaseFloorLock(f.hive, JSON.parse(successor), () => true), false);
   assert.equal(fs.readFileSync(f.lockFile, 'utf8'), '{ partial');
 });
 
@@ -108,6 +107,88 @@ test('our lock is published complete in one step and leaves no temp files', (t) 
   const f = floor(t);
   const r = acquireFloorLock(f.hive, me(111, 'A'), () => true);
   assert.equal(r.ok, true);
-  assert.deepEqual(fs.readdirSync(f.hive).sort(), ['.floor-lock']);
+  // .floor-lock.flock is the kernel claim (macOS); it stays and is never deleted.
+  assert.deepEqual(fs.readdirSync(f.hive).filter((n) => n !== '.floor-lock.flock').sort(), ['.floor-lock']);
   assert.equal(fs.statSync(f.lockFile).mode & 0o777, 0o600);
+});
+
+// Re-review R1 (REVIEW-2026-11-12-floorlock-rereview.md): with a crashed claimant's leftovers, two
+// real processes interleaved at the reclaim steps both owned the floor. The claim is now a kernel
+// lock (macOS O_EXLOCK) that dies with its process, so there is no stale claim to break.
+// Each child pauses at a reclaim step until told to go: A at the first of (removing a crashed
+// claim mutex, unlinking the stale .floor-lock); B only before unlinking the stale .floor-lock.
+function pausedClaimant(hive, ctl, name, pauseOn, waitMs) {
+  const src = `
+    const fs = require('node:fs'), path = require('node:path');
+    const [hive, ctl, name, pauseOn] = process.argv.slice(1);
+    const lockFile = path.join(hive, '.floor-lock'), mutex = path.join(hive, '.floor-lock.claim');
+    let paused = false;
+    const pause = () => { if (paused) return; paused = true; fs.writeFileSync(path.join(ctl, name + '-paused'), '');
+      while (!fs.existsSync(path.join(ctl, name + '-go'))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10); };
+    const rm = fs.rmSync, unlink = fs.unlinkSync;
+    fs.rmSync = function (p, ...a) { if (pauseOn === 'first' && p === mutex) pause(); return rm.call(fs, p, ...a); };
+    fs.unlinkSync = function (p, ...a) { if (p === lockFile) pause(); return unlink.call(fs, p, ...a); };
+    const { acquireFloorLock } = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))})('src/main/floor-lock.ts');
+    const r = acquireFloorLock(hive, { pid: process.pid, userData: '/tmp/profile-' + name, version: 'race' }, undefined, { waitMs: ${waitMs} });
+    fs.writeFileSync(path.join(ctl, name + '-result'), JSON.stringify({ ok: r.ok, error: r.error, pid: process.pid }));
+    setTimeout(() => {}, 3000); // stay alive: a live holder
+  `;
+  return spawn(process.execPath, ['-e', src, hive, ctl, name, pauseOn], { cwd: path.join(__dirname, '..'), stdio: 'ignore' });
+}
+const until = async (cond, ms = 10_000) => { const end = Date.now() + ms; while (!cond()) { if (Date.now() > end) return false; await new Promise((r) => setTimeout(r, 20)); } return true; };
+
+test('R1: two processes interleaved at the reclaim of a crashed claimant cannot both own the floor', { timeout: 60_000 }, async (t) => {
+  const f = floor(t);
+  const ctl = fs.mkdtempSync(path.join(os.tmpdir(), 'council-r1-'));
+  t.after(() => fs.rmSync(ctl, { recursive: true, force: true }));
+  const dead = 2 ** 22 + 4321;
+  fs.mkdirSync(path.join(f.hive, '.floor-lock.claim'));
+  fs.writeFileSync(path.join(f.hive, '.floor-lock.claim', 'owner'), String(dead));
+  fs.writeFileSync(f.lockFile, JSON.stringify({ pid: dead, userData: '/tmp/profile-dead', since: '', version: '0.5.7' }, null, 2));
+  const a = pausedClaimant(f.hive, ctl, 'A', 'first', 8000);
+  t.after(() => a.kill('SIGKILL'));
+  assert.ok(await until(() => fs.existsSync(path.join(ctl, 'A-paused'))), 'A reached a reclaim step');
+  const b = pausedClaimant(f.hive, ctl, 'B', 'unlink', 1500);
+  t.after(() => b.kill('SIGKILL'));
+  await until(() => fs.existsSync(path.join(ctl, 'B-paused')) || fs.existsSync(path.join(ctl, 'B-result')), 6000);
+  fs.writeFileSync(path.join(ctl, 'A-go'), '');
+  assert.ok(await until(() => fs.existsSync(path.join(ctl, 'A-result'))));
+  fs.writeFileSync(path.join(ctl, 'B-go'), '');
+  assert.ok(await until(() => fs.existsSync(path.join(ctl, 'B-result'))));
+  const ra = JSON.parse(fs.readFileSync(path.join(ctl, 'A-result'), 'utf8'));
+  const rb = JSON.parse(fs.readFileSync(path.join(ctl, 'B-result'), 'utf8'));
+  assert.equal([ra, rb].filter((r) => r.ok).length, 1, JSON.stringify({ ra, rb }));
+  const winner = ra.ok ? ra : rb;
+  assert.equal(JSON.parse(fs.readFileSync(f.lockFile, 'utf8')).pid, winner.pid, 'the lock on disk is the winner\'s');
+});
+
+test('R1: a claimant killed while holding the claim leaves nothing stale; six contenders, one winner', { timeout: 60_000 }, async (t) => {
+  const f = floor(t);
+  const crash = `const { acquireFloorLock } = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))})('src/main/floor-lock.ts');
+    const r = acquireFloorLock(process.argv[1], { pid: process.pid, userData: '/tmp/profile-crash', version: 'race' });
+    if (!r.ok) process.exit(2); process.kill(process.pid, 'SIGKILL');`;
+  await new Promise((resolve) => spawn(process.execPath, ['-e', crash, f.hive], { cwd: path.join(__dirname, '..') }).on('exit', resolve));
+  assert.equal(JSON.parse(fs.readFileSync(f.lockFile, 'utf8')).userData, '/tmp/profile-crash');
+  const results = await race(f.hive, 6, 2500);
+  const winners = results.filter((r) => r.ok);
+  assert.equal(winners.length, 1, JSON.stringify(results));
+  assert.equal(winners[0].cleared, true);
+});
+
+test('R5: a crashed claim that cannot be cleared is reported within the wait, never spun on', (t) => {
+  const f = floor(t);
+  const mutex = path.join(f.hive, '.floor-lock.claim');
+  fs.mkdirSync(mutex);
+  fs.writeFileSync(path.join(mutex, 'owner'), String(2 ** 22 + 99));
+  const rm = fs.rmSync;
+  let denied = 0;
+  fs.rmSync = function (p, ...a) { if (p === mutex) { denied++; const e = new Error('EACCES: permission denied'); e.code = 'EACCES'; throw e; } return rm.call(fs, p, ...a); };
+  const started = Date.now();
+  let r;
+  try { r = acquireFloorLock(f.hive, me(111, 'A'), (pid) => pid === 111, { waitMs: 10, kernelLock: false }); } finally { fs.rmSync = rm; }
+  assert.ok(Date.now() - started < 1000, 'bounded');
+  assert.equal(r.ok, false);
+  assert.equal(r.error, 'io');
+  assert.match(r.detail, /could not clear a crashed claim \(\.floor-lock\.claim\): EACCES/);
+  assert.equal(denied, 1);
 });

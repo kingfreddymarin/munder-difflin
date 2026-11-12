@@ -84,7 +84,7 @@ import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, au
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { claimFloor, registerParamountRuntime } from './paramount-runtime';
-import { createFloorGate, FLOOR_LOCK_FILE } from './floor-lock';
+import { createFloorGate, FLOOR_LOCK_FILE, removeFloorContents } from './floor-lock';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
@@ -500,6 +500,13 @@ const preservedWorktrees = new Map<string, PreservedWorktree>();
  * step is wrapped so a teardown error can never crash the caller (an IPC
  * handler or node-pty's onExit).
  */
+/** Put an orchestrator's archived flag back to what it was before a failed start (the spawn's
+ *  registration cleared it). Every other recorded field is kept by the registration itself. */
+function restoreArchived(agentId: string, archived: boolean): void {
+  try { if (hive.enabled() && hive.registry().agents[agentId]) hive.setArchived(agentId, archived); }
+  catch (e) { console.error('[hive] restore archived failed:', e); }
+}
+
 function teardownPty(id: string, opts: { keepEntry?: boolean } = {}): void {
   // Ephemeral-worker flag, read BEFORE the cleanup below deletes the entry. All
   // worker deaths (done-release, idle/token reap, manual stop, crash) funnel
@@ -699,6 +706,7 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     catch (e) { console.error('[paramount] orchestrator start failure log failed:', e); }
   }
   teardownPty(id, { keepEntry: !!failedStart });
+  if (failedStart?.priorArchived !== undefined) restoreArchived(failedStart.agentId, failedStart.priorArchived);
   // A kept entry sends no hive:agentArchived, so tell Council to re-read (the failure banner).
   if (failedStart) broadcastParamountInvalidation('orchestrator-start-failed');
 });
@@ -3369,6 +3377,8 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   try { stopWebhookServer(); } catch (e) { console.error('[changeHome] webhook.stop:', e); }
   try { memory.stop(); } catch (e) { console.error('[changeHome] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[changeHome] reflector.stop:', e); }
+  // Review R3: wait for an in-flight mine or reflection to end before copying or releasing.
+  await Promise.all([memory.drain(), reflector.drain()]).catch((e) => console.error('[changeHome] drain:', e));
 
   if (mode === 'move' && oldHome) {
     try {
@@ -3786,17 +3796,24 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
           paramountLog({ kind: 'paramount-error', cid, errorId: newErrorId(), code: 'INVALID_INPUT', message: 'Launcher storage is unreadable. Starting the explicitly selected provider default without changing saved selections.' });
         }
       }
+      // An orchestrator that was already registered keeps its entry exactly as it was if this start
+      // fails (review R4); only a new one is rolled back to stopped.
+      const prior = isGod ? hive.registry().agents[plan.agentId] : undefined;
+      const priorArchived = prior ? prior.archived === true : undefined;
       const res = await spawnAgentCore({ id: plan.agentId, cwd: plan.cwd, command: bin, args, cols: 120, rows: 32, hive: meta, isolate: plan.isolate, provider: provider as AgentProvider, resume, councilLauncher: launcher }, sender);
       if (!res.ok) {
         // Provisioning registers ownership before PTY allocation. A failed
         // allocation has no exit callback, so roll that registration back to
         // a stopped (archived) state and permit the next explicit retry.
-        if (isGod) teardownPty(plan.agentId);
+        if (isGod) {
+          teardownPty(plan.agentId, { keepEntry: priorArchived !== undefined });
+          if (priorArchived !== undefined) restoreArchived(plan.agentId, priorArchived);
+        }
         return { ok: false, error: res.error };
       }
       if (isGod) {
         paramountOrchestrators.add(plan.agentId);
-        orchestratorStart.started(plan.agentId, provider, res.resumed === true);
+        orchestratorStart.started(plan.agentId, provider, res.resumed === true, priorArchived);
         // Durable work request + main-owned, busy-aware wake. The CLI receives
         // its first prompt only after the established boot/idle/HITL guards.
         hive.send({ to: plan.agentId, act: 'request', subject: 'Start orchestrator', body: [
@@ -4268,19 +4285,30 @@ ipcMain.handle('app:resetAll', () => {
   // Erase the hive (Michael's + every agent's memory, inboxes, tasks, board,
   // git history) and the semantic-memory palace. Only these harness-created
   // subdirs are removed — never the user's whole harnessHome folder.
-  for (const dir of [hive.root(), memory.palacePath()]) {
-    if (!dir) continue;
-    try { rmSync(dir, { recursive: true, force: true }); }
-    catch (e) { console.error('[reset] rm', dir, e); }
-  }
+  // Review R2: this app keeps the floor's lock until its LAST write here. The roster is archived
+  // first (it needs the gated home), then the palace and the hive's contents are removed while
+  // .floor-lock and the kernel claim stay, and only then is the floor released. Deleting the
+  // whole hive used to drop the lock mid-reset, so a successor could claim the floor and lose its
+  // roster to this reset.
   // The roster is the renderer's half of the same state, so it retires with the
   // hive — archived into roster-backups/ rather than deleted, and cleared as the
   // active file so re-selecting this folder later doesn't resurrect agents whose
   // sessions and memory are gone.
   try { roster.archive(); }
   catch (e) { console.error('[reset] roster.archive:', e); }
+  const palace = memory.palacePath();
+  if (palace) {
+    try { rmSync(palace, { recursive: true, force: true }); }
+    catch (e) { console.error('[reset] rm', palace, e); }
+  }
+  const hiveDir = hive.root();
+  if (hiveDir) {
+    try { removeFloorContents(hiveDir); }
+    catch (e) { console.error('[reset] rm', hiveDir, e); }
+  }
   // Back to first-run defaults, then relaunch clean so all in-memory services
   // re-bootstrap from scratch and the renderer lands on onboarding.
+  floorGate.release();
   resetConfig();
   app.relaunch();
   app.exit(0);
@@ -5936,7 +5964,14 @@ let analyticsFlushed = false;
 // Give the floor back so Munder (or another Council) can open it.
 // The floor lock is released LAST on quit: will-quit listeners run in registration order, and
 // hooks registered later (the runtime's) still need hive.root() to remove their own files.
-function releaseFloorOnQuit(): void { floorGate.release(); }
+// Review R3: floor writers are stopped first (the miner child is killed; an in-flight reflection
+// re-checks before writing), so nothing reaches the floor after it is released, even while the
+// analytics flush below keeps the process alive.
+function releaseFloorOnQuit(): void {
+  try { memory.stop(); } catch (e) { console.error('[quit] memory.stop:', e); }
+  try { reflector.stop(); } catch (e) { console.error('[quit] reflector.stop:', e); }
+  floorGate.release();
+}
 function keepFloorReleaseLast(): void { app.removeListener('will-quit', releaseFloorOnQuit); app.on('will-quit', releaseFloorOnQuit); }
 app.on('will-quit', releaseFloorOnQuit);
 app.on('will-quit', (e) => {
