@@ -47,11 +47,14 @@ interface Span {
 
 export function floorSetupState(deps: FloorSetupDeps): FloorSetupState {
   const config = deps.config();
+  const complete = config.onboardingComplete === true && !!config.harnessHome;
   return {
-    complete: config.onboardingComplete === true && !!config.harnessHome,
+    complete,
     harnessHome: config.harnessHome ?? null,
     suggestedHome: deps.suggestedHome(),
-    launchers: publicDiscovery(deps.launcherDiscovery?.()),
+    // Every snapshot builds this state, so launchers are read only while the setup
+    // screen shows, and only from the injected (cached) discovery: never a shell here.
+    ...(!complete && deps.launcherDiscovery ? { launchers: publicDiscovery(deps.launcherDiscovery()) } : {}),
     engines: deps.engines()
   };
 }
@@ -85,8 +88,8 @@ export function dispatchFloorSetup(command: Record<string, unknown>, deps: Floor
     }
     if (command.tempLauncher !== undefined && command.tempLauncher !== null) {
       const pick = command.tempLauncher as LauncherPick;
-      const discovery = deps.launcherDiscovery?.() ?? discoverLaunchers();
-      const choice = discovery.choices.find((c) => c.id === pick.id);
+      const discovery = deps.launcherDiscovery?.();
+      const choice = discovery?.choices.find((c) => c.id === pick.id);
       validateLauncher(pick, choice?.provider ?? '', discovery);
     }
   } catch (e) { return fail('INVALID_INPUT', e instanceof Error ? e.message : 'Invalid default launcher'); }

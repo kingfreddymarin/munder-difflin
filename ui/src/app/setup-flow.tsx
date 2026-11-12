@@ -68,7 +68,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
           </div>)}
           <h2 className="font-medium">Temp default</h2>
           <LauncherSelect discovery={setup.launchers} value={tempLauncher} onChange={setTempLauncher} />
-          <Button variant="outline" onClick={() => refresh()}>Refresh device discovery</Button>
+          <Button variant="outline" onClick={() => void dispatch({ type: 'launchers.refresh' })}>Refresh device discovery</Button>
         </div>}
 
         {stage === 'orchestrator' && (
@@ -93,7 +93,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
               </p>
             )}
             <LauncherSelect discovery={setup.launchers} provider={engineId} value={launcher} onChange={setLauncher} />
-            <Button variant="link" size="sm" onClick={() => refresh()}>Refresh launchers</Button>
+            <Button variant="link" size="sm" onClick={() => void dispatch({ type: 'launchers.refresh' })}>Refresh launchers</Button>
             {engine && engine.models.length > 0 && (
               <div className="space-y-2">
                 <Label htmlFor="setup-model">Model</Label>

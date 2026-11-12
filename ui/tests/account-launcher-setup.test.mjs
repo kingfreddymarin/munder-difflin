@@ -28,14 +28,15 @@ test('first run discovers/configures agent and temp defaults before the orchestr
   assert.ok(nodes(tree).some((n) => n.props['data-stage'] === 'launchers'));
   const selects = nodes(tree).filter((n) => n.tag === 'LauncherSelect');
   assert.equal(selects.length, 3); selects[0].props.onChange(pick('dcm')); selects[1].props.onChange(pick('dcxm')); selects[2].props.onChange(pick('dcxm'));
-  button(tree, 'Refresh device discovery').props.onClick(); assert.equal(h.refreshed(), 1); assert.equal(h.commands.length, 0);
+  // Rediscovery is an explicit main command; the provider re-reads the snapshot after it.
+  button(tree, 'Refresh device discovery').props.onClick(); assert.deepEqual(h.commands, [{ type: 'launchers.refresh' }]);
   tree = h.render(); button(tree, 'Continue').props.onClick(); tree = h.render();
   assert.ok(nodes(tree).some((n) => n.props['data-stage'] === 'orchestrator'));
   assert.equal(nodes(tree).find((n) => n.tag === 'LauncherSelect').props.value.id, 'dcm');
   nodes(tree).find((n) => n.tag === 'input' && n.props.value === 'codex').props.onChange(); tree = h.render();
   assert.equal(nodes(tree).find((n) => n.tag === 'LauncherSelect').props.value.id, 'dcxm');
   button(tree, 'Finish setup').props.onClick(); await new Promise(setImmediate);
-  assert.equal(h.commands.length, 1); const command = h.commands[0];
+  assert.equal(h.commands.length, 2); const command = h.commands[1];
   assert.equal(command.type, 'setup.complete'); assert.equal(command.engine, 'codex'); assert.equal(command.launcher.id, 'dcxm');
   assert.deepEqual(command.launcherDefaults, { claude: pick('dcm'), codex: pick('dcxm') }); assert.equal(command.tempLauncher.id, 'dcxm');
 });

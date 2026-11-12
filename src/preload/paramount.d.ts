@@ -295,6 +295,7 @@ export type ParamountTeamCommand =
    *  validates the hire manifest and returns the exact spawn plan for review;
    *  with it the agent starts in a visible terminal. Nothing spawns unconfirmed. */
   | { type: 'agent.hire'; manifest: Record<string, unknown>; cwd?: string; confirm?: boolean; orchestrator?: boolean; launcher?: CouncilLauncherPick | null }
+  | { type: 'launchers.refresh' }
   | { type: 'launchers.configure'; scope: 'agent' | 'temps' | 'orchestrator' | 'default'; agentId?: string; provider?: string; launcher: CouncilLauncherPick | null };
 /** `agent.update` with `{ model }` (and optionally the agent's own `engine`) is
  *  handled by the team module: the pick is saved and used at the agent's next

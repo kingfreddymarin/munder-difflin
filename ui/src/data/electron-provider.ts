@@ -295,7 +295,7 @@ export function createElectronProvider(): ElectronProvider {
           const card = (result as OkResult).card;
           const event = { ...result.event, command: card && command.type === 'card.create' ? { ...command, key: card.key } : command } as FloorEvent;
           emit(event);
-          if (['card.create', 'setup.complete', 'orchestrator.ensure'].includes(command.type)) refresh();
+          if (['card.create', 'setup.complete', 'orchestrator.ensure', 'launchers.refresh'].includes(command.type)) refresh();
           return event;
         }
       } catch (cause) {

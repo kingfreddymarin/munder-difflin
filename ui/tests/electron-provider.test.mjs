@@ -386,8 +386,10 @@ test('setup and automatic startup commands refresh the live snapshot and preserv
   provider.onRefresh(() => refreshes++);
   await provider.dispatch({ type: 'setup.complete', home: '/fixture/floor', engine: 'codex' });
   await provider.dispatch({ type: 'orchestrator.ensure' });
-  assert.deepEqual(commands.map((c) => c.type), ['setup.complete', 'orchestrator.ensure']);
-  assert.equal(refreshes, 2);
+  // Rediscovery happens in main; the setup screen then re-reads the snapshot.
+  await provider.dispatch({ type: 'launchers.refresh' });
+  assert.deepEqual(commands.map((c) => c.type), ['setup.complete', 'orchestrator.ensure', 'launchers.refresh']);
+  assert.equal(refreshes, 3);
   core.paramountDispatch = async () => ({ ok: false, code: 'UNSUPPORTED', errorId: 'E-startup', correlationId: 'startup-cid', message: 'Install the selected CLI from Health, then start from Team' });
   await assert.rejects(provider.dispatch({ type: 'orchestrator.ensure' }), (error) => {
     assert.equal(error.code, 'UNSUPPORTED');

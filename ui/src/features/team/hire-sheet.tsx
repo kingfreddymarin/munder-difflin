@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { ErrorNotice } from '@/components/app/error-notice';
-import { CopyDiagnosticsButton, useTeamApi } from '@/data/store';
+import { CopyDiagnosticsButton, useDispatch, useTeamApi } from '@/data/store';
 import { BackendError, toBackendError } from '@/data/errors';
 import type { ParamountHirePlan, ParamountTeamModels } from '@/data/paramount-api';
 
@@ -44,6 +44,7 @@ export function manifestFromForm(form: Form): Record<string, unknown> {
 /** `manifest` pre-fills the form (an imported agent); `bundle` asks for a bundle file as the sheet opens. */
 export function HireSheet({ open, bundle, orchestrator = false, manifest, notes, onClose }: { open: boolean; bundle: boolean; orchestrator?: boolean; manifest?: Record<string, unknown>; notes?: string[]; onClose: () => void }) {
   const api = useTeamApi();
+  const dispatch = useDispatch();
   const [form, setForm] = React.useState<Form>(EMPTY);
   const [launcher, setLauncher] = React.useState<CouncilLauncherPick | null>(null);
   const [models, setModels] = React.useState<ParamountTeamModels | null>(null);
@@ -123,7 +124,7 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
                 {models?.engines.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
                 {form.provider && !models?.engines.some((e) => e.id === form.provider) && <option value={form.provider}>{form.provider}</option>}
               </select></div>
-            <Button variant="link" size="sm" onClick={() => { setStep({ kind: 'form' }); api?.models().then(setModels, (e) => setError(toBackendError(e, 'team.models'))); }}>Refresh launchers</Button>
+            <Button variant="link" size="sm" onClick={async () => { setStep({ kind: 'form' }); await dispatch({ type: 'launchers.refresh' }); api?.models().then(setModels, (e) => setError(toBackendError(e, 'team.models'))); }}>Refresh launchers</Button>
             <LauncherSelect discovery={models?.launchers} provider={engine?.id} value={launcher} onChange={(v) => { setLauncher(v); setStep({ kind: 'form' }); }} />
             <div className="grid gap-1.5"><Label htmlFor="h-model">Model</Label>
               <ModelSelect id="h-model" models={models} engineId={engine?.id} value={form.model} onChange={(model) => edit({ model })} /></div>

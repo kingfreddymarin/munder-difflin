@@ -76,6 +76,19 @@ export function acquireLock(root: string, deps: Pick<RuntimeDeps, 'pid' | 'proce
   return true;
 }
 
+/** kill(pid, 0): EPERM means alive but owned by another user. */
+export function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
+/** This process claims the floor (the same lock the runtime beat holds), so a
+ *  second runtime never starts a second orchestrator. False while another live
+ *  process holds it. */
+export function claimFloor(root: string, pid = process.pid, alive: (pid: number) => boolean = processAlive): boolean {
+  // A floor whose lock cannot be written behaves as before the lock existed.
+  try { return acquireLock(root, { pid, processAlive: alive, now: () => Date.now() }); } catch { return true; }
+}
+
 export function releaseLock(root: string, pid: number): void {
   try {
     const held = JSON.parse(readFileSync(join(root, LOCK_FILE), 'utf8')) as { pid?: unknown };
@@ -204,7 +217,7 @@ export function registerParamountRuntime(host: RuntimeHost): ParamountRuntime {
         isolate: false, resume: true, hive: { id: agent.id, name: agent.name, provider: agent.provider, cwd: agent.cwd, ...(agent.role ? { role: agent.role } : {}) } });
     },
     pid: process.pid,
-    processAlive: (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } },
+    processAlive,
     log: host.log,
     now: () => Date.now()
   };

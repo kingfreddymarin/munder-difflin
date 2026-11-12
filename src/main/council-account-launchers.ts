@@ -67,6 +67,15 @@ function profile(id: keyof typeof KNOWN, definition: string, home: string, inher
 
 export function discoverLaunchers(): Discovery { return discoverShellLaunchers(); }
 
+/** Discovery runs the user's login shell, so main keeps ONE result and reruns it
+ *  only on an explicit refresh (setup screen, "Refresh launchers"). Snapshots and
+ *  screens read `current()`; the first read discovers once. */
+export function createLauncherDiscoveryCache(discover: () => Discovery = discoverLaunchers): { current(): Discovery; refresh(): Discovery } {
+  let cached: Discovery | undefined;
+  return { current: () => (cached ??= discover()), refresh: () => (cached = discover()) };
+}
+const NOT_DISCOVERED: Discovery = { status: 'failed', choices: [], profiles: [], message: 'Launchers have not been discovered yet. Refresh launchers.' };
+
 interface ProbeResult { stdout: string; status: number | null; error?: { code?: string } }
 type Probe = (shell: string, script: string, timeout: number) => ProbeResult;
 /** Normal shell startup resolves conditional definitions, removals, precedence
@@ -139,10 +148,10 @@ fi
 export function launcherDisplayCommand(command: string): string {
   return command.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]');
 }
-export function publicDiscovery(discovery = discoverLaunchers()): LauncherDiscovery {
+export function publicDiscovery(discovery: Discovery = NOT_DISCOVERED): LauncherDiscovery {
   return { status: discovery.status, choices: discovery.choices, ...(discovery.message ? { message: discovery.message } : {}) };
 }
-export function validateLauncher(pick: unknown, provider: string, discovery = discoverLaunchers()): Profile {
+export function validateLauncher(pick: unknown, provider: string, discovery: Discovery = NOT_DISCOVERED): Profile {
   if (!pick || typeof pick !== 'object' || Array.isArray(pick)) throw new Error('Choose an account launcher again.');
   const p = pick as LauncherPick;
   if (Object.keys(p).some((k) => !['id', 'fingerprint', 'allowUnrestricted'].includes(k)) || (p.allowUnrestricted !== undefined && typeof p.allowUnrestricted !== 'boolean')) throw new Error('Invalid launcher selection.');
@@ -156,17 +165,37 @@ export function validateLauncher(pick: unknown, provider: string, discovery = di
 }
 export interface LauncherState { version: 1; orchestrator?: LauncherPick; temps?: LauncherPick; agents: Record<string, LauncherPick>; defaults?: Record<string, LauncherPick> }
 function statePath(root: string): string { return join(root, 'council', 'extensions', 'account-launchers.json'); }
+const UNREADABLE = 'Council launcher settings are unreadable or unsupported; repair council/extensions/account-launchers.json before starting a selected account.';
+const validPick = (pick: unknown): pick is LauncherPick => !!pick && typeof pick === 'object' && !Array.isArray(pick)
+  && !Object.keys(pick).some((k) => !['id', 'fingerprint', 'allowUnrestricted'].includes(k))
+  && typeof (pick as LauncherPick).id === 'string' && Object.hasOwn(KNOWN, (pick as LauncherPick).id) && /^[a-f0-9]{64}$/.test(String((pick as LauncherPick).fingerprint))
+  && ((pick as LauncherPick).allowUnrestricted === undefined || typeof (pick as LauncherPick).allowUnrestricted === 'boolean');
+/** Keys of saved picks that fail validation: 'orchestrator', 'temps', 'agent:<id>', 'default:<provider>'. */
+const brokenPicks = new WeakMap<LauncherState, Set<string>>();
 export function readLauncherState(root: string | null): LauncherState {
   if (!root || !existsSync(statePath(root))) return { version: 1, agents: {} };
   try {
     const v = JSON.parse(readFileSync(statePath(root), 'utf8'));
-    if (Object.keys(v).some((k) => !['version', 'agents', 'orchestrator', 'temps', 'defaults'].includes(k)) || v.version !== 1 || !v.agents || typeof v.agents !== 'object' || Array.isArray(v.agents)) throw new Error();
+    if (!v || typeof v !== 'object' || Array.isArray(v) || Object.keys(v).some((k) => !['version', 'agents', 'orchestrator', 'temps', 'defaults'].includes(k)) || v.version !== 1 || !v.agents || typeof v.agents !== 'object' || Array.isArray(v.agents)) throw new Error();
     if (v.defaults !== undefined && (!v.defaults || typeof v.defaults !== 'object' || Array.isArray(v.defaults) || Object.keys(v.defaults).some((k) => !['claude', 'codex'].includes(k)))) throw new Error();
-    for (const pick of [v.orchestrator, v.temps, ...Object.values(v.agents), ...Object.values(v.defaults ?? {})].filter((pick) => pick !== undefined)) {
-      if (!pick || typeof pick !== 'object' || Object.keys(pick).some((k) => !['id', 'fingerprint', 'allowUnrestricted'].includes(k)) || typeof pick.id !== 'string' || !Object.hasOwn(KNOWN, pick.id) || !/^[a-f0-9]{64}$/.test(pick.fingerprint) || (pick.allowUnrestricted !== undefined && typeof pick.allowUnrestricted !== 'boolean')) throw new Error();
+    // A bad entry is kept as written (a later save must not erase it) and marked,
+    // so only the spawns that would use it fail.
+    const broken = new Set<string>();
+    for (const [key, pick] of [['orchestrator', v.orchestrator], ['temps', v.temps], ...Object.entries(v.agents).map(([id, p]) => [`agent:${id}`, p]), ...Object.entries(v.defaults ?? {}).map(([id, p]) => [`default:${id}`, p])] as Array<[string, unknown]>) {
+      if (pick !== undefined && !validPick(pick)) broken.add(key);
     }
+    brokenPicks.set(v, broken);
     return v;
-  } catch { throw new Error('Council launcher settings are unreadable or unsupported; repair council/extensions/account-launchers.json before starting a selected account.'); }
+  } catch { throw new Error(UNREADABLE); }
+}
+/** Saved picks with the broken ones left out, for screens. */
+export function displayLauncherState(state: LauncherState): LauncherState {
+  const broken = brokenPicks.get(state) ?? new Set<string>();
+  const keep = (key: string, pick?: LauncherPick) => (pick !== undefined && !broken.has(key) ? pick : undefined);
+  const agents = Object.fromEntries(Object.entries(state.agents).filter(([id]) => !broken.has(`agent:${id}`)));
+  const defaults = state.defaults && Object.fromEntries(Object.entries(state.defaults).filter(([p]) => !broken.has(`default:${p}`)));
+  const orchestrator = keep('orchestrator', state.orchestrator); const temps = keep('temps', state.temps);
+  return { version: 1, agents, ...(orchestrator ? { orchestrator } : {}), ...(temps ? { temps } : {}), ...(defaults ? { defaults } : {}) };
 }
 export function saveLauncherPick(root: string, scope: 'orchestrator' | 'temps' | 'agent' | 'default', pick: LauncherPick | null, agentId?: string): void {
   const state = readLauncherState(root);
@@ -182,8 +211,21 @@ export function saveLauncherPick(root: string, scope: 'orchestrator' | 'temps' |
 }
 export function runtimeLauncher(root: string | null, agentId: string | undefined, isGod: boolean, isTemp: boolean, explicit?: LauncherPick | null, provider?: string, isNew = false): LauncherPick | undefined {
   if (explicit !== undefined) return explicit ?? undefined;
+  // Launchers exist only for Claude and Codex; other engines never read the file.
+  if (provider !== undefined && !['claude', 'codex'].includes(provider)) return undefined;
+  // An unreadable file still throws: it is the only record of which agents use an
+  // account, so a Claude/Codex spawn cannot tell whether it should use one.
   const state = readLauncherState(root);
-  return explicit ?? (isGod ? state.orchestrator : agentId && Object.hasOwn(state.agents, agentId) ? state.agents[agentId] : isNew ? (isTemp ? state.temps ?? state.defaults?.[provider ?? ''] : state.defaults?.[provider ?? '']) : undefined);
+  const broken = brokenPicks.get(state) ?? new Set<string>();
+  const key = isGod ? 'orchestrator'
+    : agentId && Object.hasOwn(state.agents, agentId) ? `agent:${agentId}`
+    : !isNew ? undefined
+    : isTemp && state.temps !== undefined ? 'temps'
+    : state.defaults && Object.hasOwn(state.defaults, provider ?? '') ? `default:${provider}` : undefined;
+  if (key && broken.has(key)) throw new Error(UNREADABLE);
+  if (!key) return undefined;
+  return key === 'orchestrator' ? state.orchestrator : key === 'temps' ? state.temps
+    : key.startsWith('agent:') ? state.agents[agentId!] : state.defaults?.[provider ?? ''];
 }
 export function launcherEnvironment(p: Profile): Record<string, string> {
   // Set the canonical default home explicitly for `unset`, avoiding an inherited
@@ -201,10 +243,11 @@ export function launcherSessionExists(home: string, provider: string, sid: strin
 }
 
 /** Shared runtime boundary used by every spawn, including restores and temps. */
-export function resolveLauncherForSpawn(input: { root: string | null; agentId?: string; isGod: boolean; isTemp: boolean; provider: string; explicit?: LauncherPick | null; isNew?: boolean }, discovery?: Discovery): Profile | undefined {
+export function resolveLauncherForSpawn(input: { root: string | null; agentId?: string; isGod: boolean; isTemp: boolean; provider: string; explicit?: LauncherPick | null; isNew?: boolean }, discovery?: Discovery | (() => Discovery)): Profile | undefined {
   const pick = runtimeLauncher(input.root, input.agentId, input.isGod, input.isTemp, input.explicit, input.provider, input.isNew);
   if (pick === undefined) return undefined;
-  const result = validateLauncher(pick, input.provider, discovery);
+  // A function is called here only, once: spawns without a launcher never discover.
+  const result = validateLauncher(pick, input.provider, typeof discovery === 'function' ? discovery() : discovery);
   let available = false;
   try { available = existsSync(result.home) && statSync(result.home).isDirectory(); } catch { /* paths are never included in errors */ }
   if (!available) throw new Error('Selected account home is unavailable. Authenticate that launcher outside Council, then retry.');

@@ -26,6 +26,7 @@ export type Command =
   | { type: 'setup.dismiss'; degraded: string[] }
   | { type: 'orchestrator.ensure' }
   | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
+  | { type: 'launchers.refresh' }
   | { type: 'launchers.configure'; scope: 'agent' | 'temps' | 'orchestrator' | 'default'; agentId?: string; provider?: string; launcher: CouncilLauncherPick | null }
   | { type: 'ask.reply'; messageId: string; mode: AskMode; text: string }
   | { type: 'ask.dismiss'; messageId: string }

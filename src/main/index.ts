@@ -1,7 +1,7 @@
 // Paramount identity (name, userData, UI scheme) — must evaluate before any
 // other module reads userData, so it is the first import.
 import { paramountHome, paramountUiUrl, registerParamountProtocol } from './paramountShell';
-import { resolveLauncherForSpawn, validateLauncher, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
+import { resolveLauncherForSpawn, discoverLaunchers, createLauncherDiscoveryCache, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
@@ -19,7 +19,7 @@ import { PtyManager, type SpawnOptions } from './pty';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
 import { createBoardDeps } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
-import { resolveAgentModel } from './paramount-models';
+import { offeredModelIds, resolveAgentModel } from './paramount-models';
 import { agentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
 import { floorSetupState, type FloorSetupDeps } from './paramount-floor-setup';
 import bakedModelCatalog from '../shared/modelCatalog.json';
@@ -82,8 +82,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { registerParamountRuntime } from './paramount-runtime';
-import { offeredModelIds } from './paramount-models';
+import { claimFloor, registerParamountRuntime } from './paramount-runtime';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
@@ -2637,9 +2636,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     paramountLog({ kind: 'paramount-error', errorId, code: 'INVALID_INPUT', message, agentId: opts.hive?.id });
     return { ok: false, error: `${message} (error ${errorId})` };
   };
-  let account: ReturnType<typeof validateLauncher> | undefined;
+  let account: ReturnType<typeof resolveLauncherForSpawn>;
   try {
-    account = resolveLauncherForSpawn({ root: hive.root(), agentId: opts.hive?.id, isGod: opts.hive?.isGod === true, isTemp: opts.hive?.role === 'worker', provider, explicit: opts.councilLauncher, isNew: !!opts.hive && !Object.hasOwn(hive.registry().agents, opts.hive.id) });
+    account = resolveLauncherForSpawn({ root: hive.root(), agentId: opts.hive?.id, isGod: opts.hive?.isGod === true, isTemp: opts.hive?.role === 'worker', provider, explicit: opts.councilLauncher, isNew: !!opts.hive && !Object.hasOwn(hive.registry().agents, opts.hive.id) }, discoverLaunchers);
     if (account) {
       if (!ptyManager.isCommandAvailable(account.bin)) throw new Error('Selected launcher executable is unavailable. Install its provider and refresh.');
       const modelArgs = opts.args ?? [];
@@ -3040,10 +3039,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   }
   if (account) {
     try {
+      // Validated once, above, against this spawn's single discovery.
       const frozenPick = { id: account.id, fingerprint: account.fingerprint, ...(account.unrestricted ? { allowUnrestricted: true } : {}) };
-      validateLauncher(frozenPick, provider);
       if (opts.hive && !opts.hive.isGod && hive.root()) saveLauncherPick(hive.root()!, 'agent', frozenPick, opts.hive.id);
-    } catch (e) { return accountFailure(e instanceof Error ? e.message : 'Selected launcher changed before launch'); }
+    } catch (e) { return accountFailure(e instanceof Error ? e.message : 'The launcher selection could not be saved'); }
   }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });
@@ -3656,6 +3655,7 @@ function paramountPublish(event: ParamountEvent): void {
 function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
   const team = paramountTeamDeps(sender);
   return {
+    launcherDiscovery: () => launcherDiscovery.current(),
     config: () => readConfig(),
     suggestedHome: () => paramountHome(),
     engines: () => {
@@ -3673,6 +3673,9 @@ function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
     publish: paramountPublish
   };
 }
+/** Account launchers found in the login shell: one cached result, rerun only by
+ *  `launchers.refresh` (setup screen, "Refresh launchers"). Never per snapshot. */
+const launcherDiscovery = createLauncherDiscoveryCache();
 function paramountResolveModel(provider: string, choices: Array<string | undefined>): string | undefined {
   return resolveAgentModel(provider, choices, (engine) => teamModels(paramountModelCatalog(), app.getVersion()).find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
 }
@@ -3690,6 +3693,9 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
     hiveRoot: () => hive.root(),
     addTask: (task) => hive.enabled() && hive.addTask(task as HiveTask),
     modelCatalog: paramountModelCatalog,
+    launcherDiscovery: () => launcherDiscovery.current(),
+    refreshLaunchers: () => { launcherDiscovery.refresh(); },
+    claimFloor: () => { const root = hive.root(); return !root || claimFloor(root); },
     appVersion: app.getVersion(),
     defaultModel: () => readConfig().defaultModel,
     setupComplete: () => readConfig().onboardingComplete === true && !!readConfig().harnessHome,

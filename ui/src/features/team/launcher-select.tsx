@@ -39,7 +39,7 @@ export function LauncherSettings({ agentId, provider, scope = 'agent' }: { agent
     <p className="text-sm">{scope === 'default' ? `${provider} default for new agents` : scope === 'temps' ? 'Default account launcher for new temps. Requests must use its provider.' : 'Session account launcher (applies at next start)'}</p>
     <p className="text-muted-foreground text-xs">Account selection: {models?.launchers?.choices.find((c) => c.id === value?.id && c.fingerprint === value.fingerprint)?.label ?? (value ? 'Unavailable — refresh and choose again' : 'Provider default')}</p>
     <LauncherSelect discovery={models?.launchers} provider={provider ?? (scope === 'orchestrator' ? models?.orchestratorProvider : undefined)} value={value} onChange={(v) => { setValue(v); setSaved(false); }} />
-    <button className="rounded border px-3 py-1 text-sm" onClick={load}>Refresh discovery</button>{' '}
+    <button className="rounded border px-3 py-1 text-sm" onClick={async () => { await dispatch({ type: 'launchers.refresh' }); load(); }}>Refresh discovery</button>{' '}
     <button className="rounded border px-3 py-1 text-sm" onClick={async () => { setSaved(false); if (await dispatch({ type: 'launchers.configure', scope, ...(scope === 'default' ? { provider } : {}), ...(agentId ? { agentId } : {}), launcher: value })) setSaved(true); }}>Save launcher</button>
     {saved && <p role="status">Launcher saved for the next start.</p>}
     {error && <ErrorNotice error={error} />}
