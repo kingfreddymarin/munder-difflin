@@ -47,7 +47,8 @@ export interface RuntimeDeps {
 
 interface RuntimeRecord { schema: 'paramount-runtime-v1'; savedAt: string; agents: LiveAgent[] }
 
-function readRecord(root: string): LiveAgent[] {
+/** The agents recorded as live at the last beat or quit (empty when there is no record). */
+export function readRecord(root: string): LiveAgent[] {
   try {
     const raw = JSON.parse(readFileSync(join(root, RUNTIME_FILE), 'utf8')) as Partial<RuntimeRecord>;
     if (raw.schema !== 'paramount-runtime-v1' || !Array.isArray(raw.agents)) return [];

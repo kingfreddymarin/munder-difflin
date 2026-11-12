@@ -146,3 +146,23 @@ test('index.ts: terminals a quit, Switch floor or floor move stops keep their re
   const runtime = fs.readFileSync(path.join(__dirname, '../src/main/paramount-runtime.ts'), 'utf8');
   assert.match(runtime, /if \(deps\.isLive\(agent\.id\) \|\| deps\.isArchived\(agent\.id\)\) \{ result\.skipped\.push/);
 });
+
+test('boot leaves agents recorded as live at the last quit for the runtime to restore (isolated check 2026-11-12)', () => {
+  // archiveOrphanedAgents archived every non-live agent at boot, and restoreAgents skips archived
+  // ones, so no hired agent came back after a quit or Switch floor (restore-summary restored 0).
+  const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  const fn = code.slice(code.indexOf('function archiveOrphanedAgents('), code.indexOf('function archiveOrphanedAgents(') + 1600);
+  assert.match(fn, /const recorded = new Set\(root \? readRecord\(root\)\.map\(\(a\) => a\.id\) : \[\]\);/);
+  assert.ok(fn.indexOf('if (recorded.has(id)) continue;') < fn.indexOf('hive.setArchived(id, true);'));
+});
+
+test('restore: a recorded agent left unarchived is respawned; an archived one (stopped by the human) is skipped', async (t) => {
+  const { restoreAgents, RUNTIME_FILE } = loadTs('src/main/paramount-runtime.ts');
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-restore-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, RUNTIME_FILE), JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: '', agents: [{ id: 'god', name: 'G', provider: 'claude', cwd: root, isGod: true }, { id: 'tester-2', name: 'T', provider: 'claude', cwd: root }, { id: 'stopped', name: 'S', provider: 'claude', cwd: root }] }));
+  const spawned = [];
+  const r = await restoreAgents(root, { isLive: () => false, isArchived: (id) => id === 'stopped', isDirectory: () => true, respawn: async (a) => { spawned.push(a.id); return { ok: true }; }, log() {} });
+  assert.deepEqual(spawned, ['tester-2']);
+  assert.deepEqual(r, { restored: ['tester-2'], skipped: ['god', 'stopped'], failed: [] });
+});

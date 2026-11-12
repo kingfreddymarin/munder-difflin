@@ -84,7 +84,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { claimFloor, registerParamountRuntime } from './paramount-runtime';
+import { claimFloor, readRecord, registerParamountRuntime } from './paramount-runtime';
 import { createFloorGate, FLOOR_LOCK_FILE, floorOwnerName, removeFloorContents, type FloorGateState } from './floor-lock';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
@@ -991,9 +991,15 @@ function archiveOrphanedAgents(): void {
   if (!hive.enabled()) return;
   try {
     const reg = hive.registry();
+    // Council's runtime restores the agents it recorded as live at the last quit or Switch floor
+    // (paramount-runtime.ts) and skips archived ones, so those stay as they are for it. Archiving
+    // them here meant no hired agent ever came back (isolated check 2026-11-12, restored 0).
+    const root = hive.root();
+    const recorded = new Set(root ? readRecord(root).map((a) => a.id) : []);
     for (const [id, a] of Object.entries(reg.agents)) {
       if (a.archived) continue;
       if (id === reg.godId) continue;        // god is never archived
+      if (recorded.has(id)) continue;        // live at the last quit: the runtime restores it
       if (ptyForAgent(id)) continue;         // has a live PTY → genuinely active
       hive.setArchived(id, true);            // stale archived:false orphan → archive
       console.log('[migration] archived orphaned agent (no live PTY):', id);
