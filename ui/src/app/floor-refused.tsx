@@ -6,11 +6,19 @@ import { Button } from '@/components/animate-ui/components/buttons/button';
 import { useActionError, useDispatch } from '@/data/store';
 import type { FloorLockState } from '@/data/types';
 
-export function FloorRefused({ lock }: { lock: Extract<FloorLockState, { state: 'refused' | 'error' }> }) {
+/** During first-run setup the floor is not configured yet, so setup supplies its own retry (Finish
+ *  again) and choose-another (back to the folder step). */
+export function FloorRefused({ lock, onRetry, onChooseAnother }: { lock: Extract<FloorLockState, { state: 'refused' | 'error' }>; onRetry?: () => Promise<void>; onChooseAnother?: () => void }) {
   const dispatch = useDispatch();
   const { error, clear } = useActionError();
   const [busy, setBusy] = React.useState(false);
-  const run = async (type: 'floor.retry' | 'floor.choose-another') => { setBusy(true); clear(); await dispatch({ type }); setBusy(false); };
+  const run = async (type: 'floor.retry' | 'floor.choose-another') => {
+    setBusy(true); clear();
+    if (type === 'floor.retry' && onRetry) await onRetry();
+    else if (type === 'floor.choose-another' && onChooseAnother) onChooseAnother();
+    else await dispatch({ type });
+    setBusy(false);
+  };
   const refused = lock.state === 'refused' ? lock.refusal : null;
   return (
     <div className="bg-background text-foreground flex min-h-screen items-center justify-center p-6">
@@ -26,7 +34,7 @@ export function FloorRefused({ lock }: { lock: Extract<FloorLockState, { state: 
             lock.state === 'error' && <p className="text-sm">The floor lock could not be written at <span className="font-mono">{lock.floor}</span>: {lock.detail}</p>
           )}
         </div>
-        {error && (error.operation === 'floor.retry' || error.operation === 'floor.choose-another') && (
+        {error && (error.operation === 'floor.retry' || error.operation === 'floor.choose-another' || (onRetry && error.operation === 'setup.complete')) && (
           <p className="text-destructive text-sm">{error.message}{error.errorId ? ` (error ${error.errorId})` : ''}</p>
         )}
         <div className="flex gap-2">

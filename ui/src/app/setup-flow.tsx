@@ -11,6 +11,9 @@ import { Label } from '@/components/ui/label';
 import { useActionError, useDispatch, useFloor, useSnapshotRefresh } from '@/data/store';
 import type { FloorSetup } from '@/data/types';
 import { defaultOrchestratorEngine } from './setup-defaults';
+import { chooseFolder } from './folder-pick';
+import { FloorRefused } from './floor-refused';
+import { findBridge } from '@/data/bridge';
 
 type Stage = 'workspace' | 'launchers' | 'orchestrator';
 
@@ -28,6 +31,9 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
   const [model, setModel] = React.useState('');
   const [autoMode, setAutoMode] = React.useState(autoModeDefault);
   const [busy, setBusy] = React.useState(false);
+  const [pickError, setPickError] = React.useState<string | null>(null);
+  // The folder Finish was refused for (another app holds its .floor-lock): show the refusal screen.
+  const [refusedAt, setRefusedAt] = React.useState<string | null>(null);
   const engine = setup.engines.find((e) => e.id === engineId);
   const homeOk = home.trim().startsWith('/');
   const canFinish = !!engine && engine.orchestrator && engine.installed && homeOk && !busy;
@@ -37,8 +43,22 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
     setBusy(true);
     const ok = await dispatch({ type: 'setup.complete', home: home.trim(), engine: engine.id, ...(model ? { model } : {}), launcher, launcherDefaults, tempLauncher, autoMode });
     setBusy(false);
-    if (ok) refresh();
+    refresh();
+    setRefusedAt(ok ? null : home.trim());
   };
+
+  const pickFolder = async () => {
+    setPickError(null);
+    const r = await chooseFolder(findBridge());
+    if (r.kind === 'chosen') setHome(r.path);
+    else if (r.kind === 'failed') setPickError(r.message);
+    else if (r.kind === 'unavailable') setPickError('The folder dialog is not available here; type the full path instead.');
+  };
+
+  const lock = setup.floorLock;
+  if (refusedAt && (lock?.state === 'refused' && lock.refusal.floor === refusedAt || lock?.state === 'error' && lock.floor === refusedAt)) {
+    return <FloorRefused lock={lock} onRetry={finish} onChooseAnother={() => { clear(); setRefusedAt(null); setStage('workspace'); }} />;
+  }
 
   return (
     <div className="bg-background text-foreground flex min-h-screen items-center justify-center p-6">
@@ -56,7 +76,11 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
         {stage === 'workspace' && (
           <div className="space-y-2">
             <Label htmlFor="setup-home">Floor folder</Label>
-            <Input id="setup-home" value={home} onChange={(e) => setHome(e.target.value)} spellCheck={false} />
+            <div className="flex gap-2">
+              <Input id="setup-home" value={home} onChange={(e) => setHome(e.target.value)} spellCheck={false} />
+              <Button type="button" variant="outline" onClick={() => void pickFolder()}>Choose folder…</Button>
+            </div>
+            {pickError && <p className="text-destructive text-xs">{pickError}</p>}
             {!homeOk && <p className="text-destructive text-xs">Enter a full folder path, starting with /.</p>}
           </div>
         )}

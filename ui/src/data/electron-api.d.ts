@@ -16,6 +16,8 @@ export type ElectronBridge = ParamountPreloadAPI & {
   confirmClose?(): Promise<void>;
   cancelClose?(): Promise<void>;
   readClipboard?(): Promise<string>;
+  /** Native folder dialog (openDirectory + createDirectory). error 'cancelled' when the human cancels. */
+  chooseFolder?(): Promise<{ ok: true; path: string } | { ok: false; error: string }>;
   readClipboardSync?(): string;
   /** https only; the main process re-checks. */
   openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
