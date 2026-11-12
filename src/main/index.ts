@@ -1,7 +1,7 @@
 // Paramount identity (name, userData, UI scheme) — must evaluate before any
 // other module reads userData, so it is the first import.
 import { paramountHome, paramountUiUrl, registerParamountProtocol } from './paramountShell';
-import { resolveLauncherForSpawn, discoverLaunchers, createLauncherDiscoveryCache, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
+import { resolveLauncherForSpawn, createLauncherDiscoveryCache, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
@@ -2638,7 +2638,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   };
   let account: ReturnType<typeof resolveLauncherForSpawn>;
   try {
-    account = resolveLauncherForSpawn({ root: hive.root(), agentId: opts.hive?.id, isGod: opts.hive?.isGod === true, isTemp: opts.hive?.role === 'worker', provider, explicit: opts.councilLauncher, isNew: !!opts.hive && !Object.hasOwn(hive.registry().agents, opts.hive.id) }, discoverLaunchers);
+    account = resolveLauncherForSpawn({ root: hive.root(), agentId: opts.hive?.id, isGod: opts.hive?.isGod === true, isTemp: opts.hive?.role === 'worker', provider, explicit: opts.councilLauncher, isNew: !!opts.hive && !Object.hasOwn(hive.registry().agents, opts.hive.id) }, () => launcherDiscovery.current());
     if (account) {
       if (!ptyManager.isCommandAvailable(account.bin)) throw new Error('Selected launcher executable is unavailable. Install its provider and refresh.');
       const modelArgs = opts.args ?? [];

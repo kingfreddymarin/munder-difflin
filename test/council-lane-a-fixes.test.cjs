@@ -136,11 +136,18 @@ test('P2: a spawn discovers at most once, and not at all without a launcher', (t
   assert.equal(f.discoveries(), 0);
   assert.equal(account.resolveLauncherForSpawn({ ...ordinary, explicit: f.dcm() }, f.discover).id, 'dcm');
   assert.equal(f.discoveries(), 1);
-  // index.ts: spawnAgentCore hands the resolver its single discovery and never validates again.
+  // Spawns read the shared cache: one screen read plus two launcher spawns is one probe.
+  const g = floor(t);
+  const cache = account.createLauncherDiscoveryCache(g.discover);
+  cache.current();
+  for (let i = 0; i < 2; i++) assert.equal(account.resolveLauncherForSpawn({ ...ordinary, root: g.root, explicit: g.dcm() }, () => cache.current()).id, 'dcm');
+  assert.equal(g.discoveries(), 1);
+  // index.ts: spawnAgentCore hands the resolver the cache, never a fresh discovery, and never validates again.
   const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
   const core = code.slice(code.indexOf('async function spawnAgentCore'), code.indexOf("ipcMain.handle('paramount:dispatch'"));
   assert.equal(core.includes('validateLauncher('), false);
-  assert.equal((core.match(/discoverLaunchers/g) ?? []).length, 1);
+  assert.equal(core.includes('discoverLaunchers'), false);
+  assert.match(core, /resolveLauncherForSpawn\([\s\S]*?\}, \(\) => launcherDiscovery\.current\(\)\);/);
 });
 
 test('P3: a bad launcher entry stops only the spawns that use it', async (t) => {
