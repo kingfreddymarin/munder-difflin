@@ -17,6 +17,7 @@ export const RUNTIME_FILE = 'paramount-runtime.json';
 export const LOCK_FILE = '.paramount-runtime.lock';
 export const RESTORE_DELAY_MS = 2500; // Munder's AUTO_RESTORE_DELAY_MS
 export const BEAT_MS = 5000;
+export const RESTORE_CONCURRENCY = 4;
 
 export interface LiveAgent {
   id: string;
@@ -139,33 +140,55 @@ export function releaseLock(root: string, pid: number): void {
  *  open and was never archived; an isolated agent's worktree is removed when it stops). One failure
  *  never stops the rest. */
 export async function restoreAgents(root: string, deps: RuntimeDeps): Promise<{ restored: string[]; skipped: string[]; failed: string[]; archived: string[] }> {
+  // Concurrent beat/manual invocations share a single in-flight restore for this
+  // floor, so neither path can launch the same recorded agents twice.
+  const existing = restoreRuns.get(root);
+  if (existing) return existing;
+  const run = restoreAgentsBounded(root, deps);
+  restoreRuns.set(root, run);
+  try { return await run; }
+  finally { if (restoreRuns.get(root) === run) restoreRuns.delete(root); }
+}
+
+const restoreRuns = new Map<string, Promise<{ restored: string[]; skipped: string[]; failed: string[]; archived: string[] }>>();
+
+async function restoreAgentsBounded(root: string, deps: RuntimeDeps): Promise<{ restored: string[]; skipped: string[]; failed: string[]; archived: string[] }> {
   const result = { restored: [] as string[], skipped: [] as string[], failed: [] as string[], archived: [] as string[] };
-  for (const agent of readRecord(root)) {
+  const agents = readRecord(root);
+  let next = 0;
+  const worker = async () => {
+    while (true) {
+      const index = next++;
+      if (index >= agents.length) return;
+      const agent = agents[index];
     // The orchestrator's start and resume belong to the setup/orchestrator path (matrix row 8).
-    if (agent.isGod) { result.skipped.push(agent.id); continue; }
-    if (deps.isLive(agent.id) || deps.isArchived(agent.id)) { result.skipped.push(agent.id); continue; }
+    if (agent.isGod) { result.skipped[index] = agent.id; continue; }
+    if (deps.isLive(agent.id) || deps.isArchived(agent.id)) { result.skipped[index] = agent.id; continue; }
     const directoryState = deps.directoryState?.(agent.cwd) ?? (deps.isDirectory(agent.cwd) ? 'directory' : 'missing');
     if (directoryState !== 'directory') {
       if (directoryState === 'missing' && deps.archive) {
         deps.archive(agent.id);
-        result.archived.push(agent.id);
+        result.archived[index] = agent.id;
         deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'archived', code: 'CWD_MISSING',
           note: `${agent.name}'s folder ${agent.cwd} is gone, so ${agent.name} was archived instead of restored.` });
       } else {
-        result.failed.push(agent.id);
+        result.failed[index] = agent.id;
         deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'failed', code: directoryState === 'missing' ? 'CWD_MISSING' : 'CWD_UNAVAILABLE' });
       }
       continue;
     }
     try {
       const res = await deps.respawn(agent);
-      (res.ok ? result.restored : result.failed).push(agent.id);
+      if (res.ok) result.restored[index] = agent.id; else result.failed[index] = agent.id;
       deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: res.ok ? 'ok' : 'failed', ...(res.ok ? {} : { code: 'SPAWN_FAILED', cause: (res.error ?? '').slice(0, 200) }) });
     } catch (error) {
-      result.failed.push(agent.id);
+      result.failed[index] = agent.id;
       deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'failed', code: 'SPAWN_THREW', cause: (error instanceof Error ? error.message : String(error)).slice(0, 200) });
     }
-  }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(RESTORE_CONCURRENCY, agents.length) }, worker));
+  for (const key of Object.keys(result) as Array<keyof typeof result>) result[key] = result[key].filter(Boolean);
   return result;
 }
 

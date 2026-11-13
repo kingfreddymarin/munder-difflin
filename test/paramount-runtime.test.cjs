@@ -211,7 +211,7 @@ test('index.ts: terminals a quit, Switch floor or floor move stops keep their re
   }
   // And a restore skips archived agents, which is why the flag matters.
   const runtime = fs.readFileSync(path.join(__dirname, '../src/main/paramount-runtime.ts'), 'utf8');
-  assert.match(runtime, /if \(deps\.isLive\(agent\.id\) \|\| deps\.isArchived\(agent\.id\)\) \{ result\.skipped\.push/);
+  assert.match(runtime, /if \(deps\.isLive\(agent\.id\) \|\| deps\.isArchived\(agent\.id\)\) \{ result\.skipped\[index\] = agent\.id/);
 });
 
 test('boot leaves agents recorded as live at the last quit for the runtime to restore (isolated check 2026-11-12)', () => {
@@ -232,6 +232,37 @@ test('restore: a recorded agent left unarchived is respawned; an archived one (s
   const r = await restoreAgents(root, { isLive: () => false, isArchived: (id) => id === 'stopped', isDirectory: () => true, respawn: async (a) => { spawned.push(a.id); return { ok: true }; }, log() {} });
   assert.deepEqual(spawned, ['tester-2']);
   assert.deepEqual(r, { restored: ['tester-2'], skipped: ['god', 'stopped'], failed: [], archived: [] });
+});
+
+test('restore uses at most four workers, isolates failures and returns results in record order', async (t) => {
+  const { restoreAgents, RUNTIME_FILE } = loadTs('src/main/paramount-runtime.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-bounded-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ids = Array.from({ length: 9 }, (_, i) => `agent-${i}`);
+  fs.writeFileSync(path.join(root, RUNTIME_FILE), JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: '', agents: ids.map(id => ({ id, name:id, provider:'claude', cwd:root })) }));
+  let active = 0, maximum = 0;
+  const result = await restoreAgents(root, { isLive: () => false, isArchived: () => false, isDirectory: () => true,
+    respawn: async a => { active++; maximum = Math.max(maximum, active); await new Promise(r => setTimeout(r, 5)); active--; return a.id === 'agent-2' ? { ok:false } : { ok:true }; }, log() {} });
+  assert.equal(maximum, 4);
+  assert.deepEqual(result.restored, ids.filter(id => id !== 'agent-2'));
+  assert.deepEqual(result.failed, ['agent-2']);
+});
+
+test('simultaneous restore calls share one in-flight restore per floor', async (t) => {
+  const { restoreAgents, RUNTIME_FILE } = loadTs('src/main/paramount-runtime.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-dedupe-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ids = ['one', 'two'];
+  fs.writeFileSync(path.join(root, RUNTIME_FILE), JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: '', agents: ids.map(id => ({ id, name:id, provider:'claude', cwd:root })) }));
+  let calls = 0, release;
+  const latch = new Promise(r => { release = r; });
+  const deps = { isLive: () => false, isArchived: () => false, isDirectory: () => true, respawn: async () => { calls++; await latch; return { ok:true }; }, log() {} };
+  const first = restoreAgents(root, deps), second = restoreAgents(root, deps);
+  await new Promise(r => setImmediate(r));
+  assert.equal(calls, 2);
+  release();
+  assert.deepEqual(await first, await second);
+  assert.equal(calls, 2);
 });
 
 test('the 4-second snapshot logs only failures, and the service probe only state changes (owner run of ceeb4aaf: 377 lines in 40 min)', async () => {
