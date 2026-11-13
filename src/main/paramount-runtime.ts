@@ -153,8 +153,8 @@ export async function restoreAgents(root: string, deps: RuntimeDeps): Promise<{ 
 export interface ParamountRuntime {
   /** One beat: take the lock, restore once per floor, then record the live set. */
   beat(): Promise<void>;
-  /** Called on app quit: stop recording first, so terminals closing during
-   *  shutdown are not mistaken for agents the human stopped. */
+  /** Called on app quit and Switch, before terminals close: record the live set once, then stop
+   *  recording, so terminals closing during shutdown are not mistaken for agents the human stopped. */
   quit(): void;
 }
 
@@ -166,6 +166,11 @@ export function createParamountRuntime(deps: RuntimeDeps): ParamountRuntime {
   // Munder keeps an agent restorable when its restore fails and says why; dropping
   // it would read as "nothing happened". Kept until it is live again or stopped.
   let unrestored: LiveAgent[] = [];
+  const record = (root: string) => {
+    const live = deps.liveAgents();
+    unrestored = unrestored.filter((a) => !deps.isLive(a.id) && !deps.isArchived(a.id));
+    writeRecord(root, [...live, ...unrestored.filter((a) => !live.some((l) => l.id === a.id))], deps.now());
+  };
   return {
     async beat() {
       const root = deps.hiveRoot();
@@ -185,16 +190,18 @@ export function createParamountRuntime(deps: RuntimeDeps): ParamountRuntime {
           unrestored = recorded.filter((a) => r.failed.includes(a.id));
           deps.log({ kind: 'paramount-runtime', step: 'restore-summary', restored: r.restored.length, skipped: r.skipped.length, failed: r.failed.length });
         }
-        if (!quitting) {
-          const live = deps.liveAgents();
-          unrestored = unrestored.filter((a) => !deps.isLive(a.id) && !deps.isArchived(a.id));
-          writeRecord(root, [...live, ...unrestored.filter((a) => !live.some((l) => l.id === a.id))], deps.now());
-        }
+        if (!quitting) record(root);
       } finally { busy = false; }
     },
     quit() {
-      quitting = true;
       const root = deps.hiveRoot();
+      // Record who is live before the terminals close (review F3: a hire in the last beat before quit
+      // or Switch was missing from the record). Only once this floor's restore has run here: before
+      // that, or while it runs, the record still names the team to bring back.
+      if (root && !quitting && !busy && restoredFor === root && lockedOut === null) {
+        try { record(root); } catch (e) { deps.log({ kind: 'paramount-runtime', step: 'quit-record', outcome: 'failed', cause: String(e).slice(0, 200) }); }
+      }
+      quitting = true;
       if (root) releaseLock(root, deps.pid);
     }
   };

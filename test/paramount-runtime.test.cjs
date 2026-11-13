@@ -102,6 +102,26 @@ test('after quit, terminals closing during shutdown do not erase the record', as
   assert.equal(fs.existsSync(path.join(root, LOCK_FILE)), false);
 });
 
+test('quit records the live set: an agent hired after the last beat is in the record (review F3)', async () => {
+  const { root, cwd } = floor();
+  const agents = { w1: { id: 'w1', name: 'W1', provider: 'claude', cwd }, x: { id: 'x', name: 'X', provider: 'claude', cwd } };
+  const h = host(root, { agents, live: ['w1'] });
+  const runtime = createParamountRuntime(h.deps);
+  await runtime.beat();
+  h.live.add('x'); // hired within the 5 s beat, then quit or Switch
+  runtime.quit();
+  assert.deepEqual(record(root), ['w1', 'x']);
+});
+
+test('quit before this floor\'s restore ran leaves the record alone', async () => {
+  const { root, cwd } = floor();
+  const agents = { w1: { id: 'w1', name: 'W1', provider: 'claude', cwd } };
+  await createParamountRuntime(host(root, { agents, live: ['w1'] }).deps).beat();
+  const h = host(root, { agents, pid: 2002 });
+  createParamountRuntime(h.deps).quit(); // quit inside the restore delay: nothing is live yet
+  assert.deepEqual(record(root), ['w1']);
+});
+
 test('a failed restore stays restorable, with a reason; a missing folder is reported, not spawned', async () => {
   const { root, cwd } = floor();
   const agents = { w1: { id: 'w1', name: 'W1', provider: 'claude', cwd }, w2: { id: 'w2', name: 'W2', provider: 'claude', cwd: path.join(cwd, 'gone') } };
