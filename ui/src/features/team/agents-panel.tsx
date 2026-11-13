@@ -19,7 +19,10 @@ export function AgentsPanel({ onOpen }: { onOpen: (id: string) => void }) {
               <span className="truncate font-medium">{a.name}</span>
               <span className={cn('ml-auto text-[11px]', statusMeta[a.status].text)}>{statusMeta[a.status].label}</span>
             </span>
-            <Progress value={yolo || a.yolo ? 100 : (a.tokensCap > 0 ? Math.round((a.tokensUsed / a.tokensCap) * 100) : 0)} className={cn('h-1', yolo || a.yolo ? '[&_[data-slot=progress-indicator]]:bg-fuchsia-400' : budgetTone(a.tokensUsed, a.tokensCap))} />
+            {a.tokensReported === false ? <span className="text-muted-foreground text-[10px]">Tokens — · {a.costUsd == null ? 'cost —' : `$${a.costUsd.toFixed(4)}`} · breaker {a.breaker ?? '—'}</span> : <>
+              <Progress value={yolo || a.yolo ? 100 : (a.tokensCap > 0 ? Math.round((a.tokensUsed / a.tokensCap) * 100) : 0)} className={cn('h-1', yolo || a.yolo ? '[&_[data-slot=progress-indicator]]:bg-fuchsia-400' : budgetTone(a.tokensUsed, a.tokensCap))} />
+              <span className="text-muted-foreground text-[10px]">{a.tokensUsed.toFixed(2)}M tokens · {a.costUsd == null ? 'cost —' : `$${a.costUsd.toFixed(4)}`} · breaker {a.breaker ?? '—'}</span>
+            </>}
           </span>
         </button>
       ))}

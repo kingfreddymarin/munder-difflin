@@ -1224,7 +1224,13 @@ function paramountActivity(): ReturnType<typeof agentActivity> {
     const spans = snap.spans[id] ?? [];
     facts[id] = {
       lastOutputAt: ptyId ? ptyManager.lastOutputAt(ptyId) : undefined,
-      tokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : 0,
+      tokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined,
+      inputTokens: u?.input,
+      outputTokens: u?.output,
+      cacheReadTokens: u?.cacheRead,
+      cacheCreationTokens: u?.cacheCreation,
+      costUsd: u?.usd,
+      breaker: breaker.levelFor(id),
       lastTool: spans.length ? spans[spans.length - 1].tool : null,
       context: hookServer.contextFor(id) ?? null,
     };

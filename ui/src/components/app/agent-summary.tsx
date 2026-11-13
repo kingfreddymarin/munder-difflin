@@ -31,8 +31,9 @@ export function AgentSummary({ agent, onOpenProfile }: { agent: Agent; onOpenPro
         <StepMeter step={agent.step} steps={agent.steps} ticket={agent.ticket} />
       </div>
       <div className="rounded-lg border p-3">
-        <TokenMeter used={agent.tokensUsed} cap={agent.tokensCap} yolo={yolo} detail={agent.tokensIn || agent.tokensOut || agent.tokensCached || agent.contextPct
-          ? `in ${agent.tokensIn}M · out ${agent.tokensOut}M · cached ${agent.tokensCached}M · context ${agent.contextPct}%` : undefined} />
+        {agent.tokensReported === false ? <span className="text-muted-foreground text-xs">Token usage — (not reported)</span> : <TokenMeter used={agent.tokensUsed} cap={agent.tokensCap} yolo={yolo} detail={agent.tokensIn || agent.tokensOut || agent.tokensCached || agent.contextPct !== null
+          ? `in ${agent.tokensIn}M · out ${agent.tokensOut}M · cached ${agent.tokensCached}M · context ${agent.contextPct === null ? '—' : `${agent.contextPct}%`}` : undefined} />}
+        <span className="text-muted-foreground text-xs">Live cost: {agent.costUsd === null || agent.costUsd === undefined ? '—' : `$${agent.costUsd.toFixed(4)}`} · breaker {agent.breaker ?? '—'}</span>
       </div>
       <div className="flex flex-col gap-2">
         <span className="text-muted-foreground text-xs">Bundle · {agent.bundle || 'none reported'}</span>

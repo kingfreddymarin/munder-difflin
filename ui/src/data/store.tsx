@@ -13,6 +13,7 @@ import { exportDiagnostics } from '@/lib/diagnostics-file';
 import type { Snapshot } from './types';
 
 export type FloorStatus = 'loading' | 'ready' | 'error' | 'disconnected';
+export const LIVE_REFRESH_MS = 4000;
 export type DiagnosticsState = { status: 'idle' | 'loading' | 'copied' | 'saved' | 'canceled' | 'error'; error?: BackendError; path?: string };
 
 type Store = {

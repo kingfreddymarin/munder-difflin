@@ -63,6 +63,45 @@ test('projects live agents, tasks, questions and PTYs without mock fixtures', as
   assert.equal(snapshot.agents.length, 1);
 });
 
+test('projects live token detail, configured caps, cost and breaker with safe units', async () => {
+  const native = nativeSnapshot();
+  native.config = { costCapTokens: 4_000_000, costCapUsd: 12, agentTokenCaps: { god: 2_000_000 }, circuitBreaker: { enabled: true } };
+  native.activity = { god: { busy: true, doing: 'Read', tokens: 1_250_000, inputTokens: 500_000,
+    outputTokens: 250_000, cacheReadTokens: 400_000, cacheCreationTokens: 100_000,
+    contextPct: 42, costUsd: 0.37, breaker: 'constrained' } };
+  globalThis.window = { cth: bridge(native) };
+  const snapshot = await createElectronProvider().snapshot();
+  const agent = snapshot.agents[0];
+  assert.equal(agent.tokensUsed, 1.25);
+  assert.equal(agent.tokensReported, true);
+  assert.equal(agent.tokensCap, 2);
+  assert.equal(agent.tokensIn, 0.5);
+  assert.equal(agent.tokensOut, 0.25);
+  assert.equal(agent.tokensCached, 0.5);
+  assert.equal(agent.contextPct, 42);
+  assert.equal(agent.costUsd, 0.37);
+  assert.equal(agent.breaker, 'constrained');
+  assert.equal(agent.status, 'constrained');
+  assert.equal(snapshot.settings.costCapTokens, 4_000_000);
+  assert.equal(snapshot.settings.costCapUsd, 12);
+});
+
+test('keeps floor and per-agent budgets distinct and preserves unknown telemetry', async () => {
+  const native = nativeSnapshot();
+  native.config = { costCapTokens: 3_000_000, agentTokenCaps: { god: -5 } };
+  native.activity = { god: { tokens: 'bad', inputTokens: NaN, contextPct: null, costUsd: Infinity, breaker: 'healthy' } };
+  globalThis.window = { cth: bridge(native) };
+  const agent = (await createElectronProvider().snapshot()).agents[0];
+  assert.equal(agent.tokensUsed, 0);
+  assert.equal(agent.tokensReported, false);
+  assert.equal(agent.tokensCap, 0);
+  assert.equal((await createElectronProvider().snapshot()).settings.costCapTokens, 3_000_000);
+  assert.equal(agent.tokensIn, 0);
+  assert.equal(agent.contextPct, null);
+  assert.equal(agent.costUsd, null);
+  assert.equal(agent.breaker, 'healthy');
+});
+
 test('rejects a malformed core response instead of showing fake data', async () => {
   globalThis.window = { cth: bridge({ agents: [] }) };
   await assert.rejects(createElectronProvider().snapshot(), /incomplete snapshot/);

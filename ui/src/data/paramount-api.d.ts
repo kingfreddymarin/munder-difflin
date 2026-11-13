@@ -184,7 +184,7 @@ export interface ParamountRawSnapshot {
   archivedAgents?: Array<{ id: string; name: string }>;
   prereqs?: unknown;
   integrations?: unknown[];
-  /** Per-agent live activity: { busy, doing, tokens, contextPct }. */
+  /** Per-agent live telemetry; absent usage detail means the provider has no sample. */
   activity?: Record<string, unknown>;
 }
 

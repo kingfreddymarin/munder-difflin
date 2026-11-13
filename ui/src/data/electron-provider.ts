@@ -100,7 +100,7 @@ function role(value: string, isGod: boolean): Agent['role'] {
 }
 
 function status(value: string, breaker: string): Agent['status'] {
-  if (breaker === 'constrain' || breaker === 'stop') return 'constrained';
+  if (breaker === 'constrain' || breaker === 'constrained' || breaker === 'stop' || breaker === 'stopped') return 'constrained';
   if (value === 'working' || value === 'busy') return 'working';
   if (value === 'blocked' || value === 'waiting') return 'waiting';
   if (value === 'crashed' || value === 'error') return 'crashed';
@@ -199,7 +199,14 @@ export function createElectronProvider(): ElectronProvider {
         const local = rosterById.get(id) ?? {};
         const live = object(activity[id]);
         const name = string(source.name, string(local.name, id));
-        const registered = status(string(source.status, string(local.status)), string(source.breaker));
+        const liveBreaker = string(live.breaker);
+        const registered = status(string(source.status, string(local.status)), liveBreaker || string(source.breaker));
+        const finite = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+        const totalTokens = finite(live.tokens);
+        const tokenCapConfig = object(config.agentTokenCaps);
+        const configuredAgentCap = finite(tokenCapConfig[id]);
+        const tokenCap = configuredAgentCap;
+        const contextPct = finite(live.contextPct);
         return {
         id, name, initials: name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase(),
         role: role(string(source.role).toLowerCase(), id === registryGod),
@@ -207,8 +214,12 @@ export function createElectronProvider(): ElectronProvider {
         status: typeof live.busy === 'boolean' && (registered === 'idle' || registered === 'working') ? (live.busy ? 'working' : 'idle') : registered,
         engine: string(local.provider, string(source.provider)), model: string(local.model), level: Number(source.level) || 0, color: string(local.accent, 'sky'),
         doing: string(local.action, string(live.doing)),
-        step: 0, steps: 0, tokensUsed: (Number(live.tokens) || 0) / 1e6, tokensCap: 0,
-        tokensIn: 0, tokensOut: 0, tokensCached: 0, contextPct: Number(live.contextPct) || 0,
+        step: 0, steps: 0, tokensUsed: (totalTokens ?? 0) / 1e6, tokensReported: totalTokens !== null,
+        tokensCap: tokenCap === null ? 0 : tokenCap / 1e6,
+        tokensIn: (finite(live.inputTokens) ?? 0) / 1e6,
+        tokensOut: (finite(live.outputTokens) ?? 0) / 1e6,
+        tokensCached: ((finite(live.cacheReadTokens) ?? 0) + (finite(live.cacheCreationTokens) ?? 0)) / 1e6,
+        contextPct, costUsd: finite(live.costUsd), breaker: liveBreaker || undefined,
         bundle: '', skills: [], mcps: [], rules: [],
         ...(string(reporting[id]) ? { reportsTo: string(reporting[id]) } : registryGod && id !== registryGod && registryAgents[registryGod] ? { reportsTo: registryGod } : {}),
         teamIds: orgTeams.filter((team) => Array.isArray(object(team).memberIds) && (object(team).memberIds as unknown[]).includes(id)).map((team) => string(object(team).id)),
@@ -280,7 +291,7 @@ export function createElectronProvider(): ElectronProvider {
       const snapshot: Snapshot = {
         usageReported: false,
         archivedAgents: array(native.archivedAgents).map((agent) => ({ id: string(agent.id), name: string(agent.name, string(agent.id)) })),
-        settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
+        settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'costCapUsd', 'agentTokenCaps', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
         floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(orchestratorFailureOf(native.orchestratorFailure) ? { orchestratorFailure: orchestratorFailureOf(native.orchestratorFailure) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: setupDismissedFor(object(preferences.setup), prerequisites), objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
           connections: array(native.integrations).map((item) => ({ id: string(item.id), name: string(item.label, string(item.id)), detail: string(item.kind), connected: item.enabled === true,

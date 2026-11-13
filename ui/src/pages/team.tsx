@@ -14,7 +14,7 @@ import { AgentSheet } from '@/features/team/agent-sheet';
 import { ImportAgentsSheet } from '@/features/team/import-agents-sheet';
 import { HireSheet } from '@/features/team/hire-sheet';
 import { NewCardDialog } from '@/features/team/new-card-dialog';
-import { useAgentImport, useDispatch, useFloor, useTeamApi } from '@/data/store';
+import { LIVE_REFRESH_MS, useAgentImport, useDispatch, useFloor, useLiveRefresh, useTeamApi } from '@/data/store';
 import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
@@ -51,6 +51,7 @@ const gridFor: Record<number, string> = {
 };
 
 export function TeamPage() {
+  useLiveRefresh(LIVE_REFRESH_MS);
   const dispatch = useDispatch();
   const { route, go } = useRouter();
   const [panels, setPanels] = React.useState<PanelId[]>(load);

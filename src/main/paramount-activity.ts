@@ -10,7 +10,13 @@ export interface AgentActivity {
   busy: boolean;
   /** The last tool the agent ran, or '' when none is known. */
   doing: string;
-  tokens: number;
+  tokens: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+  costUsd: number | null;
+  breaker: string | null;
   /** Context window fill in percent, or null when the engine does not report it. */
   contextPct: number | null;
 }
@@ -19,6 +25,12 @@ export interface ActivityFacts {
   /** The terminal's last output time (epoch ms), undefined when the agent has no live terminal. */
   lastOutputAt?: number;
   tokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  costUsd?: number;
+  breaker?: string;
   lastTool?: string | null;
   context?: { tokens: number; limit: number } | null;
 }
@@ -30,7 +42,13 @@ export function agentActivity(facts: Record<string, ActivityFacts>, now: number,
     out[id] = {
       busy: last > 0 && now - last < idleMs,
       doing: f.lastTool ?? '',
-      tokens: f.tokens ?? 0,
+      tokens: f.tokens ?? null,
+      inputTokens: f.inputTokens ?? null,
+      outputTokens: f.outputTokens ?? null,
+      cacheReadTokens: f.cacheReadTokens ?? null,
+      cacheCreationTokens: f.cacheCreationTokens ?? null,
+      costUsd: f.costUsd ?? null,
+      breaker: f.breaker ?? null,
       contextPct: f.context && f.context.limit > 0 ? Math.round((f.context.tokens / f.context.limit) * 100) : null,
     };
   }

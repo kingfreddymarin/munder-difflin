@@ -8,7 +8,7 @@ import { SeeAll } from '@/components/app/see-all';
 import { AgentAvatar } from '@/components/app/agent-avatar';
 import { clock, stamp } from '@/components/app/format';
 import { stateDot } from '@/components/app/status';
-import { useDispatch, useFloor, useLiveRefresh } from '@/data/store';
+import { LIVE_REFRESH_MS, useDispatch, useFloor, useLiveRefresh } from '@/data/store';
 import { AskPreview, isOpenAsk } from '@/features/home/ask-preview';
 import { CustomizeHome, resolveTiles, type HomeTileId } from '@/features/home/customize-home';
 import { AGENT_VIEW, agentViewParams, orchestratorOf } from '@/app/agent-view';
@@ -20,7 +20,6 @@ import { Screen } from '@/components/app/screen';
 const healthBadge = { 'on-track': ['success', 'On track'], 'at-risk': ['warning', 'At risk'], blocked: ['danger', 'Blocked'] } as const;
 const kindTone: Record<ActivityKind, string> = { message: 'text-sky-300', tool: 'text-muted-foreground', edit: 'text-violet-300', ticket: 'text-emerald-400', breaker: 'text-rose-400', question: 'text-amber-300', lifecycle: 'text-teal-300' };
 // Live activity: re-read the core's snapshot (log tail included) this often while Home is visible.
-const LIVE_MS = 4000;
 const span: Record<TileSize, string> = { sm: 'lg:row-span-1', md: 'lg:row-span-2', lg: 'lg:col-span-2 lg:row-span-2' };
 const density: Record<HomeDensity, { gap: string; row: string }> = {
   compact: { gap: 'gap-2', row: 'lg:auto-rows-[minmax(150px,1fr)]' },
@@ -51,7 +50,7 @@ export function HomePage() {
   const layout = useFloor((s) => s.homeLayout);
   const dispatch = useDispatch();
   const { go } = useRouter();
-  const refreshedAt = useLiveRefresh(LIVE_MS);
+  const refreshedAt = useLiveRefresh(LIVE_REFRESH_MS);
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => { const t = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(t); }, []);
 

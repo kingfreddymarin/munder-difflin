@@ -19,11 +19,14 @@ export interface Agent {
   step: number;
   steps: number;
   tokensUsed: number; // millions
+  tokensReported?: boolean;
   tokensCap: number; // millions
   tokensIn: number;
   tokensOut: number;
   tokensCached: number;
-  contextPct: number;
+  contextPct: number | null;
+  costUsd?: number | null;
+  breaker?: string;
   bundle: string;
   skills: string[];
   mcps: string[];
