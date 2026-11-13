@@ -330,6 +330,11 @@ test('the god never falls back to the new-agent default launcher: its session li
   Object.assign(team.deps.team, { orchestratorProvider: () => 'codex', orchestratorId: () => 'god', setupComplete: () => true });
   assert.equal((await team.run({ type: 'orchestrator.ensure' })).ok, true);
   assert.equal(team.launched[0].launcher, null, "the CLI's own default account, not dcm");
+  // Used for this start only: the owner's saved orchestrator launcher is not overwritten by the fallback.
+  assert.equal(team.launched[0].saveLauncher, false);
+  assert.equal(account.readLauncherState(f.root).orchestrator.id, 'dcxm');
+  const index = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  assert.match(index, /if \(launcher !== undefined && saveLauncher !== false && hive\.root\(\)\) \{\s*try \{ saveLauncherPick\(/);
   // At spawn the same rule: an existing god resolves no launcher; a new claude agent gets dcm.
   const resolve = (extra) => account.resolveLauncherForSpawn({ root: f.root, provider: 'claude', isGod: false, isTemp: false, ...extra }, f.discover());
   assert.equal(resolve({ agentId: 'god', isGod: true, isNew: false }), undefined);

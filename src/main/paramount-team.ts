@@ -27,6 +27,8 @@ export interface TeamSpawn {
   isGod?: boolean;
   resume?: boolean;
   launcher?: LauncherPick | null;
+  /** False when the launcher is a fallback or came from saved settings: it is used, never saved over the owner's choice. */
+  saveLauncher?: boolean;
 }
 
 export interface ParamountTeamDeps {
@@ -459,6 +461,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (manifest.model && !manifestModel) notes.push(`${manifest.model} is not a ${engineLabel(engines, provider)} model; ${engineLabel(engines, provider)}'s default is used.`);
         const model = resolveAgentModel(provider, [flagModel, manifestModel, recorded ? recorded.model : team.defaultModel()], offered);
         let launcherPick: LauncherPick | null | undefined;
+        let launcherIgnored = false;
         let profile;
         try {
           const discovery = team.launcherDiscovery?.();
@@ -467,6 +470,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           const fitted = wanted === undefined ? undefined : launcherForProvider(team.hiveRoot(), wanted, provider, discovery, !isGod);
           if (fitted?.ignored) notes.push(`Launcher ${fitted.ignored.id} runs ${engineLabel(engines, fitted.ignored.provider)}, not ${engineLabel(engines, provider)}; ${fitted.pick ? `${engineLabel(engines, provider)}'s default launcher ${fitted.pick.id}` : `${engineLabel(engines, provider)}'s default account`} is used.`);
           launcherPick = fitted === undefined ? undefined : fitted.pick;
+          launcherIgnored = !!fitted?.ignored;
           if (launcherPick !== undefined && launcherPick !== null) profile = validateLauncher(launcherPick, provider, discovery); }
         catch (e) { return fail('INVALID_INPUT', e instanceof Error ? e.message : 'Invalid launcher'); }
         if (profile && model && !teamModels(team.modelCatalog(), team.appVersion).find((e) => e.id === provider)?.models.some((m) => m.id === model)) return fail('INVALID_INPUT', 'Pick a model supported by this provider');
@@ -497,7 +501,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         writeAttempted = true;
         if (orchestratorRoot) pendingOrchestrators.add(orchestratorRoot);
         return Promise.resolve().then(() => team.spawnHire({
-          plan, bin: launch.bin, args, provider, launcher: launcherPick ?? null,
+          plan, bin: launch.bin, args, provider, launcher: launcherPick ?? null, saveLauncher: command.launcher !== undefined && !launcherIgnored,
           ...(manifest.goal ? { goal: manifest.goal } : {}), ...(manifest.tokenCap ? { tokenCap: manifest.tokenCap } : {}), ...(isGod ? { isGod: true } : {}),
           ...(isGod ? { resume: true } : {}),
           ...(manifest.capabilities ? { capabilities: manifest.capabilities } : {}),

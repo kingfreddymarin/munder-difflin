@@ -3939,9 +3939,11 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
     defaultCwd: () => floorHome(),
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
     commandAvailable: (bin) => (isSafeCommandName(bin) || isAbsolute(bin)) && ptyManager.isCommandAvailable(bin),
-    spawnHire: async ({ plan, bin, args, provider, goal, tokenCap, capabilities, isGod, resume, launcher }, cid) => {
+    spawnHire: async ({ plan, bin, args, provider, goal, tokenCap, capabilities, isGod, resume, launcher, saveLauncher }, cid) => {
       const meta: AgentMeta = { id: plan.agentId, name: plan.name, provider: provider as AgentProvider, ...(plan.role ? { role: plan.role } : {}), ...(capabilities ? { capabilities } : {}), ...(isGod ? { isGod: true } : {}), cwd: plan.cwd };
-      if (launcher !== undefined && hive.root()) {
+      // A fallback or an already-saved launcher is used for this start only; saving it would overwrite the
+      // owner's choice (isolated check of b22e04ed: a fallback replaced the orchestrator launcher).
+      if (launcher !== undefined && saveLauncher !== false && hive.root()) {
         try { saveLauncherPick(hive.root()!, isGod ? 'orchestrator' : 'agent', launcher, plan.agentId); }
         catch (e) {
           if (launcher !== null) throw e;
