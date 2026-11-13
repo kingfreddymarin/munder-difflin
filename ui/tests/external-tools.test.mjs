@@ -36,3 +36,22 @@ test('the snapshot carries the lookup from main and the setup dialog lists requi
   assert.match(gate, /p\.level === 'required'|useSetupBlockers/);
   assert.doesNotMatch(gate, /fall back to your engines/, 'a missing claude CLI has no fallback');
 });
+
+test('an installed engine that is signed out or whose sign-in expired is a required item with the exact fix', () => {
+  const { engineSignIns } = mod.exports;
+  const list = engineSignIns({ codex: { state: 'expired', fix: 'Run `codex login` in Terminal, then start the agent again.', seen: '2026-11-12T21:20:00.000Z' }, claude: { state: 'signed-in' } });
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'signin-codex'); assert.equal(list[0].level, 'required'); assert.equal(list[0].state, 'missing');
+  assert.match(list[0].why, /codex login/);
+  assert.match(engineSignIns({ claude: { state: 'signed-out', fix: 'Run `claude auth login` in Terminal, then start the agent again.' } })[0].why, /claude auth login/);
+  assert.deepEqual(engineSignIns({ codex: { state: 'unknown' } }), [], 'a status that could not be read is not flagged');
+});
+
+test('Continue anyway covers the blockers it was pressed for; a new one opens the dialog again', () => {
+  const { setupDismissedFor } = mod.exports;
+  const claude = { name: 'Claude Code CLI (claude)', level: 'required', state: 'missing' };
+  const codex = { name: 'Codex sign-in', level: 'required', state: 'missing' };
+  assert.equal(setupDismissedFor({ dismissed: true, degraded: [claude.name] }, [claude]), true);
+  assert.equal(setupDismissedFor({ dismissed: true, degraded: [claude.name] }, [claude, codex]), false);
+  assert.equal(setupDismissedFor({}, []), false);
+});

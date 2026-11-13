@@ -265,3 +265,21 @@ test('agents.import failures carry an errorId and a code', () => {
   assert.equal(unsupported.code, 'UNSUPPORTED');
   assert.ok(project && agentSources);
 });
+
+test('archived entries whose folder is gone (finished temps) are skipped without a warning (owner run of ceeb4aaf)', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'council-discover-'));
+  try {
+    const hive = path.join(root, 'hive');
+    fs.mkdirSync(path.join(hive, 'agents', 'pam'), { recursive: true });
+    fs.writeFileSync(path.join(hive, 'agents', 'pam', 'identity.md'), '# Pam');
+    fs.writeFileSync(path.join(hive, 'registry.json'), JSON.stringify({ godId: null, agents: {
+      pam: { name: 'Pam', provider: 'claude' },
+      'temp-1': { name: 'Temp 1', provider: 'claude', archived: true },
+      ghost: { name: 'Ghost', provider: 'claude' } } }));
+    const empty = path.join(root, 'none');
+    const r = findAgents({ claudeHome: empty, codexHome: empty, munderHive: hive });
+    assert.deepEqual(r.found.map((a) => a.agent.id).sort(), ['ghost', 'pam'], 'the archived temp without a folder is not listed');
+    assert.ok(!JSON.stringify(r).includes('temp-1'), 'and not warned about');
+    assert.match(JSON.stringify(r.found.find((a) => a.agent.id === 'ghost').agent.warnings), /identity\.md is not readable/, 'a live entry without identity.md is still reported');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

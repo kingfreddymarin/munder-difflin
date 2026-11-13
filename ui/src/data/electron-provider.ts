@@ -1,6 +1,6 @@
 // The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
-import { externalTools } from './external-tools';
+import { engineSignIns, externalTools, setupDismissedFor } from './external-tools';
 import { floorChoiceOf } from './floor-choice';
 import { findBridge, requireBridge } from './bridge';
 import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
@@ -248,6 +248,7 @@ export function createElectronProvider(): ElectronProvider {
       // Outside the app (owner 2026-11-12: the .dmg is the only download): the claude CLI runs every
       // agent; MemPalace only adds semantic memory search. Resolved on the login PATH by main.
       prerequisites.push(...externalTools(object(object(native.prereqs).tools)));
+      prerequisites.push(...engineSignIns(object(object(native.prereqs).signIn)));
       const log: Snapshot['log'] = array(native.log).map((entry, index) => {
         const kind = string(entry.kind, 'event');
         const code = string(entry.code);
@@ -263,7 +264,7 @@ export function createElectronProvider(): ElectronProvider {
       const snapshot: Snapshot = {
         usageReported: false,
         settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
-        floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(orchestratorFailureOf(native.orchestratorFailure) ? { orchestratorFailure: orchestratorFailureOf(native.orchestratorFailure) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: object(preferences.setup).dismissed === true, objectives: [], wins: [],
+        floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(orchestratorFailureOf(native.orchestratorFailure) ? { orchestratorFailure: orchestratorFailureOf(native.orchestratorFailure) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: setupDismissedFor(object(preferences.setup), prerequisites), objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
           connections: array(native.integrations).map((item) => ({ id: string(item.id), name: string(item.label, string(item.id)), detail: string(item.kind), connected: item.enabled === true,
             kind: string(item.kind), baseUrl: string(item.baseUrl), authType: string(item.authType), hasSecret: item.hasSecret === true })),

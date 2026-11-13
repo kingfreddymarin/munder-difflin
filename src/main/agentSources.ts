@@ -16,7 +16,7 @@
  *
  * No Electron import: index.ts supplies the roots, tests drive this directly.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { basename, extname, join } from 'node:path';
 import type { ParamountAgentDiscovery, ParamountAgentSource, ParamountDiscoveredAgent, ParamountSourceWarning } from '../preload/paramount';
 import { newErrorId } from './paramountObservability';
@@ -408,6 +408,9 @@ function munderAgents(roots: AgentSourceRoots, warnings: ParamountSourceWarning[
     }
     const r = record as Record<string, unknown>;
     const identity = join(hive, 'agents', key, 'identity.md');
+    // An archived entry whose folder is gone (finished temps) is history, not an agent to import:
+    // skipped without a warning (owner run of ceeb4aaf: one error line per archived temp).
+    if (r.archived === true && !existsSync(identity)) continue;
     const own: ParamountSourceWarning[] = [];
     try {
       if (!statSync(identity).isFile()) own.push(warn(identity, 'identity.md is not a regular file'));

@@ -166,3 +166,15 @@ test('restore: a recorded agent left unarchived is respawned; an archived one (s
   assert.deepEqual(spawned, ['tester-2']);
   assert.deepEqual(r, { restored: ['tester-2'], skipped: ['god', 'stopped'], failed: [] });
 });
+
+test('the 4-second snapshot logs only failures, and the service probe only state changes (owner run of ceeb4aaf: 377 lines in 40 min)', async () => {
+  const { traced } = loadTs('src/main/paramountObservability.ts');
+  const lines = [];
+  await traced('paramount.snapshot', (e) => lines.push(e), {}, async () => ({ ok: true }), { quiet: true });
+  assert.deepEqual(lines, []);
+  await traced('paramount.snapshot', (e) => lines.push(e), {}, async () => { throw new Error('boom'); }, { quiet: true });
+  assert.ok(lines.some((l) => l.phase === 'end' && l.outcome === 'fail'));
+  const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  assert.match(code, /\}\), \{ rethrow: true, quiet: true \}\)\);\n\/\*\* Roots for agents\.discover\/import/);
+  assert.match(code, /if \(lastProbeState\.get\(prereqId\) !== state\) \{/);
+});

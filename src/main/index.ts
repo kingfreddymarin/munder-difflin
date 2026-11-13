@@ -1,6 +1,6 @@
 // Paramount identity (name, userData, UI scheme) — must evaluate before any
 // other module reads userData, so it is the first import.
-import { floorProcessHome, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
+import { councilBuild, councilVersion, floorProcessHome, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
 import { dataFolderRefusal, floorDataDirFor, floorSpawnPlan, normaliseHome, probeFloor, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
 import { resolveLauncherForSpawn, createLauncherDiscoveryCache, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
@@ -80,6 +80,7 @@ import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import { accessFor, withAccess } from './accessMatrix';
 import { probePort } from './portProbe';
+import { createSignInMonitor } from './engine-signin';
 import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
@@ -133,7 +134,7 @@ const crashCapture = {
   root: (): string | null => { try { return hive.root(); } catch { return null; } },
   sink: (event: Record<string, unknown>): void => { try { hive.appendLog(event); } catch { /* not ready */ } },
   runtime: (): Record<string, unknown> => ({
-    version: app.getVersion(), packaged: app.isPackaged, electron: process.versions.electron,
+    version: app.getVersion(), build: councilBuild(), packaged: app.isPackaged, electron: process.versions.electron,
     platform: process.platform, arch: process.arch
   })
 };
@@ -670,6 +671,10 @@ ptyManager.setExitHandler((id, exitCode, info) => {
   // clean one), so this adds no noise to a normal archive.
   try {
     const dyingAgent = ptyToAgent.get(id);
+    // A sign-in error in a dying agent's output flags its engine in the setup dialog (engine-signin.ts).
+    if (dyingAgent && (exitCode ?? 0) !== 0) {
+      try { engineSignIn.agentExited(String(hive.registry().agents[dyingAgent]?.provider ?? 'claude'), info?.tail); } catch { /* best effort */ }
+    }
     if (dyingAgent) {
       hive.recordAgentExit(dyingAgent, {
         exitCode,
@@ -3636,13 +3641,20 @@ function paramountRunPrereqInstall(plan: ParamountPrereqPlan, sender: Electron.W
 const PARAMOUNT_STARTABLE: Record<string, { label: string; bin: string; command: string; port: number }> = {
   skid: { label: 'Skidbladnir', bin: 'skid', command: 'skid doctor && skid run qwen-3.5-9b "ready"', port: 8000 }
 };
+const lastProbeState = new Map<string, string>();
+const engineSignIn = createSignInMonitor({ path: (engine) => ptyManager.commandPath(engine) });
 /** Async probe of a startable service's port, so a daemon started outside the app is
  *  seen. The result is logged under the caller's correlation id. */
 async function paramountProbeService(prereqId: string, cid: string): Promise<boolean> {
   if (!Object.hasOwn(PARAMOUNT_STARTABLE, prereqId)) return false;
   const port = PARAMOUNT_STARTABLE[prereqId].port;
   const probe = await probePort(port);
-  paramountLog({ kind: 'paramount-prereq', cid, step: 'port-probe', id: prereqId, port, open: probe.ok, ...(probe.ok ? {} : { code: probe.code }) });
+  // Logged when the service's state changes, not on every snapshot poll.
+  const state = probe.ok ? 'open' : `closed:${probe.code ?? ''}`;
+  if (lastProbeState.get(prereqId) !== state) {
+    lastProbeState.set(prereqId, state);
+    paramountLog({ kind: 'paramount-prereq', cid, step: 'port-probe', id: prereqId, port, open: probe.ok, ...(probe.ok ? {} : { code: probe.code }) });
+  }
   return probe.ok;
 }
 function paramountStartPlan(prereqId: string, portOpen = false): ParamountPrereqStartPlan | null {
@@ -3709,8 +3721,10 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   prereqs: { skid: paramountStartPlan('skid', await paramountProbeService('skid', span.cid)),
     // What the packaged app needs from outside itself (owner 2026-11-12: the .dmg is the only download),
     // resolved on the login-shell PATH exactly as an agent spawn resolves it.
-    tools: { claude: { path: ptyManager.commandPath('claude') }, mempalace: { path: ptyManager.commandPath('mempalace') } } }
-}), { rethrow: true }));
+    tools: { claude: { path: ptyManager.commandPath('claude') }, mempalace: { path: ptyManager.commandPath('mempalace') } },
+    // Installed engines that are not signed in (owner run of ceeb4aaf: a revoked Codex token went unnoticed).
+    signIn: Object.fromEntries((['claude', 'codex'] as const).filter((e) => ptyManager.commandPath(e)).map((e) => [e, engineSignIn.status(e)])) }
+}), { rethrow: true, quiet: true }));
 /** Roots for agents.discover/import, resolved per call so a changed CODEX_HOME
  *  or Munder config is picked up. Read-only: agentSources.ts never writes. */
 function paramountAgentRoots(): AgentSourceRoots {
@@ -4017,7 +4031,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   diagnostics: ({ logLines, cid }) => buildDiagnostics({
     root: hive.root(),
     app: {
-      version: app.getVersion(), packaged: app.isPackaged, appPath: app.getAppPath(), exePath: process.execPath,
+      version: councilVersion(), build: councilBuild(), packaged: app.isPackaged, appPath: app.getAppPath(), exePath: process.execPath,
       electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node,
       uptimeSec: Math.round(process.uptime())
     },
@@ -5714,6 +5728,7 @@ function bootstrapHiveServices(): void {
   hive.appendLog({
     kind: 'app-start',
     version: app.getVersion(),
+    build: councilBuild(),
     packaged: app.isPackaged,
     // WHICH bundle, not just which version. Version plus packaged is not enough
     // to tell two builds apart: a stale copy in /Applications and a fresh one in

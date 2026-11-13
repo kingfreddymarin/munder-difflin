@@ -8,7 +8,7 @@
 // setName/setPath below land before any other module can read userData.
 import { app, net, protocol, session, type Session } from 'electron';
 import { join, resolve, sep } from 'node:path';
-import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseFloorArgs, readSharedConfig, seedFloorConfig } from './floors';
 
@@ -50,6 +50,19 @@ protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
 ]);
 
+/** The commit this package was built from (electron-builder extraMetadata councilBuild), or null for
+ *  a dev run. Builds kept reporting 0.4.6, so the owner could not tell them apart (owner run of ceeb4aaf). */
+export function councilBuild(): string | null {
+  try {
+    const pkg = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as { councilBuild?: unknown };
+    return typeof pkg.councilBuild === 'string' && /^[0-9a-f]{7,40}$/.test(pkg.councilBuild) ? pkg.councilBuild : null;
+  } catch { return null; }
+}
+/** "0.4.6 (build 487e4c4a)", or the bare version for a dev run. */
+export function councilVersion(): string {
+  const build = councilBuild();
+  return build ? `${app.getVersion()} (build ${build})` : app.getVersion();
+}
 /** The folder setup suggests for a first floor. Never the data folder: a floor there mixes its
  *  hive with config and every floor's data (owner report 2026-11-12). */
 export function paramountHome(): string {

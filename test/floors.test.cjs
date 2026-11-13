@@ -28,7 +28,8 @@ const tmp = (t, prefix) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(
 // Values made inside a vm context have that context's prototypes: compare them as plain data.
 const plain = (v) => JSON.parse(JSON.stringify(v));
 const snapshot = (dir) => Object.fromEntries(fs.readdirSync(dir).map((f) => [f, fs.readFileSync(path.join(dir, f), 'utf8')]));
-const MUNDER_PID = 71506;
+// A live process that is not this one (the probe checks the real pid): the test runner's parent.
+const MUNDER_PID = process.ppid;
 const foreignLock = JSON.stringify({ pid: MUNDER_PID, userData: '/foreign/munder-difflin/floors/abc', since: '2026-11-12T14:14:41.949Z', version: '0.5.7' }, null, 2);
 const isAlive = (pid) => pid === MUNDER_PID || pid === process.pid;
 const span = { cid: 'cid-1', fail: (code, message) => ({ ok: false, error: { code, message } }) };
@@ -282,7 +283,7 @@ test('floor.open opens here at launch and starts a process with a floor open; fl
   const held = await f.run({ type: 'floor.open', home: '/f/b' });
   assert.equal(held.error.code, 'CONFLICT');
   const refused = commandFixture({ openState: { state: 'refused', refusal: { floor: '/f/m', owner: 'Munder Difflin 0.5.7', pid: MUNDER_PID, since: '', userData: '' } } }).run({ type: 'floor.open', home: '/f/m' });
-  assert.match(refused.error.message, /Munder Difflin 0\.5\.7 \(pid 71506\) has this floor open/);
+  assert.match(refused.error.message, new RegExp(`Munder Difflin 0\\.5\\.7 \\(pid ${MUNDER_PID}\\) has this floor open`));
   assert.equal(commandFixture().run({ type: 'floor.open', home: 'relative' }).error.code, 'INVALID_INPUT');
   assert.equal(commandFixture({ complete: false }).run({ type: 'floor.open', home: '/f/b' }).error.code, 'CONFLICT', 'setup comes first');
   f = commandFixture({ pending: false });

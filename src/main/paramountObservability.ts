@@ -132,15 +132,19 @@ export async function traced<T>(
   sink: LogSink | null,
   context: Record<string, unknown>,
   fn: (span: Span) => T | Promise<T>,
-  opts: { rethrow?: boolean; now?: () => number } = {}
+  opts: { rethrow?: boolean; now?: () => number; quiet?: boolean } = {}
 ): Promise<T | ParamountFailure> {
   const now = opts.now ?? Date.now;
   const span = createSpan(op, sink, context);
   const started = now();
-  safeLog(sink, { kind: 'paramount-op', phase: 'start', cid: span.cid, op, context: redact(context) });
+  // quiet: a polled read (the 4-second snapshot) logs only when it fails, not two lines per poll
+  // (owner run of ceeb4aaf: 377 lines in 40 minutes in the floor's shared log). Munder logs changes only.
+  if (!opts.quiet) safeLog(sink, { kind: 'paramount-op', phase: 'start', cid: span.cid, op, context: redact(context) });
   // 'error': the command answered, but part of it failed in the core (warnings with errorIds).
-  const end = (outcome: 'ok' | 'fail' | 'error', extra: Record<string, unknown> = {}): void =>
-    safeLog(sink, { kind: 'paramount-op', phase: 'end', cid: span.cid, op, outcome, durationMs: now() - started, ...extra });
+  const end = (outcome: 'ok' | 'fail' | 'error', extra: Record<string, unknown> = {}): void => {
+    if (opts.quiet && outcome === 'ok') return;
+    safeLog(sink, { kind: 'paramount-op', phase: 'end', cid: span.cid, op, outcome, durationMs: now() - started, ...(opts.quiet ? { context: redact(context) } : {}), ...extra });
+  };
   try {
     const result = await fn(span);
     const failed = isFailure(result);
