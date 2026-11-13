@@ -387,8 +387,6 @@ function pruneCrashLogs(dir: string): void {
   } catch { /* unreadable directory is not worth failing an exit path over */ }
 }
 
-/** How long a cached mail folder is trusted without a change in its mtime. */
-const VOICE_CACHE_MS = 5 * 60_000;
 /** Hive changes this close together become one commit. */
 const COMMIT_DEBOUNCE_MS = 750;
 
@@ -2705,15 +2703,15 @@ export class HiveManager {
   /** One mail folder as voice messages, cached until the folder changes (owner use of 8f574966: the
    *  Paramount snapshot re-read and re-parsed every message of every agent, archives included, on
    *  each poll; 5k messages cost about 150 ms of main-thread time per poll). Messages are written by
-   *  rename and moved between folders, so the folder's mtime changes with every add, move or delete;
-   *  the cache is also refreshed every VOICE_CACHE_MS as a backstop. */
-  private readonly voiceCache = new Map<string, { mtimeMs: number; at: number; list: VoiceMessage[] }>();
+   *  rename and moved between folders, so the folder's mtime changes with every add, move or delete.
+   *  No time-based refresh: in the isolated check of d474a5cf a 5-minute backstop re-read 5k
+   *  messages at once (a 276 ms stall). */
+  private readonly voiceCache = new Map<string, { mtimeMs: number; list: VoiceMessage[] }>();
   private voiceFolder(dir: string, owner: string, direction: 'inbox' | 'outbox', archived: boolean): VoiceMessage[] {
     let mtimeMs: number;
     try { mtimeMs = statSync(dir).mtimeMs; } catch { this.voiceCache.delete(dir); return []; }
-    const now = Date.now();
     const hit = this.voiceCache.get(dir);
-    if (hit && hit.mtimeMs === mtimeMs && now - hit.at < VOICE_CACHE_MS) return hit.list;
+    if (hit && hit.mtimeMs === mtimeMs) return hit.list;
     const list: VoiceMessage[] = [];
     for (const m of this.listMessages(dir)) {
       if (!m || typeof m.id !== 'string') continue;
@@ -2732,7 +2730,7 @@ export class HiveManager {
         created_at: m.created_at
       });
     }
-    this.voiceCache.set(dir, { mtimeMs, at: now, list });
+    this.voiceCache.set(dir, { mtimeMs, list });
     return list;
   }
 
