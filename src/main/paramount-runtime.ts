@@ -70,13 +70,16 @@ function writeRecord(root: string, agents: LiveAgent[], now: number): void {
  *  registry's live (non-archived), non-temp agents, the set Munder brings back, so the boot step that
  *  archives orphans leaves them and the runtime restores them (owner use of 63ea664e on the Varium
  *  floor: dwight, kevin, kelly and jim were archived at boot and only the god came back).
- *  Returns the seeded ids; nothing is written when the record already lists a non-god agent. */
+ *  A record Council wrote can also be stale: Munder ran the floor after it and hired more. Every
+ *  live registry agent missing from the record is added, so those hires come back too. An agent the
+ *  human stopped is archived in the registry and stays out.
+ *  Returns the seeded ids; nothing is written when the record already lists every live agent. */
 export function seedRecordFromRegistry(root: string, registry: { godId?: string | null; agents?: Record<string, unknown> }, now: number): string[] {
   const godId = registry.godId ?? undefined;
-  if (readRecord(root).some((a) => !a.isGod && a.id !== godId)) return [];
+  const recorded = new Set(readRecord(root).map((a) => a.id));
   const seeded: LiveAgent[] = [];
   for (const [id, raw] of Object.entries(registry.agents ?? {})) {
-    if (!raw || typeof raw !== 'object') continue;
+    if (!raw || typeof raw !== 'object' || recorded.has(id)) continue;
     const a = raw as { name?: unknown; provider?: unknown; cwd?: unknown; role?: unknown; isGod?: unknown; archived?: unknown };
     if (a.archived === true || a.isGod === true || id === godId) continue;
     // Temps (ephemeral workers) are never restored, in Munder or here.

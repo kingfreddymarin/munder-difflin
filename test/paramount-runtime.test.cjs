@@ -219,13 +219,29 @@ for (const [label, prior] of [['no record', null], ['a record with only the god'
   });
 }
 
-test('a Council record that already lists agents is left as it is (an agent the human stopped stays archived)', (t) => {
+test('a stale Council record (Munder hired more after it) gains the missing live agents; a stopped agent stays archived', (t) => {
+  // Review K1 (b): Council ran the floor with Dwight, then Munder hired Kevin, Kelly and Jim. Only
+  // Dwight was in Council's record, so the others were archived at the next Council open.
   const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-own-floor-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const { RUNTIME_FILE, readRecord } = loadTs('src/main/paramount-runtime.ts');
   fs.writeFileSync(path.join(root, RUNTIME_FILE), JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: '', agents: [{ id: 'dwight-mvqtyx2n', name: 'Dwight', provider: 'claude', cwd: root }] }));
   const registry = munderFloor(root);
   orphanBoot(root, registry);
-  assert.deepEqual(readRecord(root).map((a) => a.id), ['dwight-mvqtyx2n']);
-  assert.equal(registry.agents['kevin-mvqxdggy'].archived, true, 'not in the record: archived as before');
+  const team = ['dwight-mvqtyx2n', 'jim-mw9iivm1', 'kelly-mvqxdx82', 'kevin-mvqxdggy'];
+  assert.deepEqual(readRecord(root).map((a) => a.id).sort(), team);
+  for (const id of team) assert.notEqual(registry.agents[id].archived, true, `${id} not archived at boot`);
+  assert.equal(registry.agents.old.archived, true, 'stopped by the human: stays archived');
+  assert.equal(registry.agents['worker-abc'].archived, true, 'a temp is still archived');
+});
+
+test('a record that already lists every live agent is not rewritten', (t) => {
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-own-floor-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { RUNTIME_FILE, seedRecordFromRegistry } = loadTs('src/main/paramount-runtime.ts');
+  const ids = ['dwight-mvqtyx2n', 'kevin-mvqxdggy', 'kelly-mvqxdx82', 'jim-mw9iivm1'];
+  const body = JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: 'x', agents: ids.map((id) => ({ id, name: id, provider: 'claude', cwd: root })) });
+  fs.writeFileSync(path.join(root, RUNTIME_FILE), body);
+  assert.deepEqual(seedRecordFromRegistry(root, munderFloor(root), 1), []);
+  assert.equal(fs.readFileSync(path.join(root, RUNTIME_FILE), 'utf8'), body);
 });
