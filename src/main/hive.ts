@@ -212,11 +212,6 @@ export interface SpawnInjection {
 
 const HOP_CAP = 12;
 
-function sleepSync(ms: number): void {
-  const sab = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(sab), 0, 0, ms);
-}
-
 /** Filesystem- and sort-safe timestamp, e.g. 2026-05-30T14-03-11-123Z. */
 function stamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-');
@@ -394,6 +389,8 @@ function pruneCrashLogs(dir: string): void {
 
 /** How long a cached mail folder is trusted without a change in its mtime. */
 const VOICE_CACHE_MS = 5 * 60_000;
+/** Hive changes this close together become one commit. */
+const COMMIT_DEBOUNCE_MS = 750;
 
 /** The last `n` non-empty lines of a text file, read backwards in chunks from its end. */
 export function tailLines(file: string, n: number): string[] {
@@ -2918,14 +2915,14 @@ export class HiveManager {
    * line alone reads as a fix while the repo goes on growing. The ledger stays
    * on disk, so the cost history the app reads is untouched.
    */
-  private untrackCostLedger(root: string): void {
+  private async untrackCostLedger(root: string): Promise<void> {
     if (this.untrackedCostLedger) return;
     this.untrackedCostLedger = true;
     // Probe before mutating: `rm --cached` on a repo that never tracked it
     // would still rewrite the index on every launch, inside the retry path.
-    const tracked = this.git(['ls-files', '--', 'cost-ledger.jsonl'], root);
+    const tracked = await this.gitAsync(['ls-files', '--', 'cost-ledger.jsonl'], root);
     if (!tracked.ok || !tracked.out.trim()) return;
-    this.git(['rm', '--cached', '-q', '--ignore-unmatch', '--', 'cost-ledger.jsonl'], root);
+    await this.gitAsync(['rm', '--cached', '-q', '--ignore-unmatch', '--', 'cost-ledger.jsonl'], root);
     console.warn('[hive] untracked the cost ledger from the hive repo');
   }
 
@@ -2945,7 +2942,7 @@ export class HiveManager {
    * `.codex` path from the index. The files stay on disk, so `codex --resume`
    * is unaffected; only their history stops.
    */
-  private untrackCodexHomes(root: string): void {
+  private async untrackCodexHomes(root: string): Promise<void> {
     if (this.untrackedCodexHomes) return;
     this.untrackedCodexHomes = true;
     const agentsDir = join(root, 'agents');
@@ -2955,29 +2952,73 @@ export class HiveManager {
     } catch { /* best-effort */ }
     // Probe before mutating: `rm --cached` on a clean repo would still rewrite
     // the index on every launch, and this runs inside the commit retry path.
-    const tracked = this.git(['ls-files', '--', 'agents/*/.codex'], root);
+    const tracked = await this.gitAsync(['ls-files', '--', 'agents/*/.codex'], root);
     if (!tracked.ok || !tracked.out.trim()) return;
-    this.git(['rm', '-r', '--cached', '-q', '--ignore-unmatch', '--', 'agents/*/.codex'], root);
+    await this.gitAsync(['rm', '-r', '--cached', '-q', '--ignore-unmatch', '--', 'agents/*/.codex'], root);
     console.warn('[hive] untracked previously-committed Codex homes from the hive repo');
   }
 
-  /** Commit all hive changes. No-op if there is nothing staged. */
+  /** Commit all hive changes. No-op if there is nothing staged.
+   *  Off the main thread (owner use of 8f574966: beach ball): every register, session, archive,
+   *  routed message and task change committed the whole hive with blocking git processes, and a
+   *  team restore made dozens of them. Changes within COMMIT_DEBOUNCE_MS become one commit, git
+   *  runs as a child process, and commits run one at a time. */
   commit(message: string): void {
     const root = this.root();
     if (!root || !existsSync(join(root, '.git'))) return;
-    this.untrackCostLedger(root);
-    this.untrackCodexHomes(root);
+    this.pendingCommits.push({ root, message });
+    if (this.commitTimer) return;
+    this.commitTimer = setTimeout(() => {
+      this.commitTimer = null;
+      const batch = this.pendingCommits.splice(0);
+      for (const r of [...new Set(batch.map((b) => b.root))]) {
+        const messages = batch.filter((b) => b.root === r).map((b) => b.message);
+        const message = messages.length === 1 ? messages[0] : `hive: ${messages.length} changes\n\n${messages.join('\n')}`;
+        this.commitChain = this.commitChain.then(() => this.commitNow(r, message)).catch((e) => console.warn('[hive] commit failed:', e));
+      }
+    }, COMMIT_DEBOUNCE_MS);
+    this.commitTimer.unref?.();
+  }
+  private pendingCommits: Array<{ root: string; message: string }> = [];
+  private commitTimer: ReturnType<typeof setTimeout> | null = null;
+  private commitChain: Promise<void> = Promise.resolve();
+  /** Resolves once every commit requested so far has run (tests, and quit if it ever needs to wait). */
+  async flushCommits(): Promise<void> {
+    if (this.commitTimer) { clearTimeout(this.commitTimer); this.commitTimer = null; }
+    const batch = this.pendingCommits.splice(0);
+    for (const r of [...new Set(batch.map((b) => b.root))]) {
+      const messages = batch.filter((b) => b.root === r).map((b) => b.message);
+      const message = messages.length === 1 ? messages[0] : `hive: ${messages.length} changes\n\n${messages.join('\n')}`;
+      this.commitChain = this.commitChain.then(() => this.commitNow(r, message)).catch((e) => console.warn('[hive] commit failed:', e));
+    }
+    await this.commitChain;
+  }
+  private async commitNow(root: string, message: string): Promise<void> {
+    if (!existsSync(join(root, '.git'))) return;
+    await this.untrackCostLedger(root);
+    await this.untrackCodexHomes(root);
     for (let attempt = 0; attempt < 5; attempt++) {
       this.clearStaleLock(root);
-      const add = this.git(['add', '-A'], root);
-      const commit = this.git(['commit', '-q', '-m', message], root);
+      const add = await this.gitAsync(['add', '-A'], root);
+      const commit = await this.gitAsync(['commit', '-q', '-m', message], root);
       if (commit.ok) return;
       if (/nothing to commit/i.test(commit.out + commit.err)) return;
-      if (!add.ok || /index\.lock/i.test(commit.err)) { sleepSync(50 * (attempt + 1)); continue; }
+      if (!add.ok || /index\.lock/i.test(commit.err)) { await new Promise((r) => setTimeout(r, 50 * (attempt + 1))); continue; }
       console.warn(`[hive] commit gave up after ${attempt + 1} attempts:`, commit.err || commit.out);
       return;
     }
     console.warn('[hive] commit gave up after 5 attempts');
+  }
+  private gitAsync(args: string[], cwd: string): Promise<{ ok: boolean; out: string; err: string }> {
+    return new Promise((done) => {
+      const child = spawn('git', ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'user.name=Hive', '-c', 'user.email=hive@local', ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = ''; let err = '';
+      const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
+      child.stdout?.setEncoding('utf8').on('data', (d: string) => { if (out.length < 1_000_000) out += d; });
+      child.stderr?.setEncoding('utf8').on('data', (d: string) => { if (err.length < 100_000) err += d; });
+      child.on('error', (e) => { clearTimeout(timer); done({ ok: false, out, err: e.message }); });
+      child.on('close', (status) => { clearTimeout(timer); done({ ok: status === 0, out, err }); });
+    });
   }
 
   private clearStaleLock(root: string): void {

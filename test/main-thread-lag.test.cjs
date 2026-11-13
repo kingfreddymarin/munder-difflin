@@ -129,3 +129,28 @@ test('index.ts: the snapshot reads the config once; discovery is warmed at boot;
   assert.match(src, /void launcherDiscovery\.warm\(\)/);
   assert.match(src, /startLagProbe\(\{ now: \(\) => Date\.now\(\), log:/);
 });
+
+test('hive commits run off the main thread: commit() returns at once, close changes become one commit', async (t) => {
+  // Every register, session, archive, routed message and task change committed the whole hive with
+  // blocking git processes; a team restore made dozens of them (1.6 s stall seen in the isolated check).
+  const { HiveManager } = loadTs('src/main/hive.ts');
+  const { execFileSync } = require('node:child_process');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'council-commit-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const hive = new HiveManager(() => home);
+  hive.ensureHive();
+  await hive.flushCommits();
+  const root = path.join(home, 'hive');
+  const count = () => Number(execFileSync('git', ['-C', root, 'rev-list', '--count', 'HEAD'], { encoding: 'utf8' }).trim());
+  const before = count();
+  const started = performance.now();
+  for (let i = 0; i < 5; i++) { fs.writeFileSync(path.join(root, `f${i}.txt`), String(i)); hive.commit(`hive: change ${i}`); }
+  const ms = performance.now() - started;
+  assert.ok(ms < 50, `five commit() calls blocked for ${ms.toFixed(1)} ms`);
+  assert.equal(count(), before, 'nothing committed synchronously');
+  await hive.flushCommits();
+  assert.equal(count(), before + 1, 'one commit for the five changes');
+  const body = execFileSync('git', ['-C', root, 'log', '-1', '--format=%B'], { encoding: 'utf8' });
+  assert.match(body, /hive: 5 changes/); assert.match(body, /hive: change 0[\s\S]*hive: change 4/);
+  assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }).includes('f4.txt'), false);
+});
