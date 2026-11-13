@@ -179,6 +179,8 @@ export interface ParamountRawSnapshot {
   preferences: Record<string, unknown>;
   prereqs?: unknown;
   integrations?: unknown[];
+  /** Per-agent live activity: { busy, doing, tokens, contextPct }. */
+  activity?: Record<string, unknown>;
 }
 
 /** Only the preload calls Paramount's React adapter needs. */

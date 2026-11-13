@@ -410,3 +410,28 @@ test('a floor another app holds and a failed hook socket reach the UI as explici
   assert.equal(snapshot.floorSetup.floorLock.refusal.owner, 'Munder Difflin 0.5.7');
   assert.deepEqual(snapshot.hookSocket, { listening: false, lastError: 'EADDRINUSE', attempts: 4 });
 });
+
+test('Team graph from a live floor: every agent reports to the orchestrator and a busy terminal shows working', async () => {
+  // Owner use of 52051eda: a flat row with no lines, and nobody ever 'working', because reportsTo was
+  // never set for live agents and the registry's status stays 'idle' while agents run.
+  const native = nativeSnapshot();
+  native.registry = { godId: 'god', agents: {
+    god: { name: 'Ada', role: 'orchestrator', status: 'idle', isGod: true },
+    jim: { name: 'Jim', role: 'worker', status: 'idle' },
+    kev: { name: 'Kevin', role: 'worker', status: 'idle' },
+  } };
+  native.activity = {
+    god: { busy: false, doing: '', tokens: 0, contextPct: null },
+    jim: { busy: true, doing: 'Bash', tokens: 2_500_000, contextPct: 41 },
+    kev: { busy: false, doing: '', tokens: 0, contextPct: null },
+  };
+  globalThis.window = { cth: bridge(native) };
+  const { agents } = await createElectronProvider().snapshot();
+  const by = Object.fromEntries(agents.map((a) => [a.id, a]));
+  assert.deepEqual(agents.filter((a) => a.reportsTo === 'god').map((a) => a.id).sort(), ['jim', 'kev']);
+  assert.equal(by.god.reportsTo, undefined);
+  assert.deepEqual(agents.filter((a) => a.status === 'working').map((a) => a.id), ['jim']);
+  assert.equal(by.jim.doing, 'Bash');
+  assert.equal(by.jim.tokensUsed, 2.5);
+  assert.equal(by.jim.contextPct, 41);
+});

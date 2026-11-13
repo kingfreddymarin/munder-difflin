@@ -187,17 +187,28 @@ export function createElectronProvider(): ElectronProvider {
         if (string(pty.agentId)) ptyByAgent.set(string(pty.agentId), pty);
       }
 
+      // Live busy/idle, last tool, tokens and context from the main process (owner use of 52051eda:
+      // the registry's status stays 'idle' while agents run, so the graph never showed anyone working).
+      const activity = object(native.activity);
+      const registryGod = string(registry.godId);
       const agents: Agent[] = Object.entries(registryAgents).filter(([, raw]) => !object(raw).archived).map(([id, raw]) => {
         const source = object(raw);
         const local = rosterById.get(id) ?? {};
+        const live = object(activity[id]);
         const name = string(source.name, string(local.name, id));
+        const registered = status(string(source.status, string(local.status)), string(source.breaker));
         return {
         id, name, initials: name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase(),
-        role: role(string(source.role).toLowerCase(), id === string(registry.godId)), status: status(string(source.status, string(local.status)), string(source.breaker)),
-        engine: string(local.provider, string(source.provider)), model: string(local.model), level: Number(source.level) || 0, color: string(local.accent, 'sky'), doing: string(local.action),
-        step: 0, steps: 0, tokensUsed: 0, tokensCap: 0,
-        tokensIn: 0, tokensOut: 0, tokensCached: 0, contextPct: 0,
+        role: role(string(source.role).toLowerCase(), id === registryGod),
+        // Live terminal activity decides working vs idle; breaker, blocked and crashed states still win.
+        status: typeof live.busy === 'boolean' && (registered === 'idle' || registered === 'working') ? (live.busy ? 'working' : 'idle') : registered,
+        engine: string(local.provider, string(source.provider)), model: string(local.model), level: Number(source.level) || 0, color: string(local.accent, 'sky'),
+        doing: string(local.action, string(live.doing)),
+        step: 0, steps: 0, tokensUsed: (Number(live.tokens) || 0) / 1e6, tokensCap: 0,
+        tokensIn: 0, tokensOut: 0, tokensCached: 0, contextPct: Number(live.contextPct) || 0,
         bundle: '', skills: [], mcps: [], rules: [],
+        // Every agent reports to the floor's orchestrator: Paramount has one orchestrator and no sub-leads.
+        ...(registryGod && id !== registryGod && registryAgents[registryGod] ? { reportsTo: registryGod } : {}),
       }; });
       const agentIds = new Set(agents.map((agent) => agent.id));
       const chats = agents.map((agent) => ({ id: `agent:${agent.id}`, kind: 'agent' as const, title: agent.name, agentIds: [agent.id], pinned: agent.role === 'paramount' }));

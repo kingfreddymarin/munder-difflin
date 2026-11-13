@@ -88,7 +88,8 @@ import { buildWorkerLaunch } from './workerLaunch';
 import { claimFloor, readRecord, registerParamountRuntime, seedRecordFromRegistry } from './paramount-runtime';
 import { createFloorGate, FLOOR_LOCK_FILE, floorOwnerName, removeFloorContents, type FloorGateState } from './floor-lock';
 import { ControlRegistry } from './control';
-import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
+import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
+import { agentActivity, type ActivityFacts } from './paramount-activity';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { readHireManifestFiles } from './hire';
@@ -1201,6 +1202,27 @@ function lastWorkAt(agentId: string): number {
   pushMtime(join(git, 'refs', 'remotes'));
   pushMtime(join(git, 'packed-refs'));
   return Math.max(...times);
+}
+
+/** Per-agent live activity for Paramount: terminal output recency plus the fleet.json telemetry. */
+function paramountActivity(): ReturnType<typeof agentActivity> {
+  if (!hive.enabled()) return {};
+  const snap = telemetry.snapshot();
+  const usageById = new Map(snap.usage.map((u) => [u.agentId, u]));
+  const facts: Record<string, ActivityFacts> = {};
+  for (const [id, a] of Object.entries(hive.registry().agents)) {
+    if (a.archived) continue;
+    const ptyId = ptyForAgent(id);
+    const u = usageById.get(id);
+    const spans = snap.spans[id] ?? [];
+    facts[id] = {
+      lastOutputAt: ptyId ? ptyManager.lastOutputAt(ptyId) : undefined,
+      tokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : 0,
+      lastTool: spans.length ? spans[spans.length - 1].tool : null,
+      context: hookServer.contextFor(id) ?? null,
+    };
+  }
+  return agentActivity(facts, Date.now(), WORKER_WAKE_IDLE_MS);
 }
 
 /** PTY id owning a given agent id, or undefined. */
@@ -3709,6 +3731,8 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   ...(TEST_LABEL ? { testLabel: TEST_LABEL } : {}),
   registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
   log: hive.logTail(500), roster: roster.read(),
+  // Live busy/idle, last tool, tokens and context per agent: the Team graph's status and 'doing'.
+  activity: paramountActivity(),
   config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode, autoModeExpiresAt: readConfig().autoModeExpiresAt, accessMatrix: readConfig().accessMatrix ?? {},
     defaultModel: readConfig().defaultModel, godProvider: readConfig().godProvider, orchestratorMaySpawn: readConfig().orchestratorMaySpawn,
     ticketKeyPrefix: readConfig().ticketKeyPrefix ?? '',
