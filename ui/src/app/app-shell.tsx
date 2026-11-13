@@ -112,7 +112,7 @@ function MoreMenu() {
         {item('Open another floor…', 'Choose a recent floor or folder', () => { void dispatch({ type: 'floor.picker', open: true }); })}
         <DropdownMenuSeparator />
         {item('Agents & temps', 'Hire, import, configure and manage agents', () => go('team'))}
-        {item('Automations', 'Schedules, triggers and team activity', () => go('team'))}
+        {item('Automations', 'Schedules, triggers and team activity', () => go('team', { panel: 'automations' }))}
         {item('Engines & models', 'Provider and model settings', () => go('settings', { tab: 'providers' }))}
         {item('Terminal', 'Live agent sessions', () => go('terminal'))}
         <DropdownMenuSeparator />

@@ -20,8 +20,9 @@ import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { Screen } from '@/components/app/screen';
 import { TeamsEditor } from '@/features/team/teams-editor';
+import { isTeamPanelId, revealTeamPanel, type TeamPanelId } from './team-panel-route';
 
-type PanelId = 'agents' | 'graph' | 'activity' | 'sources' | 'automations';
+type PanelId = TeamPanelId;
 const PANELS: Record<PanelId, { title: string; hint: string }> = {
   agents: { title: 'Agents', hint: 'tap one for its profile' },
   graph: { title: 'Team graph', hint: 'reporting · live · asked you · triggers' },
@@ -53,6 +54,9 @@ export function TeamPage() {
   const dispatch = useDispatch();
   const { route, go } = useRouter();
   const [panels, setPanels] = React.useState<PanelId[]>(load);
+  const [panelToFocus, setPanelToFocus] = React.useState<PanelId | null>(null);
+  const handledPanelRoute = React.useRef<string | null>(null);
+  const requestedPanel = route.id === 'team' ? route.params.get('panel') : null;
   const open = route.params.get('agent');
   const agentImport = useAgentImport();
   // `?import=1` (Home's "Import agents") opens the import sheet directly.
@@ -66,11 +70,32 @@ export function TeamPage() {
   const [hiring, setHiring] = React.useState<null | { bundle: boolean; orchestrator?: boolean; manifest?: Record<string, unknown>; notes?: string[] }>(null);
   const [creating, setCreating] = React.useState(false);
 
-  const apply = (next: PanelId[]) => {
+  const apply = React.useCallback((next: PanelId[]) => {
     setPanels(next);
     try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* per-viewer preference only */ }
     dispatch({ type: 'layout.panels', panels: next });
-  };
+  }, [dispatch]);
+  React.useEffect(() => {
+    if (!requestedPanel) { handledPanelRoute.current = null; return; }
+    const routeKey = `${route.id}:${requestedPanel}`;
+    if (handledPanelRoute.current === routeKey) return;
+    handledPanelRoute.current = routeKey;
+    if (isTeamPanelId(requestedPanel)) {
+      setPanelToFocus(requestedPanel);
+      const next = revealTeamPanel(panels, requestedPanel);
+      if (next !== panels) apply(next);
+    }
+    // Consume the one-shot route so choosing More → Automations again can focus it again.
+    go('team');
+  }, [route.id, requestedPanel, panels, apply, go]);
+  React.useEffect(() => {
+    if (!panelToFocus || !panels.includes(panelToFocus)) return;
+    const frame = requestAnimationFrame(() => {
+      document.getElementById(`team-panel-${panelToFocus}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setPanelToFocus((current) => current === panelToFocus ? null : current);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [panelToFocus, panels]);
   const toggle = (id: PanelId, on: boolean) => apply(on ? DEFAULT.filter((p) => p === id || panels.includes(p)) : panels.filter((p) => p !== id));
   const move = (id: PanelId, d: -1 | 1) => {
     const i = panels.indexOf(id), j = i + d;
@@ -133,7 +158,9 @@ export function TeamPage() {
       <TeamsEditor />
       <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3', gridFor[panels.length] ?? gridFor[5])}>
         {panels.map((id) => (
-          <Tile key={id} title={PANELS[id].title} hint={PANELS[id].hint}>{body(id)}</Tile>
+          <div key={id} id={`team-panel-${id}`} className="min-w-0">
+            <Tile title={PANELS[id].title} hint={PANELS[id].hint}>{body(id)}</Tile>
+          </div>
         ))}
       </div>
       <LauncherSettings scope="temps" />

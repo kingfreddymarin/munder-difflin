@@ -22,3 +22,20 @@ The menu deliberately does not duplicate contextual agent lifecycle actions or a
 - `npm run typecheck`: blocked by missing dependencies in this checkout (including `lucide-react`, `radix-ui`, `motion`, and `next-themes`); dependent inferred-type errors follow from the missing packages.
 - Build could not be run successfully for the same missing-dependency reason. No packages were installed.
 - No running-app interaction was possible in this source-only checkout.
+
+## Automations route correction
+
+The More menu now navigates to `team?panel=automations`. `TeamPage` consumes this one-shot route, adds the requested panel to the saved customizable layout if hidden, scrolls the panel into view, and clears the route parameter so the menu can focus it again later. The existing layout save path is reused; invalid route panel values are ignored.
+
+### Regression evidence
+
+- Added `ui/tests/automations-panel-route.test.mjs` before the fix. It failed against the previous source because the More item only called `go('team')`.
+- After the change, the test passes and checks More's route, TeamPage's reveal/focus/route-consumption wiring, and the route helper for hidden, existing, and invalid panels.
+
+### Validation after route correction
+
+- `cd ui && npm run typecheck` — passed.
+- `cd ui && npm test` — **111 passed, 0 failed**.
+- `cd ui && npm run build` — passed; Vite emitted its large-chunk warning.
+- `git diff --check` — passed.
+- No GUI or live application interaction was performed.
