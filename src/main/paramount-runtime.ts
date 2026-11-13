@@ -38,6 +38,8 @@ export interface RuntimeDeps {
   isDirectory(path: string): boolean;
   /** Start the agent again with its prior session resumed. */
   respawn(agent: LiveAgent): Promise<{ ok: boolean; error?: string }>;
+  /** Mark the agent archived in the registry (its folder is gone, so it cannot come back). */
+  archive?(agentId: string): void;
   pid: number;
   /** True when that process is alive (kill(pid, 0)). */
   processAlive(pid: number): boolean;
@@ -65,6 +67,10 @@ function writeRecord(root: string, agents: LiveAgent[], now: number): void {
   renameSync(tmp, file);
 }
 
+/** A temp: an ephemeral worker started from a spawn request (`worker-<request id>`; Munder registers
+ *  them with role 'temp'). A hire whose role is the word "worker" is not one. */
+export function isTemp(id: string, a: { role?: unknown }): boolean { return id.startsWith('worker-') || a.role === 'temp'; }
+
 /** A floor last run by Munder has no Council record (Munder restores its team from its own renderer
  *  record), or a record from an earlier Council run that lists only the god. Seed it from the
  *  registry's live (non-archived), non-temp agents, the set Munder brings back, so the boot step that
@@ -83,7 +89,7 @@ export function seedRecordFromRegistry(root: string, registry: { godId?: string 
     const a = raw as { name?: unknown; provider?: unknown; cwd?: unknown; role?: unknown; isGod?: unknown; archived?: unknown };
     if (a.archived === true || a.isGod === true || id === godId) continue;
     // Temps (ephemeral workers) are never restored, in Munder or here.
-    if (id.startsWith('worker-') || a.role === 'worker') continue;
+    if (isTemp(id, a)) continue;
     if (typeof a.cwd !== 'string' || !a.cwd) continue;
     seeded.push({ id, name: typeof a.name === 'string' && a.name ? a.name : id, provider: typeof a.provider === 'string' && a.provider ? a.provider : 'claude', cwd: a.cwd,
       ...(typeof a.role === 'string' && a.role ? { role: a.role } : {}) });
@@ -125,17 +131,26 @@ export function releaseLock(root: string, pid: number): void {
   } catch { /* nothing to release */ }
 }
 
-/** Restore the agents recorded as live at the last quit. Skips agents already
- *  live, stopped by the human, or whose folder is gone; one failure never stops the rest. */
-export async function restoreAgents(root: string, deps: RuntimeDeps): Promise<{ restored: string[]; skipped: string[]; failed: string[] }> {
-  const result = { restored: [] as string[], skipped: [] as string[], failed: [] as string[] };
+/** Restore the agents recorded as live at the last quit. Skips agents already live or stopped by
+ *  the human. An agent whose folder is gone is archived with a note (review F4: it failed at every
+ *  open and was never archived; an isolated agent's worktree is removed when it stops). One failure
+ *  never stops the rest. */
+export async function restoreAgents(root: string, deps: RuntimeDeps): Promise<{ restored: string[]; skipped: string[]; failed: string[]; archived: string[] }> {
+  const result = { restored: [] as string[], skipped: [] as string[], failed: [] as string[], archived: [] as string[] };
   for (const agent of readRecord(root)) {
     // The orchestrator's start and resume belong to the setup/orchestrator path (matrix row 8).
     if (agent.isGod) { result.skipped.push(agent.id); continue; }
     if (deps.isLive(agent.id) || deps.isArchived(agent.id)) { result.skipped.push(agent.id); continue; }
     if (!deps.isDirectory(agent.cwd)) {
-      result.failed.push(agent.id);
-      deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'failed', code: 'CWD_MISSING' });
+      if (deps.archive) {
+        deps.archive(agent.id);
+        result.archived.push(agent.id);
+        deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'archived', code: 'CWD_MISSING',
+          note: `${agent.name}'s folder ${agent.cwd} is gone, so ${agent.name} was archived instead of restored.` });
+      } else {
+        result.failed.push(agent.id);
+        deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'failed', code: 'CWD_MISSING' });
+      }
       continue;
     }
     try {
@@ -188,7 +203,7 @@ export function createParamountRuntime(deps: RuntimeDeps): ParamountRuntime {
           const recorded = readRecord(root);
           const r = await restoreAgents(root, deps);
           unrestored = recorded.filter((a) => r.failed.includes(a.id));
-          deps.log({ kind: 'paramount-runtime', step: 'restore-summary', restored: r.restored.length, skipped: r.skipped.length, failed: r.failed.length });
+          deps.log({ kind: 'paramount-runtime', step: 'restore-summary', restored: r.restored.length, skipped: r.skipped.length, failed: r.failed.length, archived: r.archived.length });
         }
         if (!quitting) record(root);
       } finally { busy = false; }
@@ -219,7 +234,7 @@ export function startParamountRuntime(deps: RuntimeDeps, onQuit: (fn: () => void
 
 /** Wiring from index.ts primitives, so registration there is one line. */
 export interface RuntimeHost {
-  hive: { root(): string | null; registry(): { godId?: string | null; agents?: Record<string, { name?: string; provider?: string; cwd?: string; role?: string; isGod?: boolean; archived?: boolean }> } };
+  hive: { root(): string | null; setArchived(id: string, archived: boolean): void; registry(): { godId?: string | null; agents?: Record<string, { name?: string; provider?: string; cwd?: string; role?: string; isGod?: boolean; archived?: boolean }> } };
   ptyForAgent(agentId: string): string | undefined;
   config(): { defaultCommand?: string; autoMode?: boolean; defaultModel?: string; godProvider?: string; godModel?: string };
   /** Model choices in priority order (per-agent pick, configured default, role tier). */
@@ -238,12 +253,14 @@ export function registerParamountRuntime(host: RuntimeHost): ParamountRuntime {
   const agents = () => host.hive.registry().agents ?? {};
   const deps: RuntimeDeps = {
     hiveRoot: () => host.hive.root(),
+    // Temps are never restored (Munder parity): left out of the record, so the next open archives them.
     liveAgents: () => Object.entries(agents())
-      .filter(([id, a]) => !a.archived && !!host.ptyForAgent(id) && typeof a.cwd === 'string')
+      .filter(([id, a]) => !a.archived && !isTemp(id, a) && !!host.ptyForAgent(id) && typeof a.cwd === 'string')
       .map(([id, a]) => ({ id, name: a.name ?? id, provider: a.provider ?? 'claude', cwd: a.cwd as string,
         ...(a.role ? { role: a.role } : {}), ...(a.isGod || host.hive.registry().godId === id ? { isGod: true } : {}) })),
     isLive: (id) => !!host.ptyForAgent(id),
     isArchived: (id) => agents()[id]?.archived === true,
+    archive: (id) => host.hive.setArchived(id, true),
     isDirectory: host.isDirectory,
     respawn: (agent) => {
       const config = host.config();

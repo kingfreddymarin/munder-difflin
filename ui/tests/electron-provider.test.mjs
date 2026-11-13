@@ -435,3 +435,12 @@ test('Team graph from a live floor: every agent reports to the orchestrator and 
   assert.equal(by.jim.tokensUsed, 2.5);
   assert.equal(by.jim.contextPct, 41);
 });
+
+test('the floor log shows an archived restore as a warning with its note (review F4)', async () => {
+  const native = nativeSnapshot();
+  native.log = [{ kind: 'paramount-runtime', step: 'restore', agentId: 'god', outcome: 'archived', code: 'CWD_MISSING', note: "W2's folder /w/gone is gone, so W2 was archived instead of restored.", ts: 1 }];
+  globalThis.window = { cth: bridge(native) };
+  const { log } = await createElectronProvider().snapshot();
+  assert.equal(log[0].level, 'warn');
+  assert.equal(log[0].text, "paramount-runtime · CWD_MISSING · W2's folder /w/gone is gone, so W2 was archived instead of restored.");
+});

@@ -267,8 +267,9 @@ export function createElectronProvider(): ElectronProvider {
           ? new Date(entry.ts).toISOString() : date(entry.ts);
         return {
           id: string(entry.id, string(entry.errorId, `event-${index}`)), at,
-          level: /error|fail|drop/i.test(kind) ? 'error' as const : /warn|bounce|degrad/i.test(kind) ? 'warn' as const : 'info' as const,
-          source: kind, text: code ? `${kind} · ${code}` : kind,
+          level: /error|fail|drop/i.test(kind) ? 'error' as const : /warn|bounce|degrad/i.test(kind) || string(entry.outcome) === 'archived' ? 'warn' as const : 'info' as const,
+          // A note says in words what happened (an agent archived because its folder is gone).
+          source: kind, text: [kind, code, string(entry.note)].filter(Boolean).join(' · '),
           correlation: string(entry.cid, string(entry.errorId)),
         };
       });

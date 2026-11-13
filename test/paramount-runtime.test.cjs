@@ -122,16 +122,44 @@ test('quit before this floor\'s restore ran leaves the record alone', async () =
   assert.deepEqual(record(root), ['w1']);
 });
 
-test('a failed restore stays restorable, with a reason; a missing folder is reported, not spawned', async () => {
+test('a failed restore stays restorable, with a reason; an agent whose folder is gone is archived with a note (review F4)', async () => {
   const { root, cwd } = floor();
   const agents = { w1: { id: 'w1', name: 'W1', provider: 'claude', cwd }, w2: { id: 'w2', name: 'W2', provider: 'claude', cwd: path.join(cwd, 'gone') } };
   await createParamountRuntime(host(root, { agents, live: ['w1', 'w2'] }).deps).beat();
   const h = host(root, { agents, pid: 2002, failRespawn: ['w1'] });
-  await createParamountRuntime(h.deps).beat();
-  assert.deepEqual(h.calls.respawn, ['w1']);
-  assert.deepEqual(record(root), ['w1', 'w2']);
-  const codes = h.calls.log.filter((l) => l.step === 'restore').map((l) => `${l.agentId}:${l.code}`).sort();
-  assert.deepEqual(codes, ['w1:SPAWN_FAILED', 'w2:CWD_MISSING']);
+  h.deps.archive = (id) => h.archived.add(id);
+  const runtime = createParamountRuntime(h.deps);
+  await runtime.beat();
+  assert.deepEqual(h.calls.respawn, ['w1'], 'the gone folder is never spawned');
+  assert.deepEqual([...h.archived], ['w2']);
+  assert.deepEqual(record(root), ['w1'], 'w2 leaves the record: it does not fail at every open');
+  const steps = h.calls.log.filter((l) => l.step === 'restore');
+  assert.deepEqual(steps.map((l) => `${l.agentId}:${l.outcome}:${l.code}`).sort(), ['w1:failed:SPAWN_FAILED', 'w2:archived:CWD_MISSING']);
+  assert.match(steps.find((l) => l.agentId === 'w2').note, /W2's folder .*gone.* archived/);
+  assert.deepEqual(h.calls.log.find((l) => l.step === 'restore-summary'), { kind: 'paramount-runtime', step: 'restore-summary', restored: 0, skipped: 0, failed: 1, archived: 1 });
+  // The next open does not try w2 again.
+  const again = host(root, { agents, pid: 3003 });
+  again.deps.archive = () => assert.fail('nothing left to archive');
+  await createParamountRuntime(again.deps).beat();
+  assert.deepEqual(again.calls.respawn, ['w1']);
+});
+
+test('temps live at quit are not recorded (Munder never restores them); a hire whose role is "worker" is', () => {
+  const runtime = loadTs('src/main/paramount-runtime.ts');
+  assert.equal(runtime.isTemp('worker-abc', { role: 'worker' }), true);
+  assert.equal(runtime.isTemp('t-1', { role: 'temp' }), true);
+  assert.equal(runtime.isTemp('jim-1', { role: 'worker' }), false);
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-temps-'));
+  try {
+    const reg = { godId: 'god', agents: { god: { name: 'G', isGod: true, cwd: root }, 'worker-abc': { name: 'Temp', role: 'worker', cwd: root }, 'jim-1': { name: 'Jim', role: 'worker', cwd: root } } };
+    let quit;
+    const host = { hive: { root: () => root, setArchived() {}, registry: () => reg }, ptyForAgent: () => 'pty', config: () => ({}), modelChoices: () => [], offeredModels: () => [],
+      buildLaunch: () => ({ bin: 'x', args: [] }), spawn: async () => ({ ok: true }), isDirectory: () => true, log() {}, onQuit: (fn) => { quit = fn; } };
+    return runtime.registerParamountRuntime(host).beat().then(() => {
+      quit(); // clears the beat timers too
+      assert.deepEqual(runtime.readRecord(root).map((a) => a.id).sort(), ['god', 'jim-1']);
+    }).finally(() => fs.rmSync(root, { recursive: true, force: true }));
+  } catch (e) { fs.rmSync(root, { recursive: true, force: true }); throw e; }
 });
 
 test('no floor yet (setup not finished): nothing is read or written', async () => {
@@ -184,7 +212,7 @@ test('restore: a recorded agent left unarchived is respawned; an archived one (s
   const spawned = [];
   const r = await restoreAgents(root, { isLive: () => false, isArchived: (id) => id === 'stopped', isDirectory: () => true, respawn: async (a) => { spawned.push(a.id); return { ok: true }; }, log() {} });
   assert.deepEqual(spawned, ['tester-2']);
-  assert.deepEqual(r, { restored: ['tester-2'], skipped: ['god', 'stopped'], failed: [] });
+  assert.deepEqual(r, { restored: ['tester-2'], skipped: ['god', 'stopped'], failed: [], archived: [] });
 });
 
 test('the 4-second snapshot logs only failures, and the service probe only state changes (owner run of ceeb4aaf: 377 lines in 40 min)', async () => {
