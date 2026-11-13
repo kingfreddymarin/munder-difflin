@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -7,6 +8,7 @@ import tailwindcss from '@tailwindcss/vite';
 // resolved from the app repo's own node_modules so both renderers stay on one version.
 // See src/components/app/terminal/TERMINAL-why.md.
 const XTERM = /^@xterm\/(xterm|addon-fit|addon-webgl|addon-unicode11)(\/.*)?$/;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],

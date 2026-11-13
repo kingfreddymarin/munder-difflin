@@ -45,6 +45,7 @@ function fixture(overrides = {}) {
     isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
     commandAvailable: () => true,
     spawnHire: async (spawn) => { state.spawned.push(spawn); if (spawn.isGod) state.agents[spawn.plan.agentId] = { name: spawn.plan.name, provider: spawn.provider, isGod: true, live: true }; return { ok: true }; },
+    restartAgent: async (id, mode) => { state.restarted = { id, mode }; return { ok: true, resumed: mode === 'resume' }; },
     ...overrides
   };
   const deps = {
@@ -68,6 +69,70 @@ test('card.create adds the next key on the ledger prefix and emits one event', (
   assert.equal(card.assignee, 'jim');
   assert.equal(card.status, 'todo');
   assert.equal(state.events.length, 1);
+});
+
+test('agent.switch validates the target and passes the exact provider, model and account without hiring', async () => {
+  let selected;
+  const f = fixture({ switchAgent: async (id, target) => { selected = { id, ...target }; return { ok: true }; } });
+  const result = await dispatchParamount({ type: 'agent.switch', agentId: 'jim', provider: 'codex', model: 'gpt-x', launcher: null }, f.deps);
+  assert.equal(result.ok, true);
+  assert.deepEqual(selected, { id: 'jim', provider: 'codex', model: 'gpt-x', launcher: null });
+  assert.equal(f.state.spawned.length, 0);
+});
+
+test('agent.switch rejects unavailable models and never invokes the switch callback', async () => {
+  let called = false;
+  const f = fixture({ switchAgent: async () => { called = true; return { ok: true }; } });
+  const result = await dispatchParamount({ type: 'agent.switch', agentId: 'jim', provider: 'codex', model: 'not-offered', launcher: null }, f.deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'INVALID_INPUT');
+  assert.equal(called, false);
+});
+
+test('agent.switch requires an explicit account when launchers were discovered', async () => {
+  let called = false;
+  const choice = { id: 'dcxm', provider: 'codex', label: 'dcxm · Alternate', fingerprint: 'a'.repeat(64), unrestricted: false };
+  const f = fixture({ launcherDiscovery: () => ({ status: 'ok', choices: [choice], profiles: [{ ...choice, bin: 'codex', args: [], home: '/tmp/codex-alt' }] }), switchAgent: async () => { called = true; return { ok: true }; } });
+  const result = await dispatchParamount({ type: 'agent.switch', agentId: 'jim', provider: 'codex', model: 'gpt-x', launcher: null }, f.deps);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /exact account launcher/);
+  assert.equal(called, false);
+});
+
+test('team delegation atomically creates a lead parent and owned dependent subtasks then messages each owner', () => {
+  const messages = [];
+  const { state, deps, root } = fixture({
+    addTasksBatch: (rows) => { if (rows.some((row) => state.tasks.some((item) => item.id === row.id))) return false; state.tasks.push(...rows); return true; },
+    sendAgentMessage: (agentId, subject, body) => messages.push({ agentId, subject, body })
+  });
+  fs.mkdirSync(path.join(root, 'council', 'extensions'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'council', 'extensions', 'teams.json'), JSON.stringify({ version: 1, teams: [{ id: 'platform', name: 'Platform', leadId: 'jim', memberIds: ['jim', 'pam'] }], reportsTo: { pam: 'jim' } }));
+  const result = dispatchParamount({ type: 'team.delegate', teamId: 'platform', title: 'Ship feature', subtasks: [
+    { title: 'Implement', ownerId: 'jim', dependsOn: [] },
+    { title: 'Review', ownerId: 'pam', dependsOn: [0] }
+  ] }, deps);
+  assert.equal(result.ok, true);
+  const parent = state.tasks.find((task) => task.id === result.delegated.parentKey);
+  const [first, second] = result.delegated.childKeys.map((key) => state.tasks.find((task) => task.id === key));
+  assert.equal(parent.assignee, 'jim');
+  assert.equal(first.parentId, parent.id);
+  assert.deepEqual(second.dependsOn, [first.id]);
+  assert.deepEqual(messages.map((message) => message.agentId), ['jim', 'pam']);
+  assert.match(messages[1].body, new RegExp(first.id));
+});
+
+test('agent.restart preserves the selected identity and explicitly chooses resume or fresh', async () => {
+  const { state, deps } = fixture();
+  const resumed = await dispatchParamount({ type: 'agent.restart', agentId: 'jim', mode: 'resume' }, deps);
+  assert.equal(resumed.ok, true);
+  assert.deepEqual(state.restarted, { id: 'jim', mode: 'resume' });
+  const fresh = await dispatchParamount({ type: 'agent.restart', agentId: 'jim', mode: 'fresh' }, deps);
+  assert.equal(fresh.ok, true);
+  assert.deepEqual(state.restarted, { id: 'jim', mode: 'fresh' });
+  assert.equal(dispatchParamount({ type: 'agent.restart', agentId: 'jim', mode: 'other' }, deps).code, 'INVALID_INPUT');
+  state.agents.god = { name: 'God', isGod: true };
+  assert.equal((await dispatchParamount({ type: 'agent.restart', agentId: 'god', mode: 'resume' }, deps)).ok, true);
+  assert.deepEqual(state.restarted, { id: 'god', mode: 'resume' });
 });
 
 test('card.create rejects bad input with an errorId and code', () => {

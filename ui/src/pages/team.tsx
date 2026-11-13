@@ -19,6 +19,7 @@ import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { Screen } from '@/components/app/screen';
+import { TeamsEditor } from '@/features/team/teams-editor';
 
 type PanelId = 'agents' | 'graph' | 'activity' | 'sources' | 'automations';
 const PANELS: Record<PanelId, { title: string; hint: string }> = {
@@ -129,6 +130,7 @@ export function TeamPage() {
         <Button disabled={!teamApi} onClick={() => setHiring({ bundle: false })}
           title={teamApi ? 'Add an agent: review the exact command, then start it in a terminal' : 'Hiring needs the desktop core.'}>Hire</Button>
       </div>
+      <TeamsEditor />
       <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3', gridFor[panels.length] ?? gridFor[5])}>
         {panels.map((id) => (
           <Tile key={id} title={PANELS[id].title} hint={PANELS[id].hint}>{body(id)}</Tile>

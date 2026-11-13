@@ -16,6 +16,7 @@ import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { UPDATE_KINDS, type Agent, type Chat, type Message } from '@/data/types';
 import { Screen } from '@/components/app/screen';
+import { findBridge } from '@/data/bridge';
 
 type Filter = 'all' | 'unread' | 'asks' | 'leads' | 'workers' | 'groups';
 const FILTERS: { value: Filter; label: string }[] = [
@@ -45,6 +46,12 @@ export function ChatsPage() {
   const [filter, setFilter] = React.useState<Filter>('all');
   const [q, setQ] = React.useState('');
   const [draft, setDraft] = React.useState('');
+  const [attachments, setAttachments] = React.useState<Array<{ path: string; name: string }>>([]);
+  const [inputStatus, setInputStatus] = React.useState('');
+  const [recording, setRecording] = React.useState(false);
+  const recorder = React.useRef<MediaRecorder | null>(null);
+  const audioChunks = React.useRef<Blob[]>([]);
+  React.useEffect(() => () => { try { recorder.current?.stop(); } catch { /* already stopped */ } }, []);
   const current = route.params.get('c') ?? chats[0]?.id;
   const endRef = React.useRef<HTMLDivElement>(null);
   const searchRef = React.useRef<HTMLInputElement>(null);
@@ -101,9 +108,43 @@ export function ChatsPage() {
   }, [thread.length, current]);
 
   const send = () => {
-    const text = draft.trim();
+    const text = [draft.trim(), ...attachments.map((file) => `Attached file: ${file.path}`)].filter(Boolean).join('\n\n');
     if (!text || !chat) return;
-    void dispatch({ type: 'chat.send', chatId: chat.id, text }).then((ok) => { if (ok) setDraft(''); });
+    void dispatch({ type: 'chat.send', chatId: chat.id, text }).then((ok) => { if (ok) { setDraft(''); setAttachments([]); } });
+  };
+  const addFiles = (files: Array<{ path: string; name: string }>) => setAttachments((current) => [...current, ...files.filter((file) => !current.some((item) => item.path === file.path))]);
+  const chooseFiles = async () => {
+    setInputStatus('');
+    try { const bridge = findBridge(); if (!bridge?.attachFiles) throw new Error('File attachments need the desktop app.'); const result = await bridge.attachFiles(); if (!result.ok) throw new Error(result.error); addFiles(result.files); }
+    catch (error) { setInputStatus(error instanceof Error ? error.message : 'Could not choose files'); }
+  };
+  const pasteImage = async () => {
+    setInputStatus('');
+    try { const bridge = findBridge(); if (!bridge?.saveClipboardImage) throw new Error('Clipboard image attachments are unavailable.'); const result = await bridge.saveClipboardImage(); if (!result.ok) throw new Error(result.error); addFiles([result.file]); }
+    catch (error) { setInputStatus(error instanceof Error ? error.message : 'No clipboard image available'); }
+  };
+  const toggleDictation = async () => {
+    setInputStatus('');
+    if (recording && recorder.current) { recorder.current.stop(); return; }
+    try {
+      const bridge = findBridge();
+      if (!bridge?.freeflowTranscribe) throw new Error('Dictation is unavailable in this desktop build.');
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('This device does not support microphone capture.');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const active = new MediaRecorder(stream); audioChunks.current = []; recorder.current = active;
+      active.ondataavailable = (event) => { if (event.data.size) audioChunks.current.push(event.data); };
+      active.onerror = () => { stream.getTracks().forEach((track) => track.stop()); setRecording(false); setInputStatus('Microphone recording failed.'); };
+      active.onstop = async () => {
+        setRecording(false); stream.getTracks().forEach((track) => track.stop()); recorder.current = null;
+        try {
+          const audio = new Blob(audioChunks.current, { type: active.mimeType || 'audio/webm' });
+          const bytes = await audio.arrayBuffer(); const result = await bridge.freeflowTranscribe!({ audio: bytes, mimeType: audio.type, filename: 'paramount-dictation.webm' });
+          if (!result.ok || !result.text) throw new Error(result.error || 'No speech was detected.');
+          setDraft((current) => `${current}${current ? ' ' : ''}${result.text}`);
+        } catch (error) { setInputStatus(error instanceof Error ? error.message : 'Dictation failed. Check Free Flow setup and microphone access.'); }
+      };
+      active.start(); setRecording(true); setInputStatus('Recording. Select Stop dictation to transcribe.');
+    } catch (error) { setInputStatus(error instanceof Error ? error.message : 'Microphone permission was denied or unavailable.'); }
   };
   const showUpdates = () => void dispatch({ type: 'chats.view', hideUpdates: false, hiddenIds: (view?.hiddenIds ?? []).filter((id) => !updates.some((m) => m.id === id)) });
 
@@ -177,7 +218,11 @@ export function ChatsPage() {
         </nav>
       </aside>
 
-      <section className="flex min-h-0 min-w-0 flex-col">
+      <section className="flex min-h-0 min-w-0 flex-col" onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={(event) => {
+        const bridge = findBridge();
+        const files = [...event.dataTransfer.files].flatMap((file) => { const path = bridge?.pathForFile?.(file); return path ? [{ path, name: file.name }] : []; });
+        if (files.length) { event.preventDefault(); addFiles(files); setInputStatus('Files attached. Select Send to share their paths with the agent.'); }
+      }}>
         {chat && (
           <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
             {focus && chat.kind === 'agent' ? <AvatarLink agent={focus} size="sm" onOpen={openSettings} /> : null}
@@ -214,7 +259,12 @@ export function ChatsPage() {
           ))}
           <div ref={endRef} />
         </div>
-        <div className="flex items-center gap-2 border-t p-3">
+        {attachments.length > 0 && <div className="flex flex-wrap gap-2 border-t px-3 pt-3" aria-label="Attached files">{attachments.map((file) => <span key={file.path} className="inline-flex max-w-full items-center gap-1 rounded-full bg-muted px-3 py-1 text-xs"><span className="truncate">{file.name}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.path !== file.path))}>×</button></span>)}</div>}
+        {inputStatus && <p role="status" aria-live="polite" className={`px-4 pt-2 text-xs ${recording ? 'text-rose-300' : 'text-muted-foreground'}`}>{inputStatus}</p>}
+        <div className="flex flex-wrap items-center gap-2 border-t p-3">
+          <button type="button" onClick={() => void chooseFiles()} className="rounded-full border px-3 py-2 text-xs hover:bg-accent" aria-label="Attach files">Attach</button>
+          <button type="button" onClick={() => void pasteImage()} className="rounded-full border px-3 py-2 text-xs hover:bg-accent" aria-label="Attach clipboard image">Paste image</button>
+          <button type="button" onClick={() => void toggleDictation()} aria-pressed={recording} className={`rounded-full border px-3 py-2 text-xs hover:bg-accent ${recording ? 'border-rose-400 text-rose-300' : ''}`}>{recording ? 'Stop dictation' : 'Dictate'}</button>
           <Input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -222,6 +272,15 @@ export function ChatsPage() {
             placeholder={chat ? `Message ${chat.title} · goes to the front of its queue` : 'Pick a chat'}
             aria-label="Message"
             className="h-11 rounded-full px-4"
+            onPaste={(event) => {
+              const images = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/'));
+              const bridge = findBridge();
+              const direct = images.flatMap((file) => { const path = bridge?.pathForFile?.(file); return path ? [{ path, name: file.name || 'clipboard-image' }] : []; });
+              if (direct.length) { event.preventDefault(); addFiles(direct); setInputStatus('Clipboard image attached. Select Send to share it with the agent.'); }
+              else if (event.clipboardData.types.includes('image')) {
+                event.preventDefault(); void pasteImage();
+              }
+            }}
           />
           <IconButton aria-label="Send" onClick={send} className="size-11 rounded-full">
             <Send animateOnHover />

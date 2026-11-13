@@ -108,7 +108,7 @@ function status(value: string, breaker: string): Agent['status'] {
 }
 
 type OkResult = Extract<ParamountResult, { ok: true }> & Omit<ParamountTeamResult, 'ok' | 'event'>;
-type ResultPayload = 'diagnostics' | 'saved' | 'discovery' | 'imported' | 'models' | 'hire' | 'artifacts';
+type ResultPayload = 'diagnostics' | 'saved' | 'discovery' | 'imported' | 'models' | 'hire' | 'artifacts' | 'organization' | 'delegated';
 
 /** Sends a command whose answer is a payload on the result rather than a floor event. */
 async function query<K extends ResultPayload>(command: ParamountCommand | ParamountTeamCommand, payload: K, missing: string): Promise<NonNullable<OkResult[K]>> {
@@ -168,6 +168,9 @@ export function createElectronProvider(): ElectronProvider {
       }
       const registry = object(native.registry);
       const registryAgents = object(registry.agents);
+      const organization = object(native.organization);
+      const reporting = object(organization.reportsTo);
+      const orgTeams = array(organization.teams);
       const roster = object(native.roster);
       const rosterAgents = array(roster.agents);
       const rosterById = new Map(rosterAgents.map((item) => [string(item.id), item]));
@@ -207,8 +210,9 @@ export function createElectronProvider(): ElectronProvider {
         step: 0, steps: 0, tokensUsed: (Number(live.tokens) || 0) / 1e6, tokensCap: 0,
         tokensIn: 0, tokensOut: 0, tokensCached: 0, contextPct: Number(live.contextPct) || 0,
         bundle: '', skills: [], mcps: [], rules: [],
-        // Every agent reports to the floor's orchestrator: Paramount has one orchestrator and no sub-leads.
-        ...(registryGod && id !== registryGod && registryAgents[registryGod] ? { reportsTo: registryGod } : {}),
+        ...(string(reporting[id]) ? { reportsTo: string(reporting[id]) } : registryGod && id !== registryGod && registryAgents[registryGod] ? { reportsTo: registryGod } : {}),
+        teamIds: orgTeams.filter((team) => Array.isArray(object(team).memberIds) && (object(team).memberIds as unknown[]).includes(id)).map((team) => string(object(team).id)),
+        teamNames: orgTeams.filter((team) => Array.isArray(object(team).memberIds) && (object(team).memberIds as unknown[]).includes(id)).map((team) => string(object(team).name, string(object(team).id))),
       }; });
       const agentIds = new Set(agents.map((agent) => agent.id));
       const chats = agents.map((agent) => ({ id: `agent:${agent.id}`, kind: 'agent' as const, title: agent.name, agentIds: [agent.id], pinned: agent.role === 'paramount' }));
@@ -242,7 +246,7 @@ export function createElectronProvider(): ElectronProvider {
         status: ['todo', 'doing', 'blocked', 'done'].includes(string(task.status)) ? string(task.status) as Card['status'] : 'todo',
         priority: task.priority === 1 ? 'P1' : task.priority === 2 ? 'P2' : task.priority === 3 ? 'P3' : '',
         agentId: string(task.assignee), created: date(task.createdAt), createdBy: string(task.createdBy), updated: date(task.updatedAt ?? task.createdAt),
-        description: string(task.description), dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.filter((id): id is string => typeof id === 'string').join(', ') : '',
+        description: string(task.description), dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.filter((id): id is string => typeof id === 'string').join(', ') : '', parentId: string(task.parentId) || undefined, teamId: string(task.teamId) || undefined,
         plan: [], doneMeans: [], tags: strings(task.tags), workspace: string(task.workspace) || undefined,
         dir: string(task.dir) || undefined, refs: refs(task.refs), tokens: 0, origin: 'hive', people: [],
       }));
@@ -275,6 +279,7 @@ export function createElectronProvider(): ElectronProvider {
       });
       const snapshot: Snapshot = {
         usageReported: false,
+        archivedAgents: array(native.archivedAgents).map((agent) => ({ id: string(agent.id), name: string(agent.name, string(agent.id)) })),
         settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
         floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(orchestratorFailureOf(native.orchestratorFailure) ? { orchestratorFailure: orchestratorFailureOf(native.orchestratorFailure) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: setupDismissedFor(object(preferences.setup), prerequisites), objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
@@ -367,6 +372,35 @@ export function createElectronProvider(): ElectronProvider {
     },
     teamModels(): Promise<ParamountTeamModels> {
       return query({ type: 'team.models' }, 'models', 'The core returned no model list.');
+    },
+    async startEngineSignIn(provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string) {
+      const result = await requireBridge().startEngineSignIn(provider, accountId, accountFingerprint);
+      if (!result.ok || !result.ptyId) throw BackendError.local(result.error?.includes('missing') ? 'UNSUPPORTED' : 'CONFLICT', result.error ?? 'Could not open the selected account login.', 'engine-signin.start');
+      return { ptyId: result.ptyId, cwd: result.cwd ?? '' };
+    },
+    async refreshEngineSignIn(provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string) {
+      const result = await requireBridge().refreshEngineSignIn(provider, accountId, accountFingerprint);
+      if (!result.ok || !result.status) throw BackendError.local('CONFLICT', result.error ?? 'Could not refresh this account status.', 'engine-signin.refresh');
+      refresh();
+      return result.status;
+    },
+    organization(): Promise<import('./paramount-api').ParamountOrganization> {
+      return query({ type: 'team.org.get' }, 'organization', 'The core returned no team organization.');
+    },
+    saveOrganization(organization): Promise<import('./paramount-api').ParamountOrganization> {
+      return query({ type: 'team.org.save', organization }, 'organization', 'The core did not save the team organization.').then((result) => { refresh(); return result; });
+    },
+    delegate(request): Promise<NonNullable<ParamountTeamResult['delegated']>> {
+      return query(request, 'delegated', 'The core did not create delegated tasks.').then((result) => { refresh(); return result; });
+    },
+    async archiveAgent(id, archived) {
+      const bridge = requireBridge();
+      if (!bridge.hiveSetArchived) throw BackendError.local('UNSUPPORTED', 'Archive and restore need the desktop agent registry.', 'agent.archive');
+      checkOk(await bridge.hiveSetArchived(id, archived), 'agent.archive', 'Could not update archive state.'); refresh();
+    },
+    async sendNote(id, text) {
+      const bridge = requireBridge();
+      checkOk(await bridge.hiveSend({ to: id, act: 'inform', subject: 'Note from human', body: text.trim() }, 'human'), 'agent.note', 'Could not send note.'); refresh();
     },
     async hire(manifest, options = {}): Promise<ParamountHirePlan> {
       const plan = await query({ type: 'agent.hire', manifest, ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.confirm ? { confirm: true } : {}), ...(options.orchestrator ? { orchestrator: true } : {}), ...(options.launcher !== undefined ? { launcher: options.launcher } : {}) }, 'hire', 'The core returned no hire plan.');

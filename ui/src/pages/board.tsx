@@ -134,6 +134,7 @@ function BoardCard({ card, onOpen }: { card: CardT; onOpen: () => void }) {
           {card.tags.map((t) => <Badge key={t} variant="secondary" className="px-1.5 py-0 text-[10px]">{t}</Badge>)}
         </span>
       )}
+      {(card.teamId || card.parentId) && <span className="text-[11px] text-muted-foreground">{card.teamId ? `Team ${card.teamId}` : ''}{card.parentId ? ` · child of ${card.parentId}` : ' · team parent'}</span>}
       {card.dependsOn && <span className="text-[11px] text-amber-300">waits on {card.dependsOn}</span>}
       {card.plan.length > 0 && <Progress value={Math.round((done / card.plan.length) * 100)} className="h-1" />}
       <span className="text-muted-foreground flex items-center gap-2 text-[11px]">

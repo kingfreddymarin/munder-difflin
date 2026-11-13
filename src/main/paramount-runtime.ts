@@ -37,6 +37,8 @@ export interface RuntimeDeps {
   /** True when the registry marks this agent stopped by the human (archived). */
   isArchived(agentId: string): boolean;
   isDirectory(path: string): boolean;
+  /** Distinguishes a confirmed missing working directory from a transient access or volume error. */
+  directoryState?(path: string): 'directory' | 'missing' | 'unavailable';
   /** Start the agent again with its prior session resumed. */
   respawn(agent: LiveAgent): Promise<{ ok: boolean; error?: string }>;
   /** Mark the agent archived in the registry (its folder is gone, so it cannot come back). */
@@ -70,7 +72,7 @@ function writeRecord(root: string, agents: LiveAgent[], now: number): void {
 
 /** A temp: an ephemeral worker started from a spawn request (`worker-<request id>`; Munder registers
  *  them with role 'temp'). A hire whose role is the word "worker" is not one. */
-export function isTemp(id: string, a: { role?: unknown }): boolean { return id.startsWith('worker-') || a.role === 'temp'; }
+export function isTemp(_id: string, a: { role?: unknown }): boolean { return a.role === 'temp'; }
 
 /** A floor last run by Munder has no Council record (Munder restores its team from its own renderer
  *  record), or a record from an earlier Council run that lists only the god. Seed it from the
@@ -142,15 +144,16 @@ export async function restoreAgents(root: string, deps: RuntimeDeps): Promise<{ 
     // The orchestrator's start and resume belong to the setup/orchestrator path (matrix row 8).
     if (agent.isGod) { result.skipped.push(agent.id); continue; }
     if (deps.isLive(agent.id) || deps.isArchived(agent.id)) { result.skipped.push(agent.id); continue; }
-    if (!deps.isDirectory(agent.cwd)) {
-      if (deps.archive) {
+    const directoryState = deps.directoryState?.(agent.cwd) ?? (deps.isDirectory(agent.cwd) ? 'directory' : 'missing');
+    if (directoryState !== 'directory') {
+      if (directoryState === 'missing' && deps.archive) {
         deps.archive(agent.id);
         result.archived.push(agent.id);
         deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'archived', code: 'CWD_MISSING',
           note: `${agent.name}'s folder ${agent.cwd} is gone, so ${agent.name} was archived instead of restored.` });
       } else {
         result.failed.push(agent.id);
-        deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'failed', code: 'CWD_MISSING' });
+        deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'failed', code: directoryState === 'missing' ? 'CWD_MISSING' : 'CWD_UNAVAILABLE' });
       }
       continue;
     }
@@ -246,6 +249,7 @@ export interface RuntimeHost {
   spawn(opts: { id: string; cwd: string; command: string; args: string[]; cols: number; rows: number; provider: string; isolate: false; resume: true;
     hive: { id: string; name: string; provider: string; cwd: string; role?: string } }): Promise<{ ok: boolean; error?: string }>;
   isDirectory(path: string): boolean;
+  directoryState?(path: string): 'directory' | 'missing' | 'unavailable';
   log(step: Record<string, unknown>): void;
   onQuit(fn: () => void): void;
 }
@@ -263,6 +267,7 @@ export function registerParamountRuntime(host: RuntimeHost): ParamountRuntime {
     isArchived: (id) => agents()[id]?.archived === true,
     archive: (id) => host.hive.setArchived(id, true),
     isDirectory: host.isDirectory,
+    ...(host.directoryState ? { directoryState: host.directoryState } : {}),
     respawn: (agent) => {
       const config = host.config();
       const launch = host.buildLaunch({ requestProvider: agent.provider, requestModel: resolveAgentModel(agent.provider, host.modelChoices(agent.id, { role: agent.role }), host.offeredModels),

@@ -29,6 +29,8 @@ export interface Agent {
   mcps: string[];
   rules: string[];
   reportsTo?: string;
+  teamIds?: string[];
+  teamNames?: string[];
   persona?: string;
   tone?: string;
   autonomy?: string;
@@ -109,6 +111,8 @@ export interface Card {
   task?: string;
   description: string;
   dependsOn?: string;
+  parentId?: string;
+  teamId?: string;
   plan: { text: string; state: StepState; note?: string }[];
   doneMeans: string[];
   /** Labels the agents set; the board filters on them. */
@@ -269,7 +273,7 @@ export interface Win {
 }
 
 // What the app needs on this machine. Checked at every start; the setup screen offers to install what is missing.
-export type PrereqState = 'ready' | 'installed-not-running' | 'missing' | 'outdated';
+export type PrereqState = 'ready' | 'installed-not-running' | 'missing' | 'outdated' | 'unknown';
 export interface Prerequisite {
   id: string;
   name: string;
@@ -280,6 +284,11 @@ export interface Prerequisite {
   install?: string; // shell command shown to copy, or run by the core with your approval
   start?: string;
   docs?: string;
+  loginCommand?: string;
+  signInProvider?: 'claude' | 'codex';
+  signInAccountId?: string;
+  signInAccountFingerprint?: string;
+  signInAccountLabel?: string;
 }
 
 /** First-run floor setup, from the core (Munder parity: no floor until setup completes). */
@@ -317,6 +326,7 @@ export interface Snapshot {
   wins: Win[];
   me: Account;
   agents: Agent[];
+  archivedAgents?: Array<{ id: string; name: string }>;
   chats: Chat[];
   messages: Message[];
   notifications: Notification[];

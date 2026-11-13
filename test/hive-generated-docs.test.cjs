@@ -72,6 +72,22 @@ test('ensureAgent preserves existing generated hive docs', async (t) => {
   assertSentinels(root);
 });
 
+test('new agent workspaces get a durable handoff file and explicit session context instructions', async (t) => {
+  const { hive, root } = floor(t);
+  const injection = await hive.ensureAgent({ id: 'agent-1', name: 'Agent', provider: 'pi', cwd: root });
+  const agentDir = path.join(root, 'agents', 'agent-1');
+  const handoff = path.join(agentDir, 'handoff.md');
+  assert.match(fs.readFileSync(handoff, 'utf8'), /State, Next, Files, and Open/);
+  const prompt = injection.args.join('\n');
+  assert.ok(prompt.includes(handoff));
+  assert.match(prompt, /Rules section of .*memory\.md/);
+  assert.match(prompt, /START of a task, read every file in/);
+
+  fs.writeFileSync(handoff, '## KEEP THIS HANDOFF\n', 'utf8');
+  await hive.ensureAgent({ id: 'agent-1', name: 'Agent', provider: 'pi', cwd: root });
+  assert.equal(fs.readFileSync(handoff, 'utf8'), '## KEEP THIS HANDOFF\n');
+});
+
 test('refreshGeneratedDocs replaces stale generated hive docs', (t) => {
   const { hive, root } = floor(t);
   writeSentinels(root);
@@ -91,7 +107,7 @@ test('hive-service bootstrap refreshes generated hive docs', () => {
   assert.ok(bootstrapBody, 'bootstrapHiveServices() is missing');
   assert.match(
     bootstrapBody,
-    /hive\.ensureHive\(\);\s*hive\.refreshGeneratedDocs\(\);/,
+    /hive\.ensureHive\(\).*?hive\.refreshGeneratedDocs\(\);/s,
     'bootstrapHiveServices() must refresh generated docs after ensuring the hive'
   );
   assert.equal(
@@ -99,6 +115,15 @@ test('hive-service bootstrap refreshes generated hive docs', () => {
     1,
     'refreshGeneratedDocs() must have one production caller'
   );
+});
+
+test('floor startup records named stage timings for the main-thread lag report', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  assert.match(source, /stage\('floor\.lock-claim'/);
+  assert.match(source, /stage\('hive\.generated-docs'/);
+  assert.match(source, /stage\('hive\.archive-orphans'/);
+  assert.match(source, /kind: 'paramount-startup-stages', phase: 'floor-services'/);
+  assert.match(source, /lagOp\(`floor-entry:\$\{name\}`\)/);
 });
 
 test('ensureHive restores missing generated hive docs', (t) => {

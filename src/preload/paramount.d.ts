@@ -83,6 +83,9 @@ export type ParamountUpdate = ParamountEvent | {
 export type ParamountErrorCode =
   | 'INVALID_COMMAND' | 'INVALID_INPUT' | 'NOT_FOUND' | 'CONFLICT'
   | 'UNSUPPORTED' | 'UNCERTAIN_STATE' | 'INTERNAL';
+export type ParamountSignInState =
+  | { state: 'signed-in' | 'unknown'; accountId?: string; accountLabel?: string; accountFingerprint?: string }
+  | { state: 'signed-out' | 'expired'; fix: string; seen?: string; accountId?: string; accountLabel?: string; accountFingerprint?: string };
 /** Every failure carries an errorId. The same id is on a `paramount-error`
  *  line in log.jsonl with the stack and context; show it to the user. */
 export interface ParamountFailure {
@@ -185,6 +188,8 @@ export interface ParamountRawSnapshot {
   missions: unknown[];
   ptys: unknown[];
   preferences: Record<string, unknown>;
+  organization?: ParamountOrganization;
+  archivedAgents?: Array<{ id: string; name: string }>;
 }
 
 /** Only the preload calls Paramount's React adapter needs. */
@@ -193,6 +198,10 @@ export interface ParamountPreloadAPI {
   paramountSnapshot(): Promise<ParamountRawSnapshot>;
   /** GAP commands only. chat.send/card.move/terminal.input use the calls below. */
   paramountDispatch(command: ParamountCommand): Promise<ParamountResult>;
+  /** Opens the selected provider's login command in a visible Paramount terminal. */
+  startEngineSignIn(provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string): Promise<{ ok: boolean; ptyId?: string; cwd?: string; error?: string }>;
+  /** Forces an account-scoped CLI status check without restarting the app. */
+  refreshEngineSignIn(provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string): Promise<{ ok: boolean; status?: ParamountSignInState; error?: string }>;
   onParamountEvent(cb: (event: ParamountUpdate) => void): () => void;
   hiveSend(msg: { to: string; act: 'request' | 'inform' | 'propose' | 'query' | 'agree' | 'refuse' | 'done'; subject: string; body: string }, from?: string): Promise<{ ok: boolean; error?: string; message?: unknown }>;
   hivePatchTask(id: string, patch: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
@@ -296,10 +305,17 @@ export type ParamountTeamCommand =
       priority?: 1 | 2 | 3; status?: 'todo' | 'blocked' }
   /** Read-only: models per engine, the harness default model and each agent's pick. */
   | { type: 'team.models' }
+  | { type: 'team.org.get' }
+  | { type: 'team.org.save'; organization: { version: 1; teams: Array<{ id: string; name: string; leadId: string; memberIds: string[] }>; reportsTo: Record<string, string> } }
+  | { type: 'team.delegate'; teamId: string; title: string; description?: string; subtasks: Array<{ title: string; description?: string; ownerId: string; dependsOn: number[] }> }
   /** The Add-Agent form. Read-only unless `confirm: true`: without it the core
    *  validates the hire manifest and returns the exact spawn plan for review;
    *  with it the agent starts in a visible terminal. Nothing spawns unconfirmed. */
   | { type: 'agent.hire'; manifest: Record<string, unknown>; cwd?: string; confirm?: boolean; orchestrator?: boolean; launcher?: CouncilLauncherPick | null }
+  /** Restart the same registered agent, explicitly resuming its session or starting fresh. */
+  | { type: 'agent.restart'; agentId: string; mode: 'resume' | 'fresh' }
+  /** Switch an existing agent to a chosen provider/account/model in a fresh session. */
+  | { type: 'agent.switch'; agentId: string; provider: string; model: string; launcher: CouncilLauncherPick | null }
   | { type: 'launchers.refresh' }
   | { type: 'launchers.configure'; scope: 'agent' | 'temps' | 'orchestrator' | 'default'; agentId?: string; provider?: string; launcher: CouncilLauncherPick | null };
 /** `agent.update` with `{ model }` (and optionally the agent's own `engine`) is
@@ -329,6 +345,7 @@ export interface ParamountTeamModels {
   /** Model chosen per agent in Paramount; an agent missing here runs the default. */
   agents: Record<string, { engine: string; model?: string }>;
 }
+export interface ParamountOrganization { version: 1; teams: Array<{ id: string; name: string; leadId: string; memberIds: string[] }>; reportsTo: Record<string, string> }
 export interface ParamountHirePlan {
   launcher?: string;
   agentId: string;
@@ -354,5 +371,7 @@ export interface ParamountHirePlan {
 export type ParamountTeamResult = Extract<ParamountResult, { ok: true }> & {
   card?: { key: string };
   models?: ParamountTeamModels;
+  organization?: ParamountOrganization;
+  delegated?: { parentKey: string; childKeys: string[] };
   hire?: ParamountHirePlan;
 };

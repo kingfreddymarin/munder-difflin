@@ -146,20 +146,39 @@ test('a failed restore stays restorable, with a reason; an agent whose folder is
 
 test('temps live at quit are not recorded (Munder never restores them); a hire whose role is "worker" is', () => {
   const runtime = loadTs('src/main/paramount-runtime.ts');
-  assert.equal(runtime.isTemp('worker-abc', { role: 'worker' }), true);
+  assert.equal(runtime.isTemp('worker-jim', { role: 'worker' }), false);
+  assert.equal(runtime.isTemp('worker-abc', { role: 'temp' }), true);
   assert.equal(runtime.isTemp('t-1', { role: 'temp' }), true);
   assert.equal(runtime.isTemp('jim-1', { role: 'worker' }), false);
   const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-temps-'));
   try {
-    const reg = { godId: 'god', agents: { god: { name: 'G', isGod: true, cwd: root }, 'worker-abc': { name: 'Temp', role: 'worker', cwd: root }, 'jim-1': { name: 'Jim', role: 'worker', cwd: root } } };
+    const reg = { godId: 'god', agents: { god: { name: 'G', isGod: true, cwd: root }, 'worker-abc': { name: 'Temp', role: 'temp', cwd: root }, 'worker-jim': { name: 'Jim', role: 'worker', cwd: root }, 'jim-1': { name: 'Jim 2', role: 'worker', cwd: root } } };
     let quit;
     const host = { hive: { root: () => root, setArchived() {}, registry: () => reg }, ptyForAgent: () => 'pty', config: () => ({}), modelChoices: () => [], offeredModels: () => [],
       buildLaunch: () => ({ bin: 'x', args: [] }), spawn: async () => ({ ok: true }), isDirectory: () => true, log() {}, onQuit: (fn) => { quit = fn; } };
     return runtime.registerParamountRuntime(host).beat().then(() => {
       quit(); // clears the beat timers too
-      assert.deepEqual(runtime.readRecord(root).map((a) => a.id).sort(), ['god', 'jim-1']);
+      assert.deepEqual(runtime.readRecord(root).map((a) => a.id).sort(), ['god', 'jim-1', 'worker-jim']);
     }).finally(() => fs.rmSync(root, { recursive: true, force: true }));
   } catch (e) { fs.rmSync(root, { recursive: true, force: true }); throw e; }
+});
+
+test('a temporarily unavailable working folder is retained for a later restore', async () => {
+  const { restoreAgents, RUNTIME_FILE } = loadTs('src/main/paramount-runtime.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paramount-runtime-unavailable-'));
+  fs.writeFileSync(path.join(root, RUNTIME_FILE), JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: '', agents: [
+    { id: 'jim', name: 'Jim', provider: 'claude', cwd: '/Volumes/Detached/project' }
+  ] }));
+  const archived = [];
+  const events = [];
+  const result = await restoreAgents(root, {
+    isLive: () => false, isArchived: () => false, isDirectory: () => false, directoryState: () => 'unavailable',
+    respawn: async () => ({ ok: false }), archive: (id) => archived.push(id), log: (step) => events.push(step)
+  });
+  assert.deepEqual(result.failed, ['jim']);
+  assert.deepEqual(result.archived, []);
+  assert.deepEqual(archived, []);
+  assert.equal(events[0].code, 'CWD_UNAVAILABLE');
 });
 
 test('no floor yet (setup not finished): nothing is read or written', async () => {
@@ -245,7 +264,7 @@ const munderFloor = (cwd) => ({ godId: 'god', agents: {
   god: { name: 'Michael', provider: 'claude', isGod: true, cwd },
   'dwight-mvqtyx2n': { name: 'Dwight', provider: 'claude', cwd }, 'kevin-mvqxdggy': { name: 'Kevin', provider: 'codex', cwd },
   'kelly-mvqxdx82': { name: 'Kelly', provider: 'claude', cwd }, 'jim-mw9iivm1': { name: 'Jim', provider: 'claude', cwd },
-  'worker-abc': { name: 'Temp', provider: 'claude', role: 'worker', cwd }, old: { name: 'Old', provider: 'claude', cwd, archived: true } } });
+  'worker-abc': { name: 'Temp', provider: 'claude', role: 'temp', cwd }, old: { name: 'Old', provider: 'claude', cwd, archived: true } } });
 
 for (const [label, prior] of [['no record', null], ['a record with only the god', [{ id: 'god', name: 'Michael', provider: 'claude', cwd: '.', isGod: true }]]]) {
   test(`a floor last run by Munder (${label}): its 4 agents stay unarchived and are restored at boot`, async (t) => {

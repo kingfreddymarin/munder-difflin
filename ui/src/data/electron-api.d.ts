@@ -6,6 +6,7 @@ export type * from './paramount-api';
  *  contract; each caller checks for them and says what it cannot do when one is missing. */
 export type ElectronBridge = ParamountPreloadAPI & {
   resizePty?(id: string, cols: number, rows: number): Promise<{ ok: boolean; error?: string }>;
+  killPty?(id: string): Promise<{ ok: boolean; error?: string }>;
   // Terminal (lane e-terminal): the same calls Munder's own terminal uses.
   /** Asks the TUI for a fresh frame at its current size; output from before we subscribed is otherwise never shown. */
   redrawPty?(id: string): Promise<{ ok: boolean; error?: string }>;
@@ -31,6 +32,10 @@ export type ElectronBridge = ParamountPreloadAPI & {
   providerKeySet?(request: { backend: string; key: string }): Promise<{ ok: boolean; error?: string }>;
   providerKeyClear?(backend: string): Promise<{ ok: boolean; error?: string }>;
   hiveMemory?(id: string): Promise<string>;
+  hiveSetArchived?(id: string, archived: boolean): Promise<{ ok: boolean; error?: string }>;
+  attachFiles?(): Promise<{ ok: true; files: Array<{ path: string; name: string }> } | { ok: false; error: string }>;
+  saveClipboardImage?(): Promise<{ ok: true; file: { path: string; name: string } } | { ok: false; error: string }>;
+  freeflowTranscribe?(arg: { audio: ArrayBuffer | Uint8Array; mimeType?: string; filename?: string }): Promise<{ ok: boolean; text?: string; error?: string }>;
   textSearch?(query: string): Promise<{ ok: boolean; results: Array<{ source: string; excerpt: string }> }>;
   searchMemory?(query: string, wing?: string): Promise<{ ok: boolean; output: string; error?: string }>;
 };

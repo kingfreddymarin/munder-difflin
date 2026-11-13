@@ -16,6 +16,7 @@ import { accent } from '@/components/app/status';
 import { UnsupportedReason } from '@/components/app/error-notice';
 import { ErrorNotice } from '@/components/app/error-notice';
 import { ModelSelect } from '@/features/team/hire-sheet';
+import { LauncherSelect } from '@/features/team/launcher-select';
 import { NewCardDialog } from '@/features/team/new-card-dialog';
 import { useDispatch, useFloor, useTeamApi, useUnsupported } from '@/data/store';
 import { toBackendError, type BackendError } from '@/data/errors';
@@ -24,6 +25,7 @@ import type { Agent } from '@/data/types';
 import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
+import { EngineSignInActions } from '@/components/app/engine-sign-in-actions';
 
 // Choices offered for tone and autonomy when the provider stores them (the sample data does; the core does not yet).
 const tones = ['Concise', 'Detailed', 'Friendly', 'Formal'];
@@ -37,6 +39,7 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
   const agent = useFloor((s) => s.agents.find((a) => a.id === agentId));
   const cards = useFloor((s) => s.cards);
   const activity = useFloor((s) => s.activity);
+  const prerequisites = useFloor((s) => s.prerequisites);
   const dispatch = useDispatch();
   const unsupported = useUnsupported();
   const teamApi = useTeamApi();
@@ -46,13 +49,25 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
   const [model, setModel] = React.useState('');
   const [modelsError, setModelsError] = React.useState<BackendError | null>(null);
   const [saving, setSaving] = React.useState(false);
+  const [restartMessage, setRestartMessage] = React.useState('');
+  const [switchProvider, setSwitchProvider] = React.useState('');
+  const [switchModel, setSwitchModel] = React.useState('');
+  const [switchLauncher, setSwitchLauncher] = React.useState<import('@/data/paramount-api').CouncilLauncherPick | null>(null);
+  const [switchMessage, setSwitchMessage] = React.useState('');
+  const [switching, setSwitching] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
   React.useEffect(() => { setForm(agent ? formOf(agent) : null); }, [agent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadModels = React.useCallback(() => {
     if (!teamApi || !agentId) return;
     setModelsError(null);
-    teamApi.models().then((m) => { setModels(m); setModel(m.agents[agentId]?.model ?? ''); }, (cause) => setModelsError(toBackendError(cause, 'team.models')));
+    teamApi.models().then((m) => {
+      setModels(m); setModel(m.agents[agentId]?.model ?? '');
+      const current = m.agents[agentId]?.engine;
+      const next = m.engines.find((entry) => entry.id !== current) ?? m.engines[0];
+      setSwitchProvider(next?.id ?? ''); setSwitchModel('');
+      setSwitchLauncher(null);
+    }, (cause) => setModelsError(toBackendError(cause, 'team.models')));
   }, [teamApi, agentId]);
   React.useEffect(() => { setModels(null); setModel(''); loadModels(); }, [loadModels]);
 
@@ -62,6 +77,10 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
   // The core takes one field per agent.update, so each changed field is its own command (and its own log line).
   const fieldReason = (key: keyof Form | 'model') => (agent ? unsupported({ type: 'agent.update', agentId: agent.id, patch: { [key]: key === 'model' ? model : form?.[key as keyof Form] } }) : null);
   const engineId = (agent && models?.agents[agent.id]?.engine) || agent?.engine || '';
+  const savedLauncher = agent ? models?.launcherState?.agents[agent.id] : undefined;
+  const agentSignIn = prerequisites.find((entry) => entry.signInProvider === engineId
+    && entry.signInAccountId === savedLauncher?.id
+    && entry.signInAccountFingerprint === savedLauncher?.fingerprint);
   const savedModel = (agent && models?.agents[agent.id]?.model) ?? '';
   const changes = agent && form ? (Object.keys(form) as (keyof Form)[]).filter((k) => form[k] !== formOf(agent)[k] && !fieldReason(k)) : [];
   const modelChanged = !!models && model !== savedModel && !fieldReason('model');
@@ -72,6 +91,31 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
     if (modelChanged && await dispatch({ type: 'agent.update', agentId: agent.id, patch: { model } })) loadModels();
     setSaving(false);
   };
+  const restart = async (mode: 'resume' | 'fresh') => {
+    if (!agent) return;
+    setSaving(true); setRestartMessage('');
+    if (modelChanged && !(await dispatch({ type: 'agent.update', agentId: agent.id, patch: { model } }))) {
+      setSaving(false); return;
+    }
+    const ok = await dispatch({ type: 'agent.restart', agentId: agent.id, mode });
+    setRestartMessage(ok
+      ? (mode === 'resume' ? 'Session resumed with the saved model and existing task files.' : 'Started fresh with the same agent identity and task files.')
+      : 'Restart failed. See the action error for the reason.');
+    if (ok) loadModels();
+    setSaving(false);
+  };
+  const switchEngine = async () => {
+    if (!agent || !switchProvider || switchProvider === engineId) return;
+    setSwitching(true); setSwitchMessage('');
+    const ok = await dispatch({ type: 'agent.switch', agentId: agent.id, provider: switchProvider, model: switchModel, launcher: switchLauncher });
+    setSwitchMessage(ok
+      ? `Started a fresh ${switchProvider} session for ${agent.name}. Its old session and history remain; unsaved conversation context was not transferred.`
+      : 'Switch failed. The previous session was restored when possible; see the action error for details.');
+    setSwitching(false);
+    if (ok) loadModels();
+  };
+  const targetLaunchers = models?.launchers?.choices.filter((choice) => choice.provider === switchProvider) ?? [];
+  const needsLauncherRefresh = ['claude', 'codex'].includes(switchProvider) && models?.launchers?.status !== 'ok';
   const blocked = (['color', 'persona', 'tone', 'autonomy', 'yolo'] as const).map((k) => fieldReason(k)).find(Boolean);
 
   return (
@@ -93,6 +137,11 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
               <TabsContents className="min-h-0 flex-1">
                 <TabsContent value="overview">
                   <AgentSummary agent={agent} />
+                  {agentSignIn && agentSignIn.state !== 'ready' && agentSignIn.signInProvider && <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+                    <p className="mb-2 text-sm font-medium">{agentSignIn.state === 'unknown' ? `Sign-in status for ${agentSignIn.signInAccountLabel ?? engineId} is unknown` : `${agent.name} needs to sign in to ${agentSignIn.signInAccountLabel ?? engineId}`}</p>
+                    <p className="text-muted-foreground mb-2 text-xs">This action uses the exact account selected for this agent. Sign-in stays in the provider CLI; refresh confirms recovery without restarting Paramount.</p>
+                    <EngineSignInActions provider={agentSignIn.signInProvider} state={agentSignIn.state} accountId={agentSignIn.signInAccountId} accountFingerprint={agentSignIn.signInAccountFingerprint} accountLabel={agentSignIn.signInAccountLabel} />
+                  </div>}
                   <LauncherSettings agentId={agent.id} provider={engineId} scope={agent.id === models?.orchestratorId || agent.id === 'god' ? 'orchestrator' : 'agent'} />
                   <div className="mt-3 flex gap-2">
                     <Button className="flex-1" onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}>Open terminal</Button>
@@ -132,7 +181,7 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
                   <div className="grid gap-1.5">
                     <Label htmlFor="ag-model">Model</Label>
                     <div className="flex items-center gap-2">
-                      <span className="text-muted-foreground shrink-0 text-xs" title="Moving an agent to another engine means hiring it again on that engine.">{engineId || 'engine not reported'} ·</span>
+                      <span className="text-muted-foreground shrink-0 text-xs">{engineId || 'engine not reported'} ·</span>
                       <ModelSelect id="ag-model" models={models} engineId={engineId} value={model} onChange={setModel} disabled={!!fieldReason('model')} />
                     </div>
                     <span className="text-muted-foreground text-xs">Used from {agent.name}’s next start. “Use the default” follows the harness default model.</span>
@@ -140,6 +189,26 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
                     <UnsupportedReason reason={fieldReason('model')} />
                     {modelsError && <ErrorNotice error={modelsError}><Button size="sm" variant="outline" onClick={loadModels}>Retry</Button></ErrorNotice>}
                   </div>
+                  {agent.role !== 'ephemeral' && agent.role !== 'watcher' && agent.id !== models?.orchestratorId && <div className="rounded-lg border p-3">
+                    <div className="mb-2 flex flex-col gap-1">
+                      <span className="text-sm font-medium">Switch provider</span>
+                      <span className="text-muted-foreground text-xs">Keeps this agent id, tasks and durable files, then starts a new provider session. The prior session and history remain, but unsaved conversation context is not transferred. Choose the exact account; the provider default is shown as a separate choice.</span>
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="ag-switch-provider">Provider</Label>
+                      <select id="ag-switch-provider" className="bg-background h-9 rounded-md border px-2 text-sm" value={switchProvider} onChange={(event) => {
+                        const provider = event.target.value; setSwitchProvider(provider); setSwitchModel('');
+                        setSwitchLauncher(null);
+                      }}>
+                        {(models?.engines ?? []).filter((entry) => entry.id !== engineId).map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+                      </select>
+                      <ModelSelect id="ag-switch-model" models={models} engineId={switchProvider} value={switchModel} onChange={setSwitchModel} />
+                      <LauncherSelect discovery={models?.launchers} provider={switchProvider} value={switchLauncher} onChange={setSwitchLauncher} />
+                      {needsLauncherRefresh && <Button size="sm" variant="outline" onClick={async () => { await dispatch({ type: 'launchers.refresh' }); loadModels(); }}>Refresh account choices</Button>}
+                      <Button size="sm" variant="outline" disabled={switching || !switchProvider || switchProvider === engineId || needsLauncherRefresh || (targetLaunchers.length > 0 && !switchLauncher)} onClick={() => void switchEngine()}>{switching ? 'Switching…' : `Switch to ${models?.engines.find((entry) => entry.id === switchProvider)?.label ?? switchProvider} · start fresh`}</Button>
+                    </div>
+                    {switchMessage && <span className="text-muted-foreground mt-2 block text-xs" role="status">{switchMessage}</span>}
+                  </div>}
                   <div className="flex items-center gap-3">
                     <Label className="flex-1">Daily token budget</Label>
                     <Button size="sm" variant="outline" disabled={!!fieldReason('tokensCap')} onClick={() => setForm({ ...form, tokensCap: Math.max(0.5, form.tokensCap - 0.5) })}>−</Button>
@@ -170,6 +239,17 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
                     </>
                   )}
                   <Button disabled={saving || (changes.length === 0 && !modelChanged)} onClick={() => void save()}>{saving ? 'Saving…' : `Save · logged and sent to ${agent.name}`}</Button>
+                  {agent.role !== 'ephemeral' && agent.role !== 'watcher' && <div className="rounded-lg border p-3">
+                    <div className="mb-2 flex flex-col gap-1">
+                      <span className="text-sm font-medium">Restart after a limit or interruption</span>
+                      <span className="text-muted-foreground text-xs">The selected model applies now. Resume keeps the provider session; Start fresh keeps this agent’s identity and task files. Neither changes spending limits.</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" disabled={saving || !!fieldReason('model')} onClick={() => void restart('resume')}>Save model and resume</Button>
+                      <Button size="sm" variant="outline" disabled={saving || !!fieldReason('model')} onClick={() => void restart('fresh')}>Save model and start fresh</Button>
+                    </div>
+                    {restartMessage && <span className="text-muted-foreground mt-2 block text-xs" role="status">{restartMessage}</span>}
+                  </div>}
                 </TabsContent>
               </TabsContents>
             </Tabs>

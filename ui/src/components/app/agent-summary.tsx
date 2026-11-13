@@ -7,11 +7,13 @@ import { useFloor } from '@/data/store';
 import { AgentAvatar } from './agent-avatar';
 import { roleMeta, statusMeta } from './status';
 import { StepMeter, TokenMeter } from './token-meter';
+import { useAgentActionTargets } from '@/features/team/agent-action-menu';
 
 export function AgentSummary({ agent, onOpenProfile }: { agent: Agent; onOpenProfile?: () => void }) {
   const yolo = useFloor((s) => s.me.yolo.on) || !!agent.yolo;
+  const action = useAgentActionTargets([agent.id])[agent.id];
   return (
-    <div className="flex flex-col gap-4">
+    <div {...action} tabIndex={0} role="group" aria-label={`${agent.name} agent card. Right-click or Shift+F10 for agent actions.`} className="flex flex-col gap-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
       <div className="flex flex-col items-center gap-2 text-center">
         <AgentAvatar agent={agent} size="lg" tooltip={false} />
         <span className="text-lg font-semibold">{agent.name}</span>

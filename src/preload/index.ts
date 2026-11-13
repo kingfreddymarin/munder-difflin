@@ -755,6 +755,10 @@ const api = {
   /** Validated commands lacking a direct fork preload equivalent. */
   paramountDispatch: (command: ParamountCommand): Promise<ParamountResult> =>
     ipcRenderer.invoke('paramount:dispatch', command),
+  startEngineSignIn: (provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string) =>
+    ipcRenderer.invoke('engine-signin:start', { provider, accountId, accountFingerprint }),
+  refreshEngineSignIn: (provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string) =>
+    ipcRenderer.invoke('engine-signin:refresh', { provider, accountId, accountFingerprint }),
   onParamountEvent: (cb: (event: ParamountUpdate) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, event: ParamountUpdate) => cb(event);
     ipcRenderer.on('paramount:event', listener);

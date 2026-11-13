@@ -45,8 +45,30 @@ test('an expired sign-in seen on an agent exit wins over a status that still say
   m.agentExited('codex', 'segfault'); assert.equal(m.status('codex').state, 'expired');
 });
 
+test('Codex status and expired-token findings stay scoped to the selected account home', async () => {
+  const runs = [];
+  const m = createSignInMonitor({ path: () => '/bin/codex', run: async (bin, args, timeout, env) => {
+    runs.push({ bin, args, home: env?.CODEX_HOME });
+    return { code: env?.CODEX_HOME.endsWith('dcxm') ? 0 : 1 };
+  } });
+  const dcx = { id: 'dcx', label: 'dcx · Main', home: '/fixture/dcx', bin: '/bin/codex' };
+  const dcxm = { id: 'dcxm', label: 'dcxm · Alternate', home: '/fixture/dcxm', bin: '/bin/codex' };
+  assert.equal(m.status('codex', dcx).state, 'unknown');
+  assert.equal(m.status('codex', dcxm).state, 'unknown');
+  await tick(); await tick();
+  assert.equal(m.status('codex', dcx).state, 'signed-out');
+  assert.equal(m.status('codex', dcxm).state, 'signed-in');
+  assert.equal(m.status('codex', dcx).accountHome, '/fixture/dcx');
+  assert.equal(m.status('codex', dcxm).accountLabel, 'dcxm · Alternate');
+  m.agentExited('codex', 'refresh token was revoked', dcx);
+  assert.equal(m.status('codex', dcx).state, 'expired');
+  assert.equal(m.status('codex', dcxm).state, 'signed-in');
+  assert.deepEqual(runs.map((r) => r.home), ['/fixture/dcx', '/fixture/dcxm', '/fixture/dcx']);
+  assert.doesNotMatch(JSON.stringify(runs), /token|credential/i);
+});
+
 test('index.ts wires exits and the snapshot to the monitor', () => {
   const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
-  assert.match(code, /engineSignIn\.agentExited\(String\(hive\.registry\(\)\.agents\[dyingAgent\]\?\.provider \?\? 'claude'\), info\?\.tail\)/);
-  assert.match(code, /signIn: Object\.fromEntries\(\(\['claude', 'codex'\] as const\)\.filter\(\(e\) => ptyManager\.commandPath\(e\)\)\.map\(\(e\) => \[e, engineSignIn\.status\(e\)\]\)\)/);
+  assert.match(code, /engineSignIn\.agentExited\(String\(hive\.registry\(\)\.agents\[dyingAgent\]\?\.provider \?\? 'claude'\), info\?\.tail, ptySignInAccount\.get\(id\)\)/);
+  assert.match(code, /engineSignIn\.status\(profile\.provider as 'claude' \| 'codex', profile\)/);
 });

@@ -72,7 +72,7 @@ export function discoverLaunchers(): Discovery { return discoverShellLaunchers()
  *  screens read `current()`; the first read discovers once.
  *  With `discoverAsync` (owner use of 8f574966: beach ball), warm() and refresh() run the shell off
  *  the main thread; current() blocks only when nothing has been discovered yet. */
-export function createLauncherDiscoveryCache(discover: () => Discovery = discoverLaunchers, discoverAsync?: () => Promise<Discovery>): { current(): Discovery; refresh(): Discovery | Promise<Discovery>; warm(): Promise<Discovery> | undefined } {
+export function createLauncherDiscoveryCache(discover: () => Discovery = discoverLaunchers, discoverAsync?: () => Promise<Discovery>): { current(): Discovery; peek(): Discovery | undefined; refresh(): Discovery | Promise<Discovery>; warm(): Promise<Discovery> | undefined } {
   let cached: Discovery | undefined;
   let pending: Promise<Discovery> | undefined;
   const runAsync = (): Promise<Discovery> => {
@@ -81,6 +81,7 @@ export function createLauncherDiscoveryCache(discover: () => Discovery = discove
   };
   return {
     current: () => (cached ??= discover()),
+    peek: () => cached,
     refresh: () => (discoverAsync ? runAsync() : (cached = discover())),
     warm: () => (discoverAsync && !cached ? runAsync() : undefined),
   };

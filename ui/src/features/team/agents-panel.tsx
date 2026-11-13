@@ -3,14 +3,16 @@ import { AgentAvatar } from '@/components/app/agent-avatar';
 import { statusMeta, budgetTone } from '@/components/app/status';
 import { useFloor } from '@/data/store';
 import { cn } from '@/lib/utils';
+import { useAgentActionTargets } from './agent-action-menu';
 
 export function AgentsPanel({ onOpen }: { onOpen: (id: string) => void }) {
   const agents = useFloor((s) => s.agents);
   const yolo = useFloor((s) => s.me.yolo.on);
+  const actionTargets = useAgentActionTargets(agents.map((agent) => agent.id));
   return (
     <div className="flex min-h-0 flex-col gap-1">
       {agents.map((a) => (
-        <button key={a.id} type="button" title={a.doing} onClick={() => onOpen(a.id)} className="hover:bg-accent flex items-center gap-2.5 rounded-lg px-1.5 py-1 text-left">
+        <button key={a.id} type="button" title={`${a.doing} · right-click or Shift+F10 for agent actions`} {...actionTargets[a.id]} onClick={() => onOpen(a.id)} className="hover:bg-accent flex items-center gap-2.5 rounded-lg px-1.5 py-1 text-left">
           <AgentAvatar agent={a} size="sm" tooltip={false} />
           <span className="flex min-w-0 flex-1 flex-col gap-1">
             <span className="flex items-center gap-2 text-sm">

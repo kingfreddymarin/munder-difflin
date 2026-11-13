@@ -1,7 +1,7 @@
 import type { CouncilLauncherPick } from './paramount-api';
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
-import type { ParamountBoardCommand, ParamountArtifactMap, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountOpenInApp, ParamountHirePlan, ParamountTeamModels } from './paramount-api';
+import type { ParamountBoardCommand, ParamountArtifactMap, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountOpenInApp, ParamountHirePlan, ParamountOrganization, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './paramount-api';
 import type { Access, Agent, AskMode, CardStatus, ChatView, HomeLayout, IterationSettings, Snapshot, YoloSettings } from './types';
 export type Command =
   | { type: 'chat.send'; chatId: string; text: string }
@@ -13,6 +13,8 @@ export type Command =
   | { type: 'automation.toggle'; id: string; enabled: boolean }
   | { type: 'access.set'; agentId: string; sourceId: string; access: Access }
   | { type: 'agent.update'; agentId: string; patch: Partial<Pick<Agent, 'name' | 'color' | 'model' | 'engine' | 'tokensCap' | 'persona' | 'tone' | 'autonomy' | 'yolo'>> }
+  | { type: 'agent.restart'; agentId: string; mode: 'resume' | 'fresh' }
+  | { type: 'agent.switch'; agentId: string; provider: string; model: string; launcher: CouncilLauncherPick | null }
   | { type: 'floor.yolo'; patch: Partial<YoloSettings> }
   | { type: 'floor.iteration'; patch: Partial<IterationSettings> }
   | { type: 'account.connection'; id: string; connected: boolean }
@@ -72,6 +74,13 @@ export interface DataProvider {
   openIn?(app: ParamountOpenInApp, path: string): Promise<void>;
   /** Models per engine, the default model and each agent's pick (`team.models`). */
   teamModels?(): Promise<ParamountTeamModels>;
+  organization?(): Promise<ParamountOrganization>;
+  saveOrganization?(organization: ParamountOrganization): Promise<ParamountOrganization>;
+  delegate?(request: Extract<ParamountTeamCommand, { type: 'team.delegate' }>): Promise<NonNullable<ParamountTeamResult['delegated']>>;
+  archiveAgent?(id: string, archived: boolean): Promise<void>;
+  sendNote?(id: string, text: string): Promise<void>;
+  startEngineSignIn?(provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string): Promise<{ ptyId: string; cwd: string }>;
+  refreshEngineSignIn?(provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string): Promise<import('./paramount-api').ParamountSignInState>;
   /** The Add-Agent hire: without `confirm` it returns the spawn plan for review; with it the agent starts in a visible terminal. */
   hire?(manifest: Record<string, unknown>, options?: { cwd?: string; confirm?: boolean; orchestrator?: boolean; launcher?: CouncilLauncherPick | null }): Promise<ParamountHirePlan>;
   /** Read-only: map artifacts touched by an agent. */

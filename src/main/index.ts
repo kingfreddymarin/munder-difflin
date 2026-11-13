@@ -2,7 +2,7 @@
 // other module reads userData, so it is the first import.
 import { councilBuild, councilVersion, floorProcessHome, isFloorProcess, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
 import { bootFloorPlan, dataFolderRefusal, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
-import { resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
+import { resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
@@ -21,7 +21,9 @@ import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartP
 import { createBoardDeps } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
 import { offeredModelIds, resolveAgentModel } from './paramount-models';
-import { agentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
+import { agentModelPick, readAgentModels, saveAgentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
+import { preserveEngineSession, switchEngineTransaction } from './paramount-engine-switch';
+import { readOrg } from './paramount-org';
 import { floorSetupState, type FloorChoice, type FloorSetupDeps } from './paramount-floor-setup';
 import bakedModelCatalog from '../shared/modelCatalog.json';
 import { parseModelCatalog } from '../shared/modelCatalogPayload';
@@ -80,7 +82,7 @@ import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import { accessFor, withAccess } from './accessMatrix';
 import { probePort } from './portProbe';
-import { createSignInMonitor } from './engine-signin';
+import { createSignInMonitor, type SignInAccount, type SignInEngine } from './engine-signin';
 import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
@@ -261,6 +263,8 @@ async function enableCodexRemoteForSpawn(
 /** Live PTY id → its hive agent id, recorded at spawn. The pty:kill handler only
  *  gets the PTY id, so this lets a closed tab archive the right registry agent. */
 const ptyToAgent = new Map<string, string>();
+/** Account launcher used by a live PTY, so an expired token is attributed to its own home. */
+const ptySignInAccount = new Map<string, { id: string; label: string; home: string; bin: string }>();
 /** PTY id → the spawn it should auto restart-and-continue into once a first-time
  *  CLI install finishes. The missing-CLI short-circuit runs the engine's installer
  *  in this PTY; when it exits cleanly the exit handler re-runs the SAME spawn (with
@@ -511,13 +515,14 @@ function restoreArchived(agentId: string, archived: boolean): void {
   catch (e) { console.error('[hive] restore archived failed:', e); }
 }
 
-function teardownPty(id: string, opts: { keepEntry?: boolean } = {}): void {
+function teardownPty(id: string, opts: { keepEntry?: boolean; preserveWorktree?: boolean } = {}): void {
   // Ephemeral-worker flag, read BEFORE the cleanup below deletes the entry. All
   // worker deaths (done-release, idle/token reap, manual stop, crash) funnel
   // through here, so this is the one place their floor card gets archived
   // (workers card via the hive:agentSpawned broadcast in processSpawnRequest).
   // pty id == worker id == agent id for workers.
   const wasWorker = liveWorkers.has(id);
+  ptySignInAccount.delete(id);
   // 0) Revoke this id's broker capability (if any). Idempotent + harmless for a
   //    non-worker PTY; ensures a dead worker's token can never reach an integration.
   try { integrationBroker.revoke(id); } catch { /* best-effort */ }
@@ -545,7 +550,7 @@ function teardownPty(id: string, opts: { keepEntry?: boolean } = {}): void {
   }
   // 2) Remove the isolated worktree, if any. Non-blocking; errors are logged.
   const wtPath = worktreePaths.get(id);
-  if (wtPath) {
+  if (wtPath && !opts.preserveWorktree) {
     const origCwd = worktreeOrigins.get(id) ?? wtPath;
     worktreePaths.delete(id);
     worktreeOrigins.delete(id);
@@ -675,7 +680,7 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     const dyingAgent = ptyToAgent.get(id);
     // A sign-in error in a dying agent's output flags its engine in the setup dialog (engine-signin.ts).
     if (dyingAgent && (exitCode ?? 0) !== 0) {
-      try { engineSignIn.agentExited(String(hive.registry().agents[dyingAgent]?.provider ?? 'claude'), info?.tail); } catch { /* best effort */ }
+      try { engineSignIn.agentExited(String(hive.registry().agents[dyingAgent]?.provider ?? 'claude'), info?.tail, ptySignInAccount.get(id)); } catch { /* best effort */ }
     }
     if (dyingAgent) {
       hive.recordAgentExit(dyingAgent, {
@@ -2666,7 +2671,7 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
 
 /** Spawn options shared by the `pty:spawn` IPC handler and the god-triggered
  *  ephemeral-worker watcher. */
-type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean; councilLauncher?: LauncherPick | null };
+type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; restoreSessionId?: boolean; provider?: AgentProvider; noAutoInstall?: boolean; councilLauncher?: LauncherPick | null; suppressLauncherSave?: boolean };
 
 /** Map a `ptyManager.spawn` failure string to the closed `agent_spawn_failed.reason`
  *  enum (analytics.ts). The two known strings come from PtyManager.spawn; anything
@@ -2885,6 +2890,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         { ...opts.hive, cwd: opts.cwd, provider },
         {
           preserveAccountHome: !!account,
+          ...(opts.restoreSessionId && opts.resumeSessionId ? { sessionId: opts.resumeSessionId } : {}),
           semanticMemory: memory.active(),
           responseStyleBrief: readConfig().responseStyleBrief,
           claudeOutputStyle: readConfig().claudeOutputStyle,
@@ -3134,10 +3140,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     try {
       // Validated once, above, against this spawn's single discovery.
       const frozenPick = { id: account.id, fingerprint: account.fingerprint, ...(account.unrestricted ? { allowUnrestricted: true } : {}) };
-      if (opts.hive && !opts.hive.isGod && hive.root()) saveLauncherPick(hive.root()!, 'agent', frozenPick, opts.hive.id);
+      if (opts.hive && !opts.hive.isGod && hive.root() && !opts.suppressLauncherSave) saveLauncherPick(hive.root()!, 'agent', frozenPick, opts.hive.id);
     } catch (e) { return accountFailure(e instanceof Error ? e.message : 'The launcher selection could not be saved'); }
   }
   const res = ptyManager.spawn(opts, owner);
+  if (res.ok && account) ptySignInAccount.set(opts.id, { id: account.id, label: account.label, home: account.home, bin: account.bin });
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)
@@ -3681,6 +3688,48 @@ const PARAMOUNT_STARTABLE: Record<string, { label: string; bin: string; command:
 };
 const lastProbeState = new Map<string, string>();
 const engineSignIn = createSignInMonitor({ path: (engine) => ptyManager.commandPath(engine) });
+function signInAccount(provider: SignInEngine, accountId?: unknown, fingerprint?: unknown): ReturnType<typeof validateLauncher> | null | undefined {
+  if (accountId === undefined && fingerprint === undefined) return undefined;
+  if (typeof accountId !== 'string' || typeof fingerprint !== 'string' || !/^[a-z0-9_-]{1,32}$/i.test(accountId) || !/^[a-f0-9]{64}$/.test(fingerprint)) return null;
+  const discovery = launcherDiscovery.current();
+  const found = discovery.profiles.find((entry) => entry.id === accountId);
+  if (!found || found.provider !== provider || found.fingerprint !== fingerprint) return null;
+  try { return validateLauncher({ id: found.id, fingerprint: found.fingerprint, ...(found.unrestricted ? { allowUnrestricted: true } : {}) }, provider, discovery); }
+  catch { return null; }
+}
+ipcMain.handle('engine-signin:start', (event, input: unknown) => {
+  const request = input && typeof input === 'object' ? input as { provider?: unknown; accountId?: unknown; accountFingerprint?: unknown } : {};
+  if (request.provider !== 'claude' && request.provider !== 'codex') return { ok: false, error: 'Choose Claude Code or Codex.' };
+  const provider = request.provider as SignInEngine;
+  const account = signInAccount(provider, request.accountId, request.accountFingerprint);
+  if (request.accountId !== undefined && !account) return { ok: false, error: 'This account launcher changed or is unavailable. Refresh account choices and select it again.' };
+  const bin = account?.bin ?? ptyManager.commandPath(provider);
+  if (!bin || !ptyManager.isCommandAvailable(bin)) return { ok: false, error: `${provider} CLI is missing. Install it before signing in.` };
+  const accountHome = account?.home ?? (provider === 'codex'
+    ? process.env.CODEX_HOME?.trim() || join(homedir(), '.codex')
+    : process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), '.claude'));
+  if (account) {
+    try { if (!statSync(accountHome, { throwIfNoEntry: false })?.isDirectory()) return { ok: false, error: `The selected ${account.label} account home is unavailable.` }; }
+    catch { return { ok: false, error: `The selected ${account.label} account home is unavailable.` }; }
+  }
+  const ptyId = `engine-signin-${provider}-${account?.id ?? 'default'}`;
+  const existing = ptyManager.list().find((session) => session.id === ptyId);
+  if (existing) return { ok: true, ptyId, cwd: existing.cwd };
+  const env = account ? launcherEnvironment(account) : { [provider === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR']: accountHome };
+  const args = provider === 'codex' ? ['login'] : ['auth', 'login'];
+  const started = ptyManager.spawn({ id: ptyId, cwd: homedir(), command: bin, args, env, envUnset: [...LAUNCHER_AUTH_ENV], cols: 110, rows: 30 }, BrowserWindow.fromWebContents(event.sender)?.webContents ?? null);
+  return started.ok ? { ok: true, ptyId, cwd: homedir() } : { ok: false, error: started.error ?? 'Could not open the sign-in terminal.' };
+});
+ipcMain.handle('engine-signin:refresh', async (_event, input: unknown) => {
+  const request = input && typeof input === 'object' ? input as { provider?: unknown; accountId?: unknown; accountFingerprint?: unknown } : {};
+  if (request.provider !== 'claude' && request.provider !== 'codex') return { ok: false, error: 'Choose Claude Code or Codex.' };
+  const provider = request.provider as SignInEngine;
+  const account = signInAccount(provider, request.accountId, request.accountFingerprint);
+  if (request.accountId !== undefined && !account) return { ok: false, error: 'This account launcher changed or is unavailable. Refresh account choices and select it again.' };
+  const status = await engineSignIn.refresh(provider, account ?? undefined);
+  broadcastParamountInvalidation('engine-signin');
+  return { ok: true, status };
+});
 /** Async probe of a startable service's port, so a daemon started outside the app is
  *  seen. The result is logged under the caller's correlation id. */
 async function paramountProbeService(prereqId: string, cid: string): Promise<boolean> {
@@ -3741,6 +3790,8 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   ...(orchestratorStart.failure() ? { orchestratorFailure: orchestratorStart.failure() } : {}),
   ...(TEST_LABEL ? { testLabel: TEST_LABEL } : {}),
   registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
+  organization: (() => { try { return readOrg(hive.root(), Object.keys(hive.registry().agents ?? {})); } catch (error) { paramountLog({ kind: 'paramount-organization', step: 'read-failed', errorId: newErrorId(), message: error instanceof Error ? error.message : 'Team settings are invalid' }); return { version: 1 as const, teams: [], reportsTo: {} }; } })(),
+  archivedAgents: Object.entries(hive.registry().agents ?? {}).filter(([, agent]) => agent.archived === true).map(([id, agent]) => ({ id, name: agent.name || id })),
   log: hive.logTail(500), roster: roster.read(),
   // Live busy/idle, last tool, tokens and context per agent: the Team graph's status and 'doing'.
   activity: paramountActivity(),
@@ -3761,9 +3812,15 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   prereqs: { skid: paramountStartPlan('skid', await paramountProbeService('skid', span.cid)),
     // What the packaged app needs from outside itself (owner 2026-11-12: the .dmg is the only download),
     // resolved on the login-shell PATH exactly as an agent spawn resolves it.
-    tools: { claude: { path: ptyManager.commandPath('claude') }, mempalace: { path: ptyManager.commandPath('mempalace') } },
+    tools: { claude: { path: ptyManager.commandPath('claude') }, codex: { path: ptyManager.commandPath('codex'), required: cfg.godProvider === 'codex' || Object.values(hive.registry().agents ?? {}).some((agent) => agent.provider === 'codex' && agent.archived !== true) }, mempalace: { path: ptyManager.commandPath('mempalace') } },
     // Installed engines that are not signed in (owner run of ceeb4aaf: a revoked Codex token went unnoticed).
-    signIn: Object.fromEntries((['claude', 'codex'] as const).filter((e) => ptyManager.commandPath(e)).map((e) => [e, engineSignIn.status(e)])) }
+    signIn: Object.fromEntries([
+      ...(['claude', 'codex'] as const).filter((e) => ptyManager.commandPath(e)).map((e) => [e, engineSignIn.status(e)] as const),
+      ...(launcherDiscovery.peek()?.profiles ?? []).map((profile) => [
+        `${profile.provider}-${profile.id}`,
+        engineSignIn.status(profile.provider as 'claude' | 'codex', profile)
+      ] as const)
+    ]) }
 }); }, { rethrow: true, quiet: true }));
 /** Roots for agents.discover/import, resolved per call so a changed CODEX_HOME
  *  or Munder config is picked up. Read-only: agentSources.ts never writes. */
@@ -3962,6 +4019,8 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
   return {
     hiveRoot: () => hive.root(),
     addTask: (task) => hive.enabled() && hive.addTask(task as HiveTask),
+    addTasksBatch: (tasks) => hive.enabled() && hive.addTasksBatch(tasks as HiveTask[]),
+    sendAgentMessage: (agentId, subject, body) => { hive.send({ to: agentId, act: 'request', subject, body, requires_reply: false }, 'human'); },
     modelCatalog: paramountModelCatalog,
     launcherDiscovery: () => launcherDiscovery.current(),
     refreshLaunchers: async () => { await launcherDiscovery.refresh(); },
@@ -4021,6 +4080,149 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
       }
       if (tokenCap) setAgentTokenCap(plan.agentId, tokenCap);
       if (goal) hive.send({ to: plan.agentId, act: 'request', subject: 'Your goal', body: goal, requires_reply: false }, 'human');
+      return { ok: true };
+    },
+    restartAgent: async (agentId, mode) => {
+      const root = hive.root();
+      if (!root || !hive.enabled()) return { ok: false, error: 'Enable the Hive before restarting an agent.' };
+      if (!claimFloor(root)) return { ok: false, error: 'Another Council or Munder process owns this floor.' };
+      const raw = hive.registry().agents[agentId];
+      if (!raw) return { ok: false, error: 'Agent not found in the Hive registry.' };
+      const isGod = raw.isGod === true;
+      const provider = raw.provider ?? 'claude';
+      const previousArchived = raw.archived === true;
+      const activePty = ptyManager.list().find((pty) => ptyToAgent.get(pty.id) === agentId);
+      const existingWorktree = activePty ? worktreePaths.get(activePty.id) : undefined;
+      const cwd = existingWorktree ?? raw.cwd;
+      let cwdAvailable = false;
+      try { cwdAvailable = !!cwd && statSync(cwd).isDirectory(); } catch { cwdAvailable = false; }
+      if (!cwdAvailable) return { ok: false, error: `The working folder is unavailable: ${cwd || '(empty)'}` };
+      if (mode === 'resume' && !hive.lastSession(agentId)) return { ok: false, error: 'No saved session is available. Choose Start fresh to keep the agent identity and task files.' };
+      if (activePty) {
+        const killed = ptyManager.kill(activePty.id);
+        if (!killed.ok) return { ok: false, error: killed.error ?? 'The live session could not be stopped.' };
+        teardownPty(activePty.id, { keepEntry: true, preserveWorktree: true });
+      }
+      const model = agentModelPick(root, agentId);
+      const launch = buildWorkerLaunch({ requestProvider: provider, requestModel: model, defaultCommand: readConfig().defaultCommand, autoMode: !!readConfig().autoMode });
+      const res = await spawnAgentCore({ id: agentId, cwd, command: launch.bin, args: launch.args, cols: 120, rows: 32,
+        hive: { id: agentId, name: raw.name, provider, ...(raw.role ? { role: raw.role } : {}), cwd, ...(isGod ? { isGod: true } : {}) }, provider: provider as AgentProvider,
+        resume: mode === 'resume', requireResume: mode === 'resume', isolate: false }, sender);
+      if (!res.ok || (mode === 'resume' && !res.resumed)) {
+        if (res.ok) {
+          const failed = ptyManager.kill(agentId);
+          if (failed.ok) teardownPty(agentId, { keepEntry: true, preserveWorktree: true });
+        }
+        restoreArchived(agentId, activePty ? true : previousArchived);
+        return { ok: false, error: res.resumeNotFound ? 'The saved transcript was not found. Start fresh to retain the agent identity and task files.' : res.error ?? 'The saved session could not be resumed.' };
+      }
+      if (isGod) {
+        paramountOrchestrators.add(agentId);
+        orchestratorStart.started(agentId, provider, mode === 'resume' && res.resumed === true, activePty ? true : previousArchived);
+      }
+      try { sender.send('hive:agentSpawned', { id: agentId, name: raw.name, provider, cwd: res.worktreePath ?? cwd, role: raw.role, worktreePath: res.worktreePath }); } catch { /* window closed */ }
+      if (mode === 'fresh' && res.seedPrompt) {
+        try { sender.send('hive:enqueueToAgent', { targetId: agentId, text: res.seedPrompt }); } catch { /* window closed */ }
+      }
+      if (mode === 'fresh' || isGod) hive.send({ to: agentId, act: 'request', subject: isGod ? 'Start orchestrator' : 'Continue your assigned task', body: [
+        isGod ? 'You are the Paramount orchestrator. Read your handoff and Rules, then review board.md, tasks.json and fleet.json. Continue the current floor plan and recover any interrupted assignment.'
+          : `Continue the existing assignment for this agent. Read your handoff at ${join(root, 'agents', agentId, 'handoff.md')}, your Rules in memory.md, the task context named in the handoff, and the current assignment in board.md/tasks.json. Continue from the recorded Next; do not recreate completed work. If the assignment or context is missing, inform god instead of guessing.`
+      ].join('\n\n'), requires_reply: false }, 'system');
+      return { ok: true, resumed: res.resumed === true };
+    },
+    switchAgent: async (agentId, target) => {
+      const root = hive.root();
+      if (!root || !hive.enabled()) return { ok: false, error: 'Enable the Hive before switching an agent.' };
+      if (!claimFloor(root)) return { ok: false, error: 'Another Council or Munder process owns this floor.' };
+      const raw = hive.registry().agents[agentId];
+      if (!raw || raw.isGod || raw.role === 'temp') return { ok: false, error: 'This agent cannot be switched from its current role.' };
+      const fromProvider = raw.provider ?? 'claude';
+      if (fromProvider === target.provider) return { ok: false, error: 'Choose a different provider to switch engines.' };
+      const previousArchived = raw.archived === true;
+      const activePty = ptyManager.list().find((pty) => ptyToAgent.get(pty.id) === agentId);
+      const cwd = (activePty ? worktreePaths.get(activePty.id) : undefined) ?? raw.cwd;
+      if (!cwd || !statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return { ok: false, error: `The working folder is unavailable: ${cwd || '(empty)'}` };
+      const previousModel = readAgentModels(root)[agentId];
+      let previousLauncher: LauncherPick | null;
+      try {
+        previousLauncher = readLauncherState(root).agents[agentId] ?? null;
+        if (previousLauncher) {
+          const profile = validateLauncher(previousLauncher, fromProvider, launcherDiscovery.current());
+          if (!statSync(profile.home, { throwIfNoEntry: false })?.isDirectory()) return { ok: false, error: 'The current account home is unavailable; no session was stopped.' };
+        }
+      } catch (error) { return { ok: false, error: `Cannot safely preserve the current account selection: ${error instanceof Error ? error.message : String(error)}` }; }
+      let targetLauncher: LauncherPick | null = target.launcher;
+      let targetBin: string;
+      try {
+        if (targetLauncher) {
+          const profile = validateLauncher(targetLauncher, target.provider, launcherDiscovery.current());
+          if (!statSync(profile.home, { throwIfNoEntry: false })?.isDirectory()) return { ok: false, error: 'The selected account home is unavailable; no session was stopped.' };
+          targetBin = profile.bin;
+        } else targetBin = buildWorkerLaunch({ requestProvider: target.provider, requestModel: target.model || undefined, defaultCommand: readConfig().defaultCommand, autoMode: !!readConfig().autoMode }).bin;
+      } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'The selected account is unavailable.' }; }
+      if (!ptyManager.isCommandAvailable(targetBin)) return { ok: false, error: `${targetBin} is not installed or available on PATH.` };
+      const previousSession = hive.lastSession(agentId);
+      try { preserveEngineSession(root, agentId, { provider: fromProvider, at: new Date().toISOString(), ...(previousSession ? { sessionId: previousSession } : {}), ...(previousModel?.model ? { model: previousModel.model } : {}), ...(previousLauncher ? { launcherId: previousLauncher.id } : {}) }); }
+      catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Could not preserve the previous provider session.' }; }
+      const spawnFor = async (provider: string, model: string | undefined, launcher: LauncherPick | null, resume: boolean, resumeSessionId?: string) => {
+        const launch = buildWorkerLaunch({ requestProvider: provider, requestModel: model, defaultCommand: readConfig().defaultCommand, autoMode: !!readConfig().autoMode });
+        return spawnAgentCore({ id: agentId, cwd, command: launch.bin, args: launch.args, cols: 120, rows: 32,
+          hive: { id: agentId, name: raw.name, provider: provider as AgentProvider, ...(raw.role ? { role: raw.role } : {}), cwd },
+          provider: provider as AgentProvider, resume, requireResume: resume, ...(resumeSessionId ? { resumeSessionId, restoreSessionId: true } : {}), isolate: false, councilLauncher: launcher, suppressLauncherSave: true }, sender);
+      };
+      let targetResult: Awaited<ReturnType<typeof spawnFor>> | undefined;
+      const tx = await switchEngineTransaction({
+        stopCurrent: async () => {
+          if (!activePty) return { ok: true };
+          const stopped = ptyManager.kill(activePty.id);
+          if (!stopped.ok) return { ok: false, error: stopped.error };
+          teardownPty(activePty.id, { keepEntry: true, preserveWorktree: true });
+          return { ok: true };
+        },
+        startTarget: async () => {
+          targetResult = await spawnFor(target.provider, target.model || undefined, targetLauncher, false);
+          return { ok: targetResult.ok, error: targetResult.error };
+        },
+        persistTarget: async () => {
+          saveAgentModelPick(root, agentId, target.provider, target.model || undefined);
+          saveLauncherPick(root, 'agent', targetLauncher, agentId);
+        },
+        stopTarget: async () => {
+          const live = ptyManager.list().find((pty) => ptyToAgent.get(pty.id) === agentId);
+          if (!live) return { ok: true };
+          const stopped = ptyManager.kill(live.id);
+          if (!stopped.ok) return { ok: false, error: stopped.error };
+          teardownPty(live.id, { keepEntry: true, preserveWorktree: true });
+          return { ok: true };
+        },
+        rollback: async () => {
+          const errors: string[] = [];
+          const providerRestore = hive.setAgentProvider(agentId, fromProvider);
+          if (!providerRestore.ok) errors.push(providerRestore.error ?? 'Could not restore the previous provider.');
+          try {
+            if (previousModel) saveAgentModelPick(root, agentId, previousModel.engine, previousModel.model);
+            else saveAgentModelPick(root, agentId, fromProvider, undefined);
+            saveLauncherPick(root, 'agent', previousLauncher, agentId);
+          } catch (error) { errors.push(error instanceof Error ? error.message : 'Could not restore previous model/account settings.'); }
+          if (activePty) {
+            const restored = await spawnFor(fromProvider, previousModel?.model, previousLauncher, !!previousSession, previousSession);
+            if (!restored.ok || (!!previousSession && !restored.resumed)) {
+              hive.setAgentProvider(agentId, fromProvider);
+              restoreArchived(agentId, true);
+              errors.push(restored.error ?? 'The previous session could not be resumed. Its files and history remain available for a fresh start.');
+            } else {
+              try { sender.send('hive:agentSpawned', { id: agentId, name: raw.name, provider: fromProvider, cwd, role: raw.role }); } catch { /* window closed */ }
+            }
+          } else restoreArchived(agentId, previousArchived);
+          return errors.length ? { ok: false, error: errors.join(' ') } : { ok: true };
+        }
+      });
+      if (!tx.ok) return { ok: false, error: tx.error, rollbackError: tx.rollbackError };
+      try { sender.send('hive:agentSpawned', { id: agentId, name: raw.name, provider: target.provider, cwd, role: raw.role }); } catch { /* window closed */ }
+      hive.send({ to: agentId, act: 'request', subject: 'Continue after provider switch', body: [
+        `This is a new ${target.provider} session for your existing agent identity. The prior provider session and its history were retained; its unsaved conversation context was not transferred.`,
+        `Read your durable rules and memory in ${join(root, 'agents', agentId)}, your handoff, and the existing assignment in board.md and tasks.json. Continue from durable files and report any missing context to god. Do not recreate completed work.`
+      ].join('\n\n'), requires_reply: false }, 'system');
       return { ok: true };
     }
   };
@@ -5750,28 +5952,35 @@ ipcMain.handle('workers:stop', (_evt, workerId: string): { ok: boolean; error?: 
  *  Called on boot, and again to recover in place if a folder-change copy fails
  *  (config:changeHome tears these down before copying). No-op without a home. */
 function bootstrapHiveServices(): void {
+  const startupStages: Array<{ stage: string; durationMs: number }> = [];
+  const stage = <T>(name: string, action: () => T): T => {
+    const started = performance.now();
+    const doneLag = lagOp(`floor-entry:${name}`);
+    try { return action(); }
+    finally { doneLag(); startupStages.push({ stage: name, durationMs: Math.round((performance.now() - started) * 10) / 10 }); }
+  };
   // The floor lock comes first: no migration, archive, socket bind or commit before it is held.
-  const floor = floorGate.claim(readConfig().harnessHome);
+  const floor = stage('floor.lock-claim', () => floorGate.claim(readConfig().harnessHome));
   if (floor.state === 'refused') {
     console.error(`[floor] ${floor.refusal.owner} (pid ${floor.refusal.pid}) holds ${floor.refusal.floor}; not opening it`);
     broadcastParamountInvalidation('floor-lock');
     return;
   }
   if (floor.state === 'error') { console.error('[floor] lock not written:', floor.detail); broadcastParamountInvalidation('floor-lock'); return; }
-  if (!hive.enabled()) return;
-  hive.ensureHive();
-  hive.refreshGeneratedDocs();
+  if (!stage('hive.enabled-check', () => hive.enabled())) return;
+  stage('hive.ensure', () => hive.ensureHive());
+  stage('hive.generated-docs', () => { hive.refreshGeneratedDocs(); });
   // Tell the hive what it is running inside, BEFORE anything spawns: the prompt
   // builder reads this, so an agent spawned earlier would never learn it.
-  hive.setRuntimeInfo({ version: app.getVersion(), packaged: app.isPackaged, appPath: app.getAppPath() });
-  hive.setOrchestratorMaySpawn(readConfig().orchestratorMaySpawn === true);
+  stage('hive.runtime-info', () => hive.setRuntimeInfo({ version: app.getVersion(), packaged: app.isPackaged, appPath: app.getAppPath() }));
+  stage('hive.orchestrator-policy', () => hive.setOrchestratorMaySpawn(readConfig().orchestratorMaySpawn === true));
   // An app-start marker in the event log. log.jsonl had twelve event kinds and
   // none of them meant "the app restarted", so a relaunch, and more importantly a
   // switch between a packaged build and a local one, was invisible to every agent
   // reading the feed. That gap cost a multi-hour investigation whose answer was
   // exactly this: a local build inherits the launching shell's umask, a
   // Finder-launched app does not.
-  hive.appendLog({
+  stage('hive.app-start-log', () => hive.appendLog({
     kind: 'app-start',
     version: app.getVersion(),
     build: councilBuild(),
@@ -5785,38 +5994,39 @@ function bootstrapHiveServices(): void {
     exePath: process.execPath,
     electron: process.versions.electron,
     platform: process.platform
-  });
-  control.replaceAutoDeliveryPauses(readConfig().autoDeliveryPausedAgents ?? []);
-  archiveOrphanedAgents(); // #57/#58: archive stale archived:false entries with no live PTY
-  hive.startRouter();
-  startEphemeralWorkerWatcher(); // poll HIVE_ROOT/spawn-requests → ephemeral workers
+  }));
+  stage('hive.delivery-pauses', () => control.replaceAutoDeliveryPauses(readConfig().autoDeliveryPausedAgents ?? []));
+  stage('hive.archive-orphans', () => archiveOrphanedAgents()); // #57/#58: archive stale archived:false entries with no live PTY
+  stage('hive.message-router', () => hive.startRouter());
+  stage('hive.worker-watcher', () => startEphemeralWorkerWatcher()); // poll HIVE_ROOT/spawn-requests → ephemeral workers
   // Phase 2: the loopback secret broker. Bind it BEFORE workers spawn so each spawn can
   // be granted a capability token + the broker URL in its env. Loopback-only, idempotent.
-  void integrationBroker.start().then((r) => {
+  stage('hive.integration-broker', () => { void integrationBroker.start().then((r) => {
     if (r.ok) console.log('[broker] integration broker listening on', integrationBroker.url());
     else console.error('[broker] failed to start:', r.error);
-  });
-  ensureDefaultMissions(); // one-time: seed the built-in hourly ops standup
-  syncMissions(); // arm recurring auto-dispatch missions now the router is live
-  syncContextTriggers(); // …and the context trigger's own compact/clear cadences
+  }); });
+  stage('hive.default-missions', () => ensureDefaultMissions()); // one-time: seed the built-in hourly ops standup
+  stage('hive.missions', () => syncMissions()); // arm recurring auto-dispatch missions now the router is live
+  stage('hive.context-triggers', () => syncContextTriggers()); // …and the context trigger's own compact/clear cadences
   // Pair replies to inbound webhook messages in the ledger. Tied to the FEATURE
   // (any endpoint configured), not to the server: an approved message's card can
   // finish long after the operator switched the public surface back off, and its
   // reply still belongs in the history.
-  if ((readConfig().webhookTriggers ?? []).length > 0) startWebhookDoneObserver();
-  hookServer.start();
+  stage('hive.webhook-observer', () => { if ((readConfig().webhookTriggers ?? []).length > 0) startWebhookDoneObserver(); });
+  stage('hive.hook-server', () => hookServer.start());
   // Bind the telemetry collector BEFORE the renderer spawns any agent, then point
   // the hive at it so every subsequent spawn is instrumented. Best-effort — a bind
   // failure just leaves telemetry off (transcript reconciler stays). No breaker.start():
   // the breaker is POLICY-only, ticked by the heartbeat beat (#1, ships disabled).
-  void telemetry.start().then((r) => {
+  stage('hive.telemetry', () => { void telemetry.start().then((r) => {
     if (r.ok && r.endpoint) { hive.setOtelEndpoint(r.endpoint); console.log('[telemetry] collector listening', r.endpoint); }
     else console.error('[telemetry] collector failed to start:', r.error);
-  });
-  memory.start(); // init shared palace + mine loop (no-op without mempalace)
-  reflector.start(); // bound oversized memory.md files on a timer (no-op until threshold)
+  }); });
+  stage('hive.memory', () => memory.start()); // init shared palace + mine loop (no-op without mempalace)
+  stage('hive.reflector', () => reflector.start()); // bound oversized memory.md files on a timer (no-op until threshold)
 
-  armAlwaysOnBeats();
+  stage('hive.background-beats', () => armAlwaysOnBeats());
+  paramountLog({ kind: 'paramount-startup-stages', phase: 'floor-services', durationMs: Math.round(startupStages.reduce((sum, entry) => sum + entry.durationMs, 0) * 10) / 10, stages: startupStages });
 }
 
 /** Cadence of the worker inbox-wake watchdog (#151). Well under the renderer's
@@ -6086,7 +6296,13 @@ app.whenReady().then(() => {
   { const boot = bootFloorPlan(process.argv, readConfig().harnessHome ?? null);
     if (floorProcessHome() && boot.open) { if (boot.rewriteConfig) writeConfig({ harnessHome: boot.open }); floorChosen = true; bootstrapHiveServices(); }
     else if (boot.open) openChosenFloor(boot.open); }
-  registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, log: (step) => paramountLog(step), onQuit: (fn) => { beforeTeardown.push(fn); app.on('will-quit', fn); keepFloorReleaseLast(); } }); // Munder useRestoreTeam parity (paramount-runtime.ts)
+  registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, directoryState: (p) => {
+    try { return statSync(p).isDirectory() ? 'directory' : 'unavailable'; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') return 'unavailable';
+      try { return statSync(dirname(p)).isDirectory() ? 'missing' : 'unavailable'; } catch { return 'unavailable'; }
+    }
+  }, log: (step) => paramountLog(step), onQuit: (fn) => { beforeTeardown.push(fn); app.on('will-quit', fn); keepFloorReleaseLast(); } }); // Munder useRestoreTeam parity (paramount-runtime.ts)
   // A timed YOLO window that ended while the app was closed turns autoMode off now.
   armAutoModeExpiry();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a

@@ -125,6 +125,9 @@ export interface HiveTask {
   dependsOn: string[];
   priority: number;
   createdAt: string;
+  /** Paramount extension links: parent task and owning team, without changing ledger routing. */
+  parentId?: string;
+  teamId?: string;
   /** First-class human feedback: the god appends {q} when a card can only
    *  proceed with the human's input (status goes blocked); the harness UI
    *  fills in {a}. The full history stays on the card forever. */
@@ -747,6 +750,8 @@ export class HiveManager {
     opts: {
       /** Council account extension: do not copy auth or install hooks into a chosen account home. */
       preserveAccountHome?: boolean;
+      /** Explicit session id verified by the caller for a restore/rollback on this provider. */
+      sessionId?: string;
       semanticMemory?: boolean;
       responseStyleBrief?: string;
       claudeOutputStyle?: 'off' | 'concise' | 'explanatory' | 'learning';
@@ -801,15 +806,17 @@ export class HiveManager {
     if (!existsSync(memory)) {
       writeFileSync(memory, `# Memory — ${meta.name} (${meta.id})\n\n_Append durable facts, decisions, and context below._\n`, 'utf8');
     }
+    const handoff = join(dir, 'handoff.md');
+    if (!existsSync(handoff)) writeFileSync(handoff, '# Handoff\n\n_One section per piece of work; record State, Next, Files, and Open before stopping._\n', 'utf8');
     ensureMineIgnore(dir); // keep settings.json / cursor / messages out of mempalace's index
     const cursor = join(dir, 'cursor.json');
     if (!existsSync(cursor)) this.writeJson(cursor, { lastProcessed: null });
 
-    // upsert registry — spread the PRIOR entry first so a respawn preserves
-    // fields the spawn `meta` doesn't carry, above all `sessionId`. Without this,
-    // ensureAgent (which runs before the resume lookup in the pty:spawn handler)
-    // would wipe the recorded session id, so `lastSession()` returns undefined and
-    // `--resume` is never attached — i.e. every restart starts a fresh thread.
+    // upsert registry — spread the PRIOR entry first so a same-provider respawn
+    // preserves fields the spawn `meta` doesn't carry, above all `sessionId`.
+    // A provider change must clear the active session pointer: provider session ids
+    // are not portable. The switch flow archives the old pointer separately and
+    // passes it explicitly only when rolling back to its original provider.
     // Validate the working directory at the source so a bad value is visible on
     // the roster (cwdValid) rather than silently spawning into a nonexistent dir.
     // Store the EXPANDED cwd, never the raw `~/…` the user typed — the registry is
@@ -818,6 +825,7 @@ export class HiveManager {
     reg.agents[meta.id] = {
       ...prev,
       ...meta,
+      sessionId: opts.sessionId ?? (prev && (prev.provider ?? 'claude') !== (meta.provider ?? 'claude') ? undefined : prev?.sessionId),
       capabilities: meta.capabilities ?? prev?.capabilities ?? [],
       role,
       status: 'idle',
@@ -1088,6 +1096,24 @@ export class HiveManager {
       this.appendLog({ kind: 'archive', agentId: id, archived });
       this.commit(`hive: ${archived ? 'archive' : 'unarchive'} ${id}`);
     } catch { /* best-effort — never crash a lifecycle handler */ }
+  }
+
+  /** Restore only provider metadata after a failed cross-provider start. Session ids and all durable identity fields stay intact. */
+  setAgentProvider(id: string, provider: string): { ok: boolean; error?: string } {
+    const root = this.root();
+    if (!root) return { ok: false, error: 'hive disabled (no harnessHome)' };
+    try {
+      const reg = this.registry();
+      const agent = reg.agents[id];
+      if (!agent) return { ok: false, error: 'Agent not found' };
+      if (agent.provider === provider) return { ok: true };
+      agent.provider = provider as AgentProvider;
+      agent.lastSeen = Date.now();
+      this.atomicWriteJson(join(root, 'registry.json'), reg);
+      this.appendLog({ kind: 'provider-switch-rollback', agentId: id, provider });
+      this.commit(`hive: restore provider ${id}`);
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
   }
 
   /**
@@ -1638,10 +1664,11 @@ export class HiveManager {
       `Your private workspace is ${dir}. The shared hive is ${root}. Full protocol: ${inRoot('PROTOCOL.md')}.`,
       '',
       'HIVE PROTOCOL — follow it every task:',
-      `1. At the START of a task, read ${inDir('memory.md')} and EVERY file in ${inDir('inbox')} (messages other agents sent you). After handling an inbox message, move its file into ${inDir('inbox', '.done')}.`,
-      `2. Record durable facts, decisions, and context by appending to ${inDir('memory.md')}.`,
-      `3. To ask another agent for something or share information, write ONE message JSON into ${inDir('outbox')} (schema in PROTOCOL.md). NEVER write into another agent's folder — the orchestrator delivers your outbox.`,
-      '4. At the END of a task, append what you learned to memory.md so future-you remembers.',
+      `1. At the START of a session, read ${inDir('handoff.md')} and the Rules section of ${inDir('memory.md')}. If memory.md has no Rules heading, read it once and move its rules under one. Use md-memory search or open only the needed section for other memory.`,
+      `2. At the START of a task, read every file in ${inDir('inbox')} (messages other agents sent you). After handling an inbox message, move its file into ${inDir('inbox', '.done')}.`,
+      `3. Record durable facts, decisions, and context by appending to ${inDir('memory.md')}; update ${inDir('handoff.md')} before stopping.`,
+      `4. To ask another agent for something or share information, write ONE message JSON into ${inDir('outbox')} (schema in PROTOCOL.md). NEVER write into another agent's folder — the orchestrator delivers your outbox.`,
+      '5. At the END of a task, append what you learned to memory.md so future-you remembers.',
       guardrailsLine,
       memoryLine,
       knowledgeLine,
@@ -1984,6 +2011,19 @@ export class HiveManager {
     const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
     if (tasks.some((current) => current?.id === task.id)) return false;
     this.writeTasks([...tasks, task]);
+    return true;
+  }
+
+  /** Add a related set of cards in one ledger write, preserving all cards already on disk. */
+  addTasksBatch(batch: HiveTask[]): boolean {
+    const ledger = this.tasks() as { tasks?: HiveTask[] };
+    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
+    const ids = new Set(tasks.map((task) => task?.id));
+    for (const task of batch) {
+      if (!task?.id || ids.has(task.id)) return false;
+      ids.add(task.id);
+    }
+    this.writeTasks([...tasks, ...batch]);
     return true;
   }
 

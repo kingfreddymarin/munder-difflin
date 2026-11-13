@@ -3,12 +3,15 @@
 import * as React from 'react';
 import { useFloor } from '@/data/store';
 import { statusMeta } from '@/components/app/status';
+import { useAgentActionTargets } from './agent-action-menu';
 
 const ringHex = { working: '#38bdf8', waiting: '#fbbf24', constrained: '#fb7185', idle: '#71717a', crashed: '#f43f5e' } as const;
 
 export function GraphPanel({ onOpen }: { onOpen: (id: string) => void }) {
   const agents = useFloor((s) => s.agents);
   const automations = useFloor((s) => s.automations);
+  const cards = useFloor((s) => s.cards);
+  const actionTargets = useAgentActionTargets(agents.map((agent) => agent.id));
   const layout = React.useMemo(() => {
     const depth = (id: string, seen = 0): number => {
       const a = agents.find((x) => x.id === id);
@@ -45,10 +48,11 @@ export function GraphPanel({ onOpen }: { onOpen: (id: string) => void }) {
       <circle cx="480" cy="26" r="17" fill="currentColor" className="text-foreground" />
       <text x="480" y="30" textAnchor="middle" fontSize="11" fontWeight="600" fill="currentColor" className="text-background">You</text>
       {agents.map((a) => (
-        <g key={a.id} role="button" tabIndex={0} aria-label={`${a.name}, ${statusMeta[a.status].label}`} onClick={() => onOpen(a.id)} onKeyDown={(e) => e.key === 'Enter' && onOpen(a.id)} className="cursor-pointer">
+        <g key={a.id} role="button" tabIndex={0} aria-label={`${a.name}, ${statusMeta[a.status].label}. Right-click or Shift+F10 for agent actions.`} {...actionTargets[a.id]} onClick={() => onOpen(a.id)} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(a.id); else actionTargets[a.id]?.onKeyDown?.(e); }} className="cursor-pointer">
           <circle cx={layout[a.id].x} cy={layout[a.id].y} r="21" fill="currentColor" className="text-secondary" stroke={ringHex[a.status]} strokeWidth="3" />
           <text x={layout[a.id].x} y={layout[a.id].y + 4} textAnchor="middle" fontSize="11" fontFamily="var(--font-mono)" fill="currentColor" className="text-foreground">{a.initials}</text>
           <text x={layout[a.id].x} y={layout[a.id].y + 38} textAnchor="middle" fontSize="12" fill="currentColor" className="text-muted-foreground">{a.name}</text>
+          <text x={layout[a.id].x} y={layout[a.id].y + 53} textAnchor="middle" fontSize="9" fill="currentColor" className="text-muted-foreground">{a.teamNames?.join(', ') || ''} · {cards.filter((card) => card.agentId === a.id && card.status !== 'done').length} open / {cards.filter((card) => card.agentId === a.id && card.status === 'blocked').length} blocked</text>
         </g>
       ))}
     </svg>

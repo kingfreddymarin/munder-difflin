@@ -14,6 +14,7 @@ import type { CatalogModel, ModelCatalog } from '../shared/modelCatalogPayload';
 import { isNewer } from '../shared/updateState';
 import { redact } from './paramountObservability';
 import { buildWorkerLaunch } from './workerLaunch';
+import { readOrg, saveOrg, type ParamountOrg } from './paramount-org';
 
 /** What a confirmed hire hands to main, which owns the PTY layer. */
 export interface TeamSpawn {
@@ -43,6 +44,8 @@ export interface ParamountTeamDeps {
   hiveRoot(): string | null;
   addTask(task: { id: string; title: string; description?: string; assignee?: string; status: 'todo' | 'blocked';
     dependsOn: string[]; priority: number; createdAt: string }): boolean;
+  addTasksBatch?(tasks: Array<{ id: string; title: string; description?: string; assignee?: string; status: 'todo' | 'blocked'; dependsOn: string[]; priority: number; createdAt: string; parentId?: string; teamId?: string }>): boolean;
+  sendAgentMessage?(agentId: string, subject: string, body: string): void;
   /** The model catalog the pickers use (remote copy when cached, else the baked one). */
   modelCatalog(): ModelCatalog;
   appVersion: string;
@@ -64,6 +67,10 @@ export interface ParamountTeamDeps {
   isDirectory(path: string): boolean;
   commandAvailable(bin: string): boolean;
   spawnHire(spawn: TeamSpawn, cid: string): Promise<{ ok: boolean; error?: string }>;
+  /** Restart one registered agent, including the orchestrator, with explicit resume or fresh semantics. */
+  restartAgent?(agentId: string, mode: 'resume' | 'fresh'): Promise<{ ok: boolean; error?: string; resumed?: boolean }>;
+  /** Switch provider/account/model by starting a fresh target session and restoring the old provider on failure. */
+  switchAgent?(agentId: string, target: { provider: string; model: string; launcher: LauncherPick | null }): Promise<{ ok: boolean; error?: string; rollbackError?: string }>;
 }
 
 /** The slice of ParamountDeps the team module uses. */
@@ -76,7 +83,7 @@ interface Deps {
   team?: ParamountTeamDeps;
 }
 
-const TEAM_TYPES = new Set(['card.create', 'team.models', 'agent.hire', 'launchers.configure', 'launchers.refresh', 'orchestrator.ensure']);
+const TEAM_TYPES = new Set(['card.create', 'team.models', 'team.org.get', 'team.org.save', 'team.delegate', 'agent.hire', 'agent.restart', 'agent.switch', 'launchers.configure', 'launchers.refresh', 'orchestrator.ensure']);
 const MODELS_FILE = 'paramount-agent-models.json';
 // IPC creates a new adapter per request. Keep reservations by hive so two
 // windows cannot both pass the registry check while ensureAgent is awaiting IO.
@@ -164,6 +171,13 @@ function writeAgentModels(root: string, picks: Picks): void {
   const tmp = `${path}.${randomUUID().slice(0, 8)}.tmp`;
   writeFileSync(tmp, JSON.stringify({ version: 1, agents: picks }, null, 2) + '\n', { mode: 0o600 });
   renameSync(tmp, path);
+}
+
+export function saveAgentModelPick(root: string, agentId: string, provider: string, model: string | undefined): void {
+  const picks = readAgentModels(root);
+  if (model) picks[agentId] = { engine: provider, model };
+  else delete picks[agentId];
+  writeAgentModels(root, picks);
 }
 
 function offered(model: CatalogModel, appVersion: string): boolean {
@@ -323,6 +337,42 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (!added) return fail('CONFLICT', `Card ${key} was created by someone else a moment ago; retry`);
         return done({ card: { key } });
       }
+      case 'team.org.get': {
+        if (!onlyKeys(command, ['type'])) return fail('INVALID_INPUT', 'team.org.get takes no fields');
+        try { return done({ organization: readOrg(team.hiveRoot(), Object.keys(deps.agents())) }); }
+        catch (error) { return fail('INVALID_INPUT', error instanceof Error ? error.message : 'Team organization is invalid', error); }
+      }
+      case 'team.org.save': {
+        if (!onlyKeys(command, ['type', 'organization'])) return fail('INVALID_INPUT', 'Invalid team organization');
+        try { writeAttempted = true; return done({ organization: saveOrg(team.hiveRoot(), command.organization, Object.keys(deps.agents())) }); }
+        catch (error) { return fail('INVALID_INPUT', error instanceof Error ? error.message : 'Could not save teams', error); }
+      }
+      case 'team.delegate': {
+        if (!onlyKeys(command, ['type', 'teamId', 'title', 'description', 'subtasks'])) return fail('INVALID_INPUT', 'Invalid delegation request');
+        if (typeof command.teamId !== 'string' || typeof command.title !== 'string' || !command.title.trim() || command.title.length > 200 || !Array.isArray(command.subtasks) || !command.subtasks.length || command.subtasks.length > 8) return fail('INVALID_INPUT', 'Delegation needs a title and one to eight subtasks');
+        if (!team.addTasksBatch || !team.sendAgentMessage) return fail('UNSUPPORTED', 'Bounded delegation is unavailable');
+        try {
+          const agents = Object.keys(deps.agents()), org = readOrg(team.hiveRoot(), agents), group = org.teams.find((entry) => entry.id === command.teamId);
+          if (!group) return fail('NOT_FOUND', 'Team not found');
+          const subtasks = command.subtasks as Array<Record<string, unknown>>;
+          if (subtasks.some((task, index) => typeof task.title !== 'string' || !task.title.trim() || task.title.length > 200 || typeof task.ownerId !== 'string' || !group.memberIds.includes(task.ownerId) || !Array.isArray(task.dependsOn) || task.dependsOn.some((dep) => !Number.isInteger(dep) || (dep as number) < 0 || (dep as number) >= index))) return fail('INVALID_INPUT', 'Each subtask needs a title, an existing team owner, and dependencies only on earlier subtasks');
+          const existing = (deps.tasks().tasks ?? []).map((t) => t.id), parentKey = nextCardKey(existing, team.ticketKeyPrefix?.());
+          const childKeys: string[] = [];
+          for (let index = 0; index < subtasks.length; index++) childKeys.push(nextCardKey([...existing, parentKey, ...childKeys], team.ticketKeyPrefix?.()));
+          const now = new Date().toISOString();
+          const rows = [
+            { id: parentKey, title: (command.title as string).trim(), ...(typeof command.description === 'string' ? { description: command.description } : {}), assignee: group.leadId, status: 'todo' as const, dependsOn: [], priority: 2, createdAt: now, teamId: group.id },
+            ...subtasks.map((task, index) => ({ id: childKeys[index], title: (task.title as string).trim(), ...(typeof task.description === 'string' ? { description: task.description } : {}), assignee: task.ownerId as string, status: 'todo' as const, dependsOn: [...new Set((task.dependsOn as number[]).map((dep) => childKeys[dep]))], priority: 2, createdAt: now, parentId: parentKey, teamId: group.id })),
+          ];
+          writeAttempted = true;
+          if (!team.addTasksBatch(rows)) return fail('CONFLICT', 'Task ledger changed; refresh and retry the delegation');
+          for (let index = 0; index < subtasks.length; index++) {
+            const task = subtasks[index], prerequisites = rows[index + 1].dependsOn.join(', ') || 'none';
+            team.sendAgentMessage(task.ownerId as string, `Delegated task ${childKeys[index]}`, `You own ${childKeys[index]}: ${String(task.title).trim()}\nParent: ${parentKey}\nPrerequisites: ${prerequisites}\n${typeof task.description === 'string' ? task.description : ''}`);
+          }
+          return done({ delegated: { parentKey, childKeys } });
+        } catch (error) { return fail(writeAttempted ? 'UNCERTAIN_STATE' : 'INVALID_INPUT', error instanceof Error ? error.message : 'Delegation failed', error); }
+      }
       case 'launchers.refresh': {
         if (!onlyKeys(command, ['type'])) return fail('INVALID_INPUT', 'launchers.refresh takes no fields');
         // The shell probe runs off the main thread; answer once it has finished.
@@ -409,6 +459,39 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         writeAttempted = true;
         writeAgentModels(root, picks);
         return done({});
+      }
+      case 'agent.restart': {
+        if (!onlyKeys(command, ['type', 'agentId', 'mode']) || typeof command.agentId !== 'string' || !['resume', 'fresh'].includes(command.mode as string)) {
+          return fail('INVALID_INPUT', 'Choose an agent and either resume its saved session or start fresh');
+        }
+        const raw = deps.agents()[command.agentId];
+        if (!object(raw)) return fail('NOT_FOUND', 'Agent not found');
+        if (!team.restartAgent) return fail('UNSUPPORTED', 'Agent restart is not available in this build');
+        writeAttempted = true;
+        return team.restartAgent(command.agentId, command.mode as 'resume' | 'fresh').then((result) => {
+          if (!result.ok) return fail('CONFLICT', result.error ?? 'Agent could not be restarted');
+          return done({});
+        }, failCaught);
+      }
+      case 'agent.switch': {
+        if (!onlyKeys(command, ['type', 'agentId', 'provider', 'model', 'launcher']) || typeof command.agentId !== 'string' || typeof command.provider !== 'string' || typeof command.model !== 'string' || (command.launcher !== null && !object(command.launcher))) return fail('INVALID_INPUT', 'Choose an agent, provider, account and model to switch');
+        const raw = deps.agents()[command.agentId];
+        if (!object(raw)) return fail('NOT_FOUND', 'Agent not found');
+        if (raw.isGod === true || command.agentId === team.orchestratorId()) return fail('UNSUPPORTED', 'Switch the orchestrator only through its dedicated recovery flow');
+        const provider = normalizeAgentProvider(command.provider);
+        if (!provider) return fail('INVALID_INPUT', 'Choose a supported provider');
+        const engine = teamModels(team.modelCatalog(), team.appVersion).find((entry) => entry.id === provider);
+        if (!engine) return fail('UNSUPPORTED', `${provider} is not available in this build`);
+        const model = command.model.trim();
+        if (model && !engine.models.some((entry) => entry.id === model)) return fail('INVALID_INPUT', `${model} is not an available ${engine.label} model`);
+        const launcher = command.launcher as LauncherPick | null;
+        const discovery = team.launcherDiscovery?.();
+        if (['claude', 'codex'].includes(provider) && discovery?.status !== 'ok') return fail('UNSUPPORTED', discovery?.message ?? 'Refresh account launcher discovery before switching providers');
+        if (launcher) { try { validateLauncher(launcher, provider, discovery); } catch (error) { return fail('INVALID_INPUT', error instanceof Error ? error.message : 'The selected account is unavailable'); } }
+        if (!launcher && discovery?.choices.some((choice) => choice.provider === provider)) return fail('INVALID_INPUT', 'Choose the exact account launcher for this provider; its account will not be inferred.');
+        if (!team.switchAgent) return fail('UNSUPPORTED', 'Provider switching is unavailable in this build');
+        writeAttempted = true;
+        return team.switchAgent(command.agentId, { provider, model, launcher }).then((result) => result.ok ? done({}) : fail('CONFLICT', result.error ?? 'Provider switch failed', { rollbackError: result.rollbackError }), failCaught);
       }
       case 'agent.hire': {
         if (!onlyKeys(command, ['type', 'manifest', 'cwd', 'confirm', 'orchestrator', 'launcher'])) return fail('INVALID_INPUT', 'agent.hire accepts manifest, cwd, confirm and orchestrator');

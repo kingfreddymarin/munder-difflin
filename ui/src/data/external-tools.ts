@@ -10,6 +10,9 @@ export function externalTools(tools: Record<string, unknown>): Snapshot['prerequ
   if (claude !== null) out.push({ id: 'claude-cli', name: 'Claude Code CLI (claude)', level: 'required',
     state: claude ? 'ready' : 'missing', detail: claude ? 'Found on your login PATH' : 'Not found on your login PATH',
     why: claude ? 'Paramount starts every agent with it.' : 'Paramount starts every agent with the claude command and cannot run agents without it. Install Claude Code, sign in once in Terminal, then reopen Paramount.' });
+  const codexRaw = tools.codex && typeof tools.codex === 'object' ? tools.codex as { path?: unknown; required?: unknown } : null;
+  const codex = codexRaw ? typeof codexRaw.path === 'string' && !!codexRaw.path : null;
+  if (codex !== null) out.push({ id: 'codex-cli', name: 'Codex CLI (codex)', level: codexRaw?.required === true ? 'required' : 'recommended', state: codex ? 'ready' : 'missing', detail: codex ? 'Found on your login PATH' : 'Not found on your login PATH', why: 'Codex agents need this command. Paramount reports account sign-in independently for each selected Codex launcher.' });
   const palace = found('mempalace');
   if (palace !== null) out.push({ id: 'mempalace', name: 'MemPalace (mempalace)', level: 'optional',
     state: palace ? 'ready' : 'missing', detail: palace ? 'Found on your login PATH' : 'Not installed',
@@ -21,11 +24,19 @@ export function externalTools(tools: Record<string, unknown>): Snapshot['prerequ
 export function engineSignIns(signIn: Record<string, unknown>): Snapshot['prerequisites'] {
   const label: Record<string, string> = { claude: 'Claude Code', codex: 'Codex' };
   return Object.entries(signIn).flatMap(([engine, raw]) => {
-    const s = raw && typeof raw === 'object' ? raw as { state?: unknown; fix?: unknown; seen?: unknown } : {};
-    if ((s.state !== 'signed-out' && s.state !== 'expired') || typeof s.fix !== 'string' || !label[engine]) return [];
-    return [{ id: `signin-${engine}`, name: `${label[engine]} sign-in`, level: 'required' as const, state: 'missing' as const,
-      detail: s.state === 'expired' ? `Sign-in expired${typeof s.seen === 'string' ? ` (an agent stopped on it at ${new Date(s.seen).toLocaleTimeString()})` : ''}` : 'Installed but not signed in',
-      why: `${label[engine]} agents cannot start until you sign in again. ${s.fix}` }];
+    const s = raw && typeof raw === 'object' ? raw as { state?: unknown; seen?: unknown; accountId?: unknown; accountLabel?: unknown; accountFingerprint?: unknown } : {};
+    const provider = engine.split('-', 1)[0];
+    if (!['signed-in', 'signed-out', 'expired', 'unknown'].includes(String(s.state)) || !label[provider]) return [];
+    const account = typeof s.accountLabel === 'string' ? ` (${s.accountLabel})` : '';
+    const idSuffix = typeof s.accountId === 'string' ? `-${s.accountId}` : '';
+    const state = s.state === 'signed-in' ? 'ready' as const : s.state === 'unknown' ? 'unknown' as const : 'missing' as const;
+    const detail = s.state === 'signed-in' ? 'Signed in for this launcher account' : s.state === 'unknown' ? 'Status unknown; check again for this account' : s.state === 'expired' ? `Sign-in expired${typeof s.seen === 'string' ? ` (agent failed at ${new Date(s.seen).toLocaleTimeString()})` : ''}` : 'Signed out for this launcher account';
+    return [{ id: `signin-${provider}${idSuffix}`, name: `${label[provider]}${account} sign-in`, level: 'required' as const, state, detail,
+      why: state === 'ready' ? `Status was checked for ${s.accountLabel ?? 'the provider default'}; credentials remain in the CLI's login flow.` : `${label[provider]} status is scoped to ${s.accountLabel ?? 'the provider default'}. Use the action below for this account; no credential is copied into Paramount.`,
+      signInProvider: provider as 'claude' | 'codex',
+      ...(typeof s.accountId === 'string' ? { signInAccountId: s.accountId } : {}),
+      ...(typeof s.accountFingerprint === 'string' ? { signInAccountFingerprint: s.accountFingerprint } : {}),
+      ...(typeof s.accountLabel === 'string' ? { signInAccountLabel: s.accountLabel } : {}) }];
   });
 }
 

@@ -14,6 +14,7 @@ import { SetupFlow } from '@/app/setup-flow';
 import { FloorChooser } from '@/app/floor-chooser';
 import { FloorRefused } from '@/app/floor-refused';
 import { QuitConfirm } from '@/app/quit-confirm';
+import { AgentActionMenuProvider } from '@/features/team/agent-action-menu';
 
 // The real core when the Electron preload is present (window.paramount, or the fork's window.cth); fixtures otherwise.
 const provider = findBridge() ? createElectronProvider() : createMockProvider();
@@ -76,9 +77,9 @@ function SetupGateOrAppBody() {
   if (setup?.floorLock?.state === 'refused' || setup?.floorLock?.state === 'error') return <FloorRefused lock={setup.floorLock} />;
   return (
     <>
-      <RouterProvider>
-        <Routes />
-      </RouterProvider>
+      <AgentActionMenuProvider>
+        <RouterProvider><Routes /></RouterProvider>
+      </AgentActionMenuProvider>
       {/* New Floor… (Cmd+Shift+N): the picker over this floor, which keeps running. */}
       {setup?.choice?.newFloor && <FloorChooser key="new-floor" choice={setup.choice} lock={setup.floorLock} />}
     </>

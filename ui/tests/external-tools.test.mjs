@@ -20,6 +20,7 @@ test('a missing claude CLI is a required, missing prerequisite with a plain reas
   const palace = list.find((p) => p.id === 'mempalace');
   assert.equal(palace.level, 'optional');
   assert.equal(palace.state, 'missing');
+  assert.equal(externalTools({ codex: { path: null, required: true } })[0].level, 'required');
 });
 
 test('found tools are ready; an older core without the lookup reports nothing rather than a false "missing"', () => {
@@ -29,7 +30,8 @@ test('found tools are ready; an older core without the lookup reports nothing ra
 
 test('the snapshot carries the lookup from main and the setup dialog lists required blockers', () => {
   const main = readFileSync(new URL('../../src/main/index.ts', import.meta.url), 'utf8');
-  assert.match(main, /tools: \{ claude: \{ path: ptyManager\.commandPath\('claude'\) \}, mempalace: \{ path: ptyManager\.commandPath\('mempalace'\) \} \}/);
+  assert.match(main, /tools: \{ claude: \{ path: ptyManager\.commandPath\('claude'\) \}, codex: \{ path: ptyManager\.commandPath\('codex'\), required:/);
+  assert.match(main, /mempalace: \{ path: ptyManager\.commandPath\('mempalace'\) \} \}/);
   const provider = readFileSync(new URL('../src/data/electron-provider.ts', import.meta.url), 'utf8');
   assert.match(provider, /prerequisites\.push\(\.\.\.externalTools\(/);
   const gate = readFileSync(new URL('../src/app/setup-gate.tsx', import.meta.url), 'utf8');
@@ -37,14 +39,18 @@ test('the snapshot carries the lookup from main and the setup dialog lists requi
   assert.doesNotMatch(gate, /fall back to your engines/, 'a missing claude CLI has no fallback');
 });
 
-test('an installed engine that is signed out or whose sign-in expired is a required item with the exact fix', () => {
+test('an installed engine keeps account-specific status and directs sign-in to an in-app action', () => {
   const { engineSignIns } = mod.exports;
   const list = engineSignIns({ codex: { state: 'expired', fix: 'Run `codex login` in Terminal, then start the agent again.', seen: '2026-11-12T21:20:00.000Z' }, claude: { state: 'signed-in' } });
-  assert.equal(list.length, 1);
+  assert.equal(list.length, 2);
   assert.equal(list[0].id, 'signin-codex'); assert.equal(list[0].level, 'required'); assert.equal(list[0].state, 'missing');
-  assert.match(list[0].why, /codex login/);
-  assert.match(engineSignIns({ claude: { state: 'signed-out', fix: 'Run `claude auth login` in Terminal, then start the agent again.' } })[0].why, /claude auth login/);
-  assert.deepEqual(engineSignIns({ codex: { state: 'unknown' } }), [], 'a status that could not be read is not flagged');
+  assert.match(list[0].why, /action below/);
+  assert.match(engineSignIns({ claude: { state: 'signed-out' } })[0].why, /action below/);
+  assert.equal(engineSignIns({ codex: { state: 'unknown', accountId: 'dcxm', accountLabel: 'dcxm · Alternate' } })[0].state, 'unknown', 'uncertain status stays visible as unknown, not as signed out');
+  const alternate = engineSignIns({ codex: { state: 'signed-out', accountId: 'dcxm', accountLabel: 'dcxm · Alternate', accountHome: '/accounts/alt' } })[0];
+  assert.equal(alternate.signInAccountId, 'dcxm');
+  assert.equal(alternate.signInAccountLabel, 'dcxm · Alternate');
+  assert.equal(alternate.loginCommand, undefined);
 });
 
 test('Continue anyway covers the blockers it was pressed for; a new one opens the dialog again', () => {

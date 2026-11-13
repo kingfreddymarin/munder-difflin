@@ -6,12 +6,14 @@ import { cn } from '@/lib/utils';
 import type { Prerequisite } from '@/data/types';
 import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { UnsupportedReason } from './error-notice';
+import { EngineSignInActions } from './engine-sign-in-actions';
 
 const stateLook = {
   ready: ['Ready', 'success'],
   'installed-not-running': ['Installed · not running', 'warning'],
   missing: ['Missing', 'danger'],
   outdated: ['Outdated', 'warning'],
+  unknown: ['Unknown', 'warning'],
 } as const;
 const levelLook = { required: 'danger', recommended: 'info', optional: 'secondary' } as const;
 
@@ -40,7 +42,8 @@ function Row({ p, featured }: { p: Prerequisite; featured?: boolean }) {
           </Button>
         </div>
       )}
-      <UnsupportedReason reason={p.state !== 'ready' ? reason : null} />
+      {p.signInProvider && <EngineSignInActions provider={p.signInProvider} state={p.state} accountId={p.signInAccountId} accountFingerprint={p.signInAccountFingerprint} accountLabel={p.signInAccountLabel} />}
+      <UnsupportedReason reason={!p.signInProvider && p.state !== 'ready' ? reason : null} />
     </div>
   );
 }
