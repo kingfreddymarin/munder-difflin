@@ -141,7 +141,27 @@ test('team models expose only the selected account identity needed for inline si
   const result = team.run({ type: 'team.models' });
   assert.equal(result.ok, true);
   assert.deepEqual(result.models.agents.jim.launcher, { id: 'dcm', fingerprint: pick.fingerprint, label: 'dcm · Alternate' });
+  assert.equal(result.models.agents.jim.accountSelection, 'selected');
   assert.doesNotMatch(JSON.stringify(result.models), /accountHome|token|credential/i);
+});
+test('team.models preserves stale account identity and never reports it as provider default', (t) => {
+  const f = fixture(t); const team = teamFixture(f); const pick = f.pick('dcm');
+  account.saveLauncherPick(f.root, 'agent', pick, 'jim');
+  f.write(['dc']);
+  const result = team.run({ type: 'team.models' });
+  assert.equal(result.ok, true);
+  assert.equal(result.models.agents.jim.accountSelection, 'stale');
+  assert.deepEqual(result.models.agents.jim.launcher, { id: 'dcm', fingerprint: pick.fingerprint, label: 'dcm (saved selection)' });
+  assert.equal(result.models.agents.jim.installed, true, 'CLI availability remains separate from selected-account availability');
+});
+test('team.models distinguishes unreadable saved selection from provider default', (t) => {
+  const f = fixture(t); const team = teamFixture(f); const pick = f.pick('dcm');
+  account.saveLauncherPick(f.root, 'agent', pick, 'jim');
+  fs.writeFileSync(path.join(f.root, 'council/extensions/account-launchers.json'), '{"version":99,"agents":{}}');
+  const result = team.run({ type: 'team.models' });
+  assert.equal(result.ok, true);
+  assert.equal(result.models.agents.jim.accountSelection, 'unavailable');
+  assert.equal(result.models.agents.jim.launcher, undefined);
 });
 test('hire boundary validates profile/model, passes selection into real spawn adapter, and revalidates confirmation', async (t) => {
   const f = fixture(t); const team = teamFixture(f);

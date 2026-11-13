@@ -407,13 +407,29 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           const engine = object(raw) && typeof raw.provider === 'string' ? raw.provider : 'claude';
           const selected = picks[id] && picks[id].engine === engine ? picks[id] : { engine };
           let launcher: { id: string; fingerprint: string; label: string } | undefined;
+          let accountSelection: 'default' | 'selected' | 'stale' | 'unavailable' = 'default';
           let selectedProfile: ReturnType<NonNullable<ParamountTeamDeps['launcherDiscovery']>>['profiles'][number] | undefined;
           try {
             const pick = runtimeLauncher(team.hiveRoot(), id, id === team.orchestratorId(), false, undefined, engine, false);
-            const profile = pick && team.launcherDiscovery?.().profiles.find((entry) => entry.id === pick.id && entry.fingerprint === pick.fingerprint && entry.provider === engine);
-            if (profile) { selectedProfile = profile; launcher = { id: profile.id, fingerprint: profile.fingerprint, label: profile.label }; }
-          } catch { /* Account recovery remains available through provider default. */ }
-          agents[id] = { ...selected, installed: team.commandAvailable(selectedProfile?.bin ?? engine), ...(launcher ? { launcher } : {}) };
+            if (pick) {
+              const discovery = team.launcherDiscovery?.();
+              const profile = discovery?.profiles.find((entry) => entry.id === pick.id && entry.fingerprint === pick.fingerprint && entry.provider === engine);
+              if (profile) {
+                selectedProfile = profile;
+                accountSelection = 'selected';
+                launcher = { id: profile.id, fingerprint: profile.fingerprint, label: profile.label };
+              } else {
+                // Preserve the saved capability identity so recovery surfaces stale
+                // selection instead of silently targeting the provider default.
+                accountSelection = discovery?.status === 'ok' ? 'stale' : 'unavailable';
+                launcher = { id: pick.id, fingerprint: pick.fingerprint, label: `${pick.id} (saved selection)` };
+              }
+            }
+          } catch {
+            // An unreadable/invalid launcher record is not equivalent to provider default.
+            accountSelection = 'unavailable';
+          }
+          agents[id] = { ...selected, installed: team.commandAvailable(selectedProfile?.bin ?? engine), accountSelection, ...(launcher ? { launcher } : {}) };
         }
         let launchers = publicDiscovery(team.launcherDiscovery?.());
         let launcherState;

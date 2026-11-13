@@ -32,7 +32,7 @@ import { defaultMunderHive, type AgentSourceRoots } from './agentSources';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
 import { createOrchestratorStartWatch } from './orchestrator-start';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
-import { prepareClaudeTelegramChannel, type ClaudeChannelPlan } from './claude-channel-recovery';
+import { createClaudeChannelUpdater } from './claude-channel-recovery';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
@@ -3733,54 +3733,33 @@ ipcMain.handle('engine-signin:refresh', async (_event, input: unknown) => {
 });
 // The file picker is a one-file access grant for this narrowly scoped update;
 // no home-wide permission or persistent bookmark is saved.
-const pendingClaudeChannelPlans = new Map<string, { path: string; plan: ClaudeChannelPlan; mode: number; expiresAt: number }>();
 const claudeChannelTarget = join(homedir(), '.minion-aliases.sh');
 const syntaxCheckClaudeAliases = (text: string): boolean => {
   const result = spawnSync('/bin/zsh', ['-n'], { input: text, encoding: 'utf8', timeout: 2000, windowsHide: true });
   return result.status === 0 && !result.error;
 };
+const claudeChannelUpdater = createClaudeChannelUpdater({
+  targetPath: claudeChannelTarget,
+  syntaxCheck: syntaxCheckClaudeAliases,
+  file: {
+    lstat: (path) => lstatSync(path),
+    readFile: (path) => readFileSync(path, 'utf8'),
+    copyFile: (source, target) => copyFileSync(source, target),
+    writeFile: (path, text, mode, exclusive) => writeFileSync(path, text, { encoding: 'utf8', mode, flag: exclusive ? 'wx' : 'w' }),
+    chmod: (path, mode) => chmodSync(path, mode),
+    rename: (source, target) => renameSync(source, target),
+    unlink: (path) => unlinkSync(path),
+  },
+});
 ipcMain.handle('claude-channel:prepare', async () => {
   const selected = await dialog.showOpenDialog({ title: 'Choose the Claude launcher file to update', defaultPath: claudeChannelTarget,
     filters: [{ name: 'Claude launcher file', extensions: ['sh'] }], properties: ['openFile'] });
   if (selected.canceled || selected.filePaths.length !== 1) return { ok: false, canceled: true };
-  const target = selected.filePaths[0];
-  if (target !== claudeChannelTarget) return { ok: false, error: 'Choose ~/.minion-aliases.sh so Paramount changes only the documented Claude launcher file.' };
-  try {
-    const info = lstatSync(target);
-    if (!info.isFile() || info.isSymbolicLink()) return { ok: false, error: 'The selected launcher file must be a regular file, not a link.' };
-    const plan = prepareClaudeTelegramChannel(readFileSync(target, 'utf8'), syntaxCheckClaudeAliases);
-    if (!plan.changed.length) return { ok: true, alreadyConfigured: true, target: '~/.minion-aliases.sh' };
-    const planId = randomBytes(24).toString('hex');
-    pendingClaudeChannelPlans.set(planId, { path: target, plan, mode: info.mode & 0o777, expiresAt: Date.now() + 5 * 60_000 });
-    return { ok: true, planId, target: '~/.minion-aliases.sh', changed: plan.changed };
-  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Could not prepare the launcher update.' }; }
+  return claudeChannelUpdater.prepare(selected.filePaths[0]);
 });
 ipcMain.handle('claude-channel:apply', (_event, input: unknown) => {
   const planId = input && typeof input === 'object' ? (input as { planId?: unknown }).planId : undefined;
-  if (typeof planId !== 'string' || !/^[a-f0-9]{48}$/.test(planId)) return { ok: false, error: 'The prepared update is invalid; prepare it again.' };
-  const prepared = pendingClaudeChannelPlans.get(planId);
-  pendingClaudeChannelPlans.delete(planId);
-  if (!prepared || prepared.expiresAt < Date.now() || prepared.path !== claudeChannelTarget) return { ok: false, error: 'The prepared update expired; prepare it again.' };
-  const { path: target, plan, mode } = prepared;
-  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
-  let temporary: string | undefined;
-  try {
-    const info = lstatSync(target);
-    if (!info.isFile() || info.isSymbolicLink() || hash(readFileSync(target, 'utf8')) !== plan.sha256) return { ok: false, error: 'The launcher file changed after review. No changes were made; prepare it again.' };
-    if (!syntaxCheckClaudeAliases(plan.updated)) return { ok: false, error: 'The shell syntax check failed; no changes were made.' };
-    const backup = `${target}.backup-${new Date().toISOString().replace(/[-:.]/g, '')}-${randomBytes(3).toString('hex')}`;
-    copyFileSync(target, backup); chmodSync(backup, mode);
-    if (hash(readFileSync(target, 'utf8')) !== plan.sha256) return { ok: false, error: `The launcher changed during backup. No changes were made; backup saved as ${basename(backup)}.` };
-    temporary = join(dirname(target), `.minion-aliases-${randomBytes(8).toString('hex')}.tmp`);
-    writeFileSync(temporary, plan.updated, { encoding: 'utf8', mode }); chmodSync(temporary, mode);
-    renameSync(temporary, target); temporary = undefined;
-    if (hash(readFileSync(target, 'utf8')) !== hash(plan.updated) || !syntaxCheckClaudeAliases(readFileSync(target, 'utf8'))) {
-      copyFileSync(backup, target); chmodSync(target, mode);
-      return { ok: false, error: `Verification failed; the original file was restored from ${basename(backup)}.` };
-    }
-    return { ok: true, target: '~/.minion-aliases.sh', backup: `~/${basename(backup)}`, changed: plan.changed };
-  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Could not safely update the launcher file.' }; }
-  finally { if (temporary) try { unlinkSync(temporary); } catch { /* already removed */ } }
+  return claudeChannelUpdater.apply(planId);
 });
 /** Async probe of a startable service's port, so a daemon started outside the app is
  *  seen. The result is logged under the caller's correlation id. */
@@ -3954,24 +3933,67 @@ async function openFloorProcess(home: string): Promise<{ ok: true; home: string 
   const dataDir = floorDataDirFor(shared, v.home);
   const plan = floorSpawnPlan({ execPath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged, dataDir, sharedDir: shared, home: v.home });
   return new Promise((done) => {
-    try {
-      mkdirSync(dataDir, { recursive: true });
-      const child = spawn(plan.command, plan.args, { detached: true, stdio: 'ignore', env: process.env });
-      child.once('spawn', () => {
-        child.unref();
-        console.log(`[floor] started pid ${child.pid} on ${v.home} (data ${dataDir})`);
-        // Shown in this floor's recents too, so it can be found again.
+    const token = randomBytes(18).toString('hex');
+    const ack = `PARAMOUNT_FLOOR_OPENED:${token}`;
+    let settled = false;
+    let acknowledged = false;
+    let output = '';
+    let child: ReturnType<typeof spawn> | null = null;
+    const onData = (chunk: Buffer | string) => {
+      if (settled) return;
+      // Examine every complete line before bounding the carry. A valid ready
+      // line can precede an arbitrarily chatty log line in the same OS chunk.
+      const lines = (output + String(chunk)).split(/\r?\n/);
+      output = lines.pop() ?? '';
+      output = output.slice(-256); // only an incomplete line is retained
+      if (settled || !lines.includes(ack)) return;
+      try {
+        // Commit the success effects once, and only while this request is live.
+        acknowledged = true;
+        child?.unref();
+        console.log(`[floor] opened pid ${child?.pid} on ${v.home} (data ${dataDir})`);
         const cfg = readConfig();
         writeConfig({ recentHives: [...new Set([...(cfg.recentHives ?? []), v.home])] });
-        newFloorPicker = false;
         broadcastParamountInvalidation('floor-lock');
-        done({ ok: true, home: v.home });
-        // A floor process at its picker (after Switch floor) hosts only its own home: another floor
-        // runs as that floor's process, and this one, with nothing open, closes (review F1, F2).
-        if (isFloorProcess() && floorGate.state().state !== 'open') { allowQuit = true; setTimeout(() => app.quit(), 250); }
+        // Close a picker only after the child has acknowledged readiness.
+        if (isFloorProcess() && floorGate.state().state !== 'open') {
+          setTimeout(() => { if (settled && acknowledged) app.quit(); }, 250);
+          allowQuit = true;
+        }
+        newFloorPicker = false;
+        finish({ ok: true, home: v.home });
+      } catch (e) {
+        acknowledged = false;
+        finish({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    };
+    const finish = (result: { ok: true; home: string } | { ok: false; error: string; refusal?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { child?.stdout?.removeListener('data', onData); } catch { /* already closed */ }
+      try { child?.removeListener('error', onError); } catch { /* already closed */ }
+      try { child?.removeListener('exit', onExit); } catch { /* already closed */ }
+      done(result);
+    };
+    const onError = (e: Error) => { if (!settled) finish({ ok: false, error: e.message }); };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (!settled && !acknowledged) finish({ ok: false, error: `The new floor exited before confirming it opened (code ${code ?? 'none'}${signal ? `, signal ${signal}` : ''}).` });
+    };
+    const timer = setTimeout(() => {
+      if (!acknowledged) { try { child?.kill('SIGTERM'); } catch { /* startup is already failing */ } }
+      finish({ ok: false, error: 'The new floor did not confirm that it opened before the startup timeout.' });
+    }, 15000);
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      child = spawn(plan.command, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, PARAMOUNT_FLOOR_OPEN_ACK: token } });
+      child.stdout?.on('data', onData);
+      child.once('spawn', () => {
+        (child?.stdout as NodeJS.ReadStream | null)?.unref();
       });
-      child.once('error', (e) => done({ ok: false, error: e.message }));
-    } catch (e) { done({ ok: false, error: e instanceof Error ? e.message : String(e) }); }
+      child.once('error', onError);
+      child.once('exit', onExit);
+    } catch (e) { finish({ ok: false, error: e instanceof Error ? e.message : String(e) }); }
   });
 }
 /** Switch floor (god-confirmed 2026-11-12, matches Munder's hive switch): stop this floor's agents
@@ -6017,7 +6039,7 @@ ipcMain.handle('workers:stop', (_evt, workerId: string): { ok: boolean; error?: 
 /** Start every hive-bound background service against the current harnessHome.
  *  Called on boot, and again to recover in place if a folder-change copy fails
  *  (config:changeHome tears these down before copying). No-op without a home. */
-function bootstrapHiveServices(): void {
+function bootstrapHiveServices(): boolean {
   const startupStages: Array<{ stage: string; durationMs: number }> = [];
   const stage = <T>(name: string, action: () => T): T => {
     const started = performance.now();
@@ -6030,10 +6052,10 @@ function bootstrapHiveServices(): void {
   if (floor.state === 'refused') {
     console.error(`[floor] ${floor.refusal.owner} (pid ${floor.refusal.pid}) holds ${floor.refusal.floor}; not opening it`);
     broadcastParamountInvalidation('floor-lock');
-    return;
+    return false;
   }
-  if (floor.state === 'error') { console.error('[floor] lock not written:', floor.detail); broadcastParamountInvalidation('floor-lock'); return; }
-  if (!stage('hive.enabled-check', () => hive.enabled())) return;
+  if (floor.state === 'error') { console.error('[floor] lock not written:', floor.detail); broadcastParamountInvalidation('floor-lock'); return false; }
+  if (!stage('hive.enabled-check', () => hive.enabled())) return false;
   stage('hive.ensure', () => hive.ensureHive());
   stage('hive.generated-docs', () => { hive.refreshGeneratedDocs(); });
   // Tell the hive what it is running inside, BEFORE anything spawns: the prompt
@@ -6093,6 +6115,7 @@ function bootstrapHiveServices(): void {
 
   stage('hive.background-beats', () => armAlwaysOnBeats());
   paramountLog({ kind: 'paramount-startup-stages', phase: 'floor-services', durationMs: Math.round(startupStages.reduce((sum, entry) => sum + entry.durationMs, 0) * 10) / 10, stages: startupStages });
+  return true;
 }
 
 /** Cadence of the worker inbox-wake watchdog (#151). Well under the renderer's
@@ -6360,7 +6383,13 @@ app.whenReady().then(() => {
   // for one home (floor.open in another floor) and opens it now.
   // A floor process opens its own --floor-home, never another home its config was pointed at (review F2).
   { const boot = bootFloorPlan(process.argv, readConfig().harnessHome ?? null);
-    if (floorProcessHome() && boot.open) { if (boot.rewriteConfig) writeConfig({ harnessHome: boot.open }); floorChosen = true; bootstrapHiveServices(); }
+    if (floorProcessHome() && boot.open) {
+      if (boot.rewriteConfig) writeConfig({ harnessHome: boot.open });
+      floorChosen = true;
+      const opened = bootstrapHiveServices();
+      const ack = process.env.PARAMOUNT_FLOOR_OPEN_ACK;
+      if (opened && ack && /^[a-f0-9]{36}$/.test(ack)) process.stdout.write(`PARAMOUNT_FLOOR_OPENED:${ack}\n`);
+    }
     else if (boot.open) openChosenFloor(boot.open); }
   registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, directoryState: (p) => {
     try { return statSync(p).isDirectory() ? 'directory' : 'unavailable'; }

@@ -7,7 +7,7 @@
 // Electron-free on purpose: paramountShell.ts parses the flags before `app` is ready and the tests
 // load this file directly.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { checkFloorLock, pidAlive, type FloorLock, type FloorMe } from './floor-lock';
@@ -116,13 +116,33 @@ export function normaliseHome(p: string): string {
 }
 const within = (child: string, parent: string) => child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 
+/** Resolve symlinks in the existing prefix without creating missing paths. */
+function canonicalPath(input: string): string {
+  let candidate = resolve(input);
+  const suffix: string[] = [];
+  while (!existsSync(candidate)) {
+    const parent = resolve(candidate, '..');
+    if (parent === candidate) break;
+    suffix.unshift(candidate.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
+    candidate = parent;
+  }
+  try { candidate = realpathSync(candidate); } catch { /* retain normalized absolute path */ }
+  return resolve(candidate, ...suffix);
+}
+
+function equivalentPath(path: string): string {
+  // Default macOS and Windows volumes are case-insensitive. Lower-casing the
+  // entire absolute path keeps nonexistent suffixes equivalent there as well.
+  return process.platform === 'win32' || process.platform === 'darwin' ? path.toLocaleLowerCase('en-US') : path;
+}
+
 /** A floor never lives in, above, or inside the app's data folders (this process's and the shared
  *  one): the hive would mix with config, window state and every floor's data. Owner report
  *  2026-11-12: setup had saved ~/Library/Application Support/Paramount itself as the floor. */
 export function dataFolderRefusal(home: string, dataDirs: readonly string[]): string | null {
-  const h = normaliseHome(home);
+  const h = equivalentPath(canonicalPath(normaliseHome(home)));
   for (const d of dataDirs) {
-    const dir = resolve(d);
+    const dir = equivalentPath(canonicalPath(d));
     if (within(h, dir) || within(dir, h)) return "A floor cannot use this floor's own data folder.";
   }
   return null;

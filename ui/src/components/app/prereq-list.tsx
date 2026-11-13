@@ -43,7 +43,7 @@ function Row({ p, featured }: { p: Prerequisite; featured?: boolean }) {
           </Button>
         </div>
       )}
-      {p.signInProvider && <EngineSignInActions provider={p.signInProvider} state={p.state} accountId={p.signInAccountId} accountFingerprint={p.signInAccountFingerprint} accountLabel={p.signInAccountLabel} />}
+      {p.signInProvider && <EngineSignInActions provider={p.signInProvider} state={p.state} accountSelection={p.signInAccountId ? 'selected' : 'default'} accountId={p.signInAccountId} accountFingerprint={p.signInAccountFingerprint} accountLabel={p.signInAccountLabel ?? (p.signInAccountId ? undefined : `${p.name} provider default`)} />}
       {p.id === 'claude-cli' && p.state === 'ready' && <ClaudeTelegramChannelAction />}
       <UnsupportedReason reason={!p.signInProvider && p.state !== 'ready' ? reason : null} />
     </div>
@@ -74,7 +74,11 @@ function ClaudeTelegramChannelAction() {
     try {
       const result = await window.paramount?.applyClaudeTelegramChannels(plan.id);
       if (!result) throw new Error('This desktop build cannot apply the launcher update.');
-      if (!result.ok) throw new Error(result.error ?? 'The launcher update failed.');
+      if (!result.ok) {
+        setError(`${result.error ?? 'The launcher update failed.'}${result.backup ? ` Backup: ${result.backup}.` : ''}`);
+        setPlan(null);
+        return;
+      }
       setMessage(`Updated ${result.changed?.join(', ')} in ${result.target}; backup saved to ${result.backup}.`);
       setPlan(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not apply the launcher update.'); }

@@ -180,8 +180,8 @@ test('team.models lists engines from the catalog, filtered by version, with the 
   const claude = result.models.engines.find((e) => e.id === 'claude');
   assert.deepEqual(claude.models.map((m) => m.id), ['claude-sonnet-4-6', 'claude-opus-4-8']);
   assert.equal(result.models.defaultModel, 'claude-sonnet-4-6');
-  assert.deepEqual(result.models.agents.jim, { engine: 'claude', installed: true });
-  assert.deepEqual(result.models.agents.pam, { engine: 'codex', installed: true });
+  assert.deepEqual(result.models.agents.jim, { engine: 'claude', installed: true, accountSelection: 'default' });
+  assert.deepEqual(result.models.agents.pam, { engine: 'codex', installed: true, accountSelection: 'default' });
 });
 
 test('agent.update model saves a pick that the spawn path reads, and empty clears it', () => {
@@ -189,7 +189,7 @@ test('agent.update model saves a pick that the spawn path reads, and empty clear
   const set = dispatchParamount({ type: 'agent.update', agentId: 'jim', patch: { model: 'claude-opus-4-8' } }, deps);
   assert.equal(set.ok, true);
   assert.equal(agentModelPick(root, 'jim'), 'claude-opus-4-8');
-  assert.deepEqual(dispatchParamount({ type: 'team.models' }, deps).models.agents.jim, { engine: 'claude', model: 'claude-opus-4-8', installed: true });
+  assert.deepEqual(dispatchParamount({ type: 'team.models' }, deps).models.agents.jim, { engine: 'claude', model: 'claude-opus-4-8', installed: true, accountSelection: 'default' });
   const clear = dispatchParamount({ type: 'agent.update', agentId: 'jim', patch: { model: '' } }, deps);
   assert.equal(clear.ok, true);
   assert.equal(agentModelPick(root, 'jim'), undefined);

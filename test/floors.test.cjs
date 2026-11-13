@@ -15,6 +15,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { EventEmitter } = require('node:events');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 
@@ -90,6 +91,20 @@ test("the app's own data folder (or a folder inside or around it) is never a flo
   assert.equal(floors.dataFolderRefusal('/u/Paramount', ['/u/Library/Application Support/Paramount']), null);
 });
 
+test('data-folder refusal follows symlink aliases and nonexistent descendants without writing paths', (t) => {
+  const root = tmp(t, 'floor-path-equivalence-');
+  const data = path.join(root, 'app-data');
+  const alias = path.join(root, 'alias');
+  fs.mkdirSync(data);
+  fs.symlinkSync(data, alias, 'dir');
+  assert.ok(floors.dataFolderRefusal(path.join(alias, 'not-created', 'floor'), [data]));
+  assert.ok(floors.dataFolderRefusal(alias, [data]));
+  assert.equal(fs.existsSync(path.join(data, 'not-created')), false, 'checking missing descendants does not create them');
+  if (process.platform === 'darwin' || process.platform === 'win32') {
+    assert.ok(floors.dataFolderRefusal(path.join(root, 'APP-DATA', 'floor'), [data]), 'case aliases are refused on default case-insensitive platforms');
+  }
+});
+
 test('probe: free, held (with owner), missing, current, data folder; read-only', (t) => {
   const w = world(t);
   const ctx = { currentHome: w.a, me: me(w.userData), dataDirs: [w.userData], isAlive };
@@ -124,19 +139,20 @@ function floorsBlock(gate, config, userData, spawnImpl, proc = {}) {
   const src = INDEX.slice(INDEX.indexOf('// ─── Floors (owner requests 2026-11-12'), INDEX.indexOf('/** First-run floor setup (paramount-floor-setup.ts)'));
   assert.ok(src.includes('function openFloorProcess('), 'index.ts has the floor process model');
   const calls = [];
-  const ctx = { console, process, statSync: fs.statSync, mkdirSync: fs.mkdirSync, basename: path.basename, floorGate: gate,
+  const ctx = { console, process, randomBytes: crypto.randomBytes, statSync: fs.statSync, mkdirSync: fs.mkdirSync, basename: path.basename, floorGate: gate,
     ...floors, floorOwnerName: loadTs('src/main/floor-lock.ts').floorOwnerName, spawn: spawnImpl ?? spawn,
-    sharedDataDir: () => userData, TEST_LABEL: null, setTimeout,
+    sharedDataDir: () => userData, TEST_LABEL: null, setTimeout: proc.setTimeout ?? setTimeout, clearTimeout: proc.clearTimeout ?? clearTimeout,
     isFloorProcess: () => !!proc.home, floorProcessHome: () => proc.home ?? null, allowQuit: false,
     app: { getPath: () => userData, getVersion: () => 'test', getAppPath: () => path.join(__dirname, 'fixtures', 'floor-child.cjs'), isPackaged: false, quit: () => calls.push(['app.quit']) },
     readConfig: () => config,
     writeConfig: (patch) => { calls.push(['writeConfig', patch]); if (patch.harnessHome) config.recentHives = [patch.harnessHome, ...(config.recentHives ?? []).filter((h) => h !== patch.harnessHome)]; Object.assign(config, patch); },
     ensureHarnessHome: (h) => { calls.push(['ensureHarnessHome', h]); fs.mkdirSync(path.join(h, 'hive'), { recursive: true }); return { ok: true }; },
     bootstrapHiveServices: () => { calls.push(['bootstrapHiveServices']); gate.claim(config.harnessHome); },
-    broadcastParamountInvalidation: () => {},
+    newFloorPicker: proc.newFloorPicker ?? false, broadcastParamountInvalidation: proc.broadcastParamountInvalidation ?? (() => {}),
     closingTime: { cancel: () => calls.push(['closingTime.cancel']) }, teardownAndQuit: (o) => calls.push(['teardownAndQuit', o]), dialog: {},
     BrowserWindow: { getAllWindows: () => [], getFocusedWindow: () => null }, ipcMain: { handle: () => {} } };
-  const js = ts.transpileModule(src + '\nObject.assign(globalThis, { floorChoice, openChosenFloor, openFloorProcess, requestFloorPicker, floorWindowTitle, switchFloor });', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  const js = ts.transpileModule(src + '\nif (__initialNewFloorPicker) newFloorPicker = true; Object.assign(globalThis, { floorChoice, openChosenFloor, openFloorProcess, requestFloorPicker, floorWindowTitle, switchFloor, readNewFloorPicker: () => newFloorPicker });', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  ctx.__initialNewFloorPicker = !!proc.newFloorPicker;
   vm.runInNewContext(js, ctx);
   ctx.calls = calls; // the live context, so flags the code sets (allowQuit) are visible
   return ctx;
@@ -144,10 +160,10 @@ function floorsBlock(gate, config, userData, spawnImpl, proc = {}) {
 
 test('boot: the main process claims no floor; a floor process opens its own; a location change reopens directly', () => {
   const boot = INDEX.slice(INDEX.indexOf('registerParamountProtocol();'), INDEX.indexOf('registerParamountRuntime({'));
-  const floorBoot = 'if (floorProcessHome() && boot.open) { if (boot.rewriteConfig) writeConfig({ harnessHome: boot.open }); floorChosen = true; bootstrapHiveServices(); }';
-  assert.ok(boot.includes(floorBoot), 'a floor process opens the home bootFloorPlan names');
+  assert.match(boot, /if \(floorProcessHome\(\) && boot\.open\) \{[\s\S]*?bootstrapHiveServices\(\);[\s\S]*?PARAMOUNT_FLOOR_OPENED/,
+    'a floor process opens the home bootFloorPlan names before acknowledging readiness');
   assert.match(boot, /const boot = bootFloorPlan\(process\.argv, readConfig\(\)\.harnessHome \?\? null\);/);
-  assert.doesNotMatch(boot.replace(floorBoot, ''), /bootstrapHiveServices\(\);/);
+  assert.doesNotMatch(boot.replace(/if \(floorProcessHome\(\) && boot\.open\) \{[\s\S]*?\n    \}/, ''), /bootstrapHiveServices\(\);/);
   assert.match(boot, /!dataFolderRefusal\(cfg\.harnessHome, appDataDirs\(\)\)\) writeConfig\(\{ onboardingComplete: true \}\)/, 'a data-folder home is not re-marked as set up');
   assert.match(INDEX, /app\.relaunch\(\{ args: moveRelaunchArgs\(process\.argv\.slice\(1\), moveTo\) \}\);/);
 });
@@ -200,7 +216,7 @@ test('New Floor…: B starts as its own detached process with its own data folde
   const config = { onboardingComplete: true, harnessHome: w.a, recentHives: [w.a, w.b] };
   const gate = createFloorGate(me(w.userData), isAlive);
   const plans = [];
-  const recordSpawn = (command, args, opts) => { plans.push({ command, args, opts }); return spawn(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' }); };
+  const recordSpawn = (command, args, opts) => { plans.push({ command, args, opts }); return spawn(process.execPath, ['-e', 'process.stdout.write(`PARAMOUNT_FLOOR_OPENED:${process.env.PARAMOUNT_FLOOR_OPEN_ACK}\\n`)'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: opts.env }); };
   const c = floorsBlock(gate, config, w.userData, recordSpawn);
   assert.equal(c.openChosenFloor(w.a).state, 'open');
   c.requestFloorPicker();
@@ -230,6 +246,67 @@ test('New Floor…: B starts as its own detached process with its own data folde
   const other = createFloorGate(me(path.join(w.root, 'third-profile')), () => true);
   assert.equal(other.claim(w.b).state, 'refused');
   gate.release();
+});
+
+test('New Floor acknowledgement is exact-once, bounded, and ignored after failure', async (t) => {
+  const w = world(t);
+  const config = { onboardingComplete: true, harnessHome: w.a, recentHives: [] };
+  const gate = createFloorGate(me(w.userData), isAlive);
+  const timers = [];
+  const proc = { setTimeout: (callback, ms) => { const timer = { callback, ms, cleared: false }; timers.push(timer); return timer; }, clearTimeout: (timer) => { timer.cleared = true; } };
+  const child = new EventEmitter(); child.stdout = new EventEmitter(); child.unref = () => {}; child.kill = () => true; child.pid = 123;
+  const c = floorsBlock(gate, config, w.userData, (_cmd, _args, opts) => { child.token = opts.env.PARAMOUNT_FLOOR_OPEN_ACK; return child; }, proc);
+  const result = c.openFloorProcess(w.b);
+  const ack = `PARAMOUNT_FLOOR_OPENED:${child.token}`;
+  const startup = timers.find((timer) => timer.ms === 15000);
+  child.stdout.emit('data', `noise\n${ack.slice(0, 20)}`);
+  child.stdout.emit('data', `${ack.slice(20)}\r\n${'x'.repeat(300)}\n`);
+  assert.equal(plain(await result).ok, true);
+  child.stdout.emit('data', `${ack}\nnoise\n`);
+  assert.equal(c.calls.filter(([name]) => name === 'writeConfig').length, 1);
+  assert.equal(timers.filter((timer) => timer.ms === 250).length, 0);
+  assert.equal(startup.cleared, true);
+
+  const lateChild = new EventEmitter(); lateChild.stdout = new EventEmitter(); lateChild.kill = () => true;
+  const lateTimers = [];
+  const late = floorsBlock(gate, config, w.userData, (_cmd, _args, opts) => { lateChild.token = opts.env.PARAMOUNT_FLOOR_OPEN_ACK; return lateChild; }, {
+    ...proc, newFloorPicker: true, setTimeout: (callback, ms) => { const timer = { callback, ms, cleared: false }; lateTimers.push(timer); return timer; }
+  });
+  const failed = late.openFloorProcess(w.b);
+  lateTimers.find((timer) => timer.ms === 15000).callback();
+  assert.equal(plain(await failed).ok, false);
+  lateChild.stdout.emit('data', `PARAMOUNT_FLOOR_OPENED:${lateChild.token}\n`);
+  assert.equal(late.calls.some(([name]) => name === 'writeConfig'), false);
+  assert.equal(late.readNewFloorPicker(), true);
+  assert.equal(lateTimers.some((timer) => timer.ms === 250), false);
+
+  const wrongChild = new EventEmitter(); wrongChild.stdout = new EventEmitter(); wrongChild.kill = () => true;
+  const wrongTimers = [];
+  const wrong = floorsBlock(gate, config, w.userData, () => wrongChild, { ...proc, setTimeout: (callback, ms) => { const timer = { callback, ms }; wrongTimers.push(timer); return timer; } });
+  const wrongResult = wrong.openFloorProcess(w.b);
+  wrongChild.stdout.emit('data', 'PARAMOUNT_FLOOR_OPENED:wrong\n');
+  wrongTimers.find((timer) => timer.ms === 15000).callback();
+  assert.equal(plain(await wrongResult).ok, false);
+
+  for (const terminal of ['error', 'exit']) {
+    const failedChild = new EventEmitter(); failedChild.stdout = new EventEmitter(); failedChild.kill = () => true;
+    const failure = floorsBlock(gate, config, w.userData, () => failedChild, proc);
+    const failureResult = failure.openFloorProcess(w.b);
+    failedChild.emit(terminal, ...(terminal === 'error' ? [new Error('spawn failed')] : [2, null]));
+    assert.equal(plain(await failureResult).ok, false);
+    failedChild.stdout.emit('data', `PARAMOUNT_FLOOR_OPENED:ignored\n`);
+    assert.equal(failure.calls.some(([name]) => name === 'writeConfig'), false);
+  }
+
+  const sideEffectChild = new EventEmitter(); sideEffectChild.stdout = new EventEmitter(); sideEffectChild.unref = () => {};
+  const sideEffect = floorsBlock(gate, config, w.userData, (_cmd, _args, opts) => { sideEffectChild.token = opts.env.PARAMOUNT_FLOOR_OPEN_ACK; return sideEffectChild; }, {
+    ...proc, newFloorPicker: true, broadcastParamountInvalidation: () => { throw new Error('broadcast failed'); }
+  });
+  const sideEffectResult = sideEffect.openFloorProcess(w.b);
+  sideEffectChild.stdout.emit('data', `PARAMOUNT_FLOOR_OPENED:${sideEffectChild.token}\n`);
+  assert.equal(plain(await sideEffectResult).ok, false);
+  assert.equal(sideEffect.calls.filter(([name]) => name === 'writeConfig').length, 1);
+  assert.equal(sideEffect.readNewFloorPicker(), true, 'failed success-side effects leave the picker open');
 });
 
 test('the app menu (always installed, not behind multiWindow) has New Floor… (Cmd+Shift+N) and Switch floor…', () => {
@@ -303,7 +380,7 @@ test('a floor process at its picker opens another floor as that floor\'s own pro
   const config = { onboardingComplete: true, harnessHome: w.a, recentHives: [w.a, w.b] };
   const gate = createFloorGate(me(w.userData), isAlive);
   const plans = [];
-  const recordSpawn = (command, args, opts) => { plans.push({ command, args, opts }); return spawn(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' }); };
+  const recordSpawn = (command, args, opts) => { plans.push({ command, args, opts }); return spawn(process.execPath, ['-e', 'process.stdout.write(`PARAMOUNT_FLOOR_OPENED:${process.env.PARAMOUNT_FLOOR_OPEN_ACK}\\n`)'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: opts.env }); };
   const c = floorsBlock(gate, config, w.userData, recordSpawn, { home: w.a });
   assert.equal(c.floorChoice().pending, true, 'relaunched after Switch: nothing open');
   const r = await c.openFloorProcess(w.b);

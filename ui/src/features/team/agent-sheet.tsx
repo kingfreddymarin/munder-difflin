@@ -77,10 +77,13 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
   // The core takes one field per agent.update, so each changed field is its own command (and its own log line).
   const fieldReason = (key: keyof Form | 'model') => (agent ? unsupported({ type: 'agent.update', agentId: agent.id, patch: { [key]: key === 'model' ? model : form?.[key as keyof Form] } }) : null);
   const engineId = (agent && models?.agents[agent.id]?.engine) || agent?.engine || '';
-  const savedLauncher = agent ? models?.launcherState?.agents[agent.id] : undefined;
-  const agentSignIn = prerequisites.find((entry) => entry.signInProvider === engineId
-    && entry.signInAccountId === savedLauncher?.id
-    && entry.signInAccountFingerprint === savedLauncher?.fingerprint);
+  const accountModel = agent ? models?.agents[agent.id] : undefined;
+  const accountSelection = accountModel?.accountSelection ?? 'unavailable';
+  const savedLauncher = accountModel?.launcher;
+  const agentSignIn = accountSelection === 'stale' || accountSelection === 'unavailable' ? undefined : prerequisites.find((entry) => entry.signInProvider === engineId
+    && (accountSelection === 'selected'
+      ? entry.signInAccountId === savedLauncher?.id && entry.signInAccountFingerprint === savedLauncher?.fingerprint
+      : entry.id === engineId));
   const savedModel = (agent && models?.agents[agent.id]?.model) ?? '';
   const changes = agent && form ? (Object.keys(form) as (keyof Form)[]).filter((k) => form[k] !== formOf(agent)[k] && !fieldReason(k)) : [];
   const modelChanged = !!models && model !== savedModel && !fieldReason('model');
@@ -137,12 +140,13 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
               <TabsContents className="min-h-0 flex-1">
                 <TabsContent value="overview">
                   <AgentSummary agent={agent} />
+                  {(accountSelection === 'stale' || accountSelection === 'unavailable') && <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">{accountSelection === 'stale' ? `The saved account ${savedLauncher?.id ?? ''} changed or is no longer available.` : 'The saved account selection could not be read.'} Refresh launcher discovery and explicitly reselect the account below. Sign-in checks and login are disabled until the selection is resolved.</div>}
                   {agentSignIn && agentSignIn.state !== 'ready' && agentSignIn.signInProvider && <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
                     <p className="mb-2 text-sm font-medium">{agentSignIn.state === 'unknown' ? `Sign-in status for ${agentSignIn.signInAccountLabel ?? engineId} is unknown` : `${agent.name} needs to sign in to ${agentSignIn.signInAccountLabel ?? engineId}`}</p>
-                    <p className="text-muted-foreground mb-2 text-xs">This action uses the exact account selected for this agent. Sign-in stays in the provider CLI; refresh confirms recovery without restarting Paramount.</p>
-                    <EngineSignInActions provider={agentSignIn.signInProvider} state={agentSignIn.state} cliAvailable={models?.agents[agent.id]?.installed ?? true} accountId={agentSignIn.signInAccountId} accountFingerprint={agentSignIn.signInAccountFingerprint} accountLabel={agentSignIn.signInAccountLabel} />
+                    <p className="text-muted-foreground mb-2 text-xs">This action uses {accountSelection === 'selected' ? 'the exact account selected for this agent' : 'the explicitly selected provider default'}. Sign-in stays in the provider CLI; refresh confirms recovery without restarting Paramount.</p>
+                    <EngineSignInActions provider={agentSignIn.signInProvider} state={agentSignIn.state} accountSelection={accountSelection} cliAvailable={accountModel?.installed ?? true} accountId={agentSignIn.signInAccountId} accountFingerprint={agentSignIn.signInAccountFingerprint} accountLabel={agentSignIn.signInAccountLabel} />
                   </div>}
-                  <LauncherSettings agentId={agent.id} provider={engineId} scope={agent.id === models?.orchestratorId || agent.id === 'god' ? 'orchestrator' : 'agent'} />
+                  <LauncherSettings agentId={agent.id} provider={engineId} scope={agent.id === models?.orchestratorId || agent.id === 'god' ? 'orchestrator' : 'agent'} onSelectionChange={loadModels} />
                   <div className="mt-3 flex gap-2">
                     <Button className="flex-1" onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}>Open terminal</Button>
                   </div>

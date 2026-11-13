@@ -16,6 +16,10 @@ import { AGENT_VIEW, agentViewParams, terminalRoster } from './agent-view';
 import { prewarmTerminals } from '@/components/app/terminal/terminal-pool';
 import { TERMINAL_THEMES } from '@/components/app/terminal/terminal-themes';
 import { getTerminalFontSize } from '@/components/app/terminal/terminalFontSize';
+import { Button } from '@/components/animate-ui/components/buttons/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/animate-ui/components/radix/dropdown-menu';
+import { MoreHorizontal } from 'lucide-react';
+import { useDispatch } from '@/data/store';
 
 /** Buffer every live agent's output from spawn, as Munder's App does (terminal-pool prewarmTerminals). */
 function usePrewarmTerminals() {
@@ -78,10 +82,45 @@ function TopBar({ title }: { title: string }) {
       <SidebarTrigger />
       <Separator orientation="vertical" className="mx-1 !h-5" />
       <span className="flex-1 truncate font-medium">{title}</span>
+      <MoreMenu />
       <ThemeTogglerButton variant="ghost" size="sm" aria-label="Toggle theme" />
       <NotificationsMenu />
       <AccountMenu />
     </header>
+  );
+}
+
+/** Secondary app actions stay in their existing screens; this menu makes them discoverable globally. */
+function MoreMenu() {
+  const { go } = useRouter();
+  const dispatch = useDispatch();
+  const item = (label: string, detail: string, action: () => void) => (
+    <DropdownMenuItem onSelect={action} className="items-start py-2">
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span>{label}</span>
+        <span className="text-muted-foreground text-xs font-normal">{detail}</span>
+      </span>
+    </DropdownMenuItem>
+  );
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="sm" aria-label="More app actions" title="More app actions"><MoreHorizontal aria-hidden="true" /><span>More</span></Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" collisionPadding={8} className="w-[min(18rem,calc(100vw-1rem))]">
+        <DropdownMenuLabel>More actions</DropdownMenuLabel>
+        {item('Open another floor…', 'Choose a recent floor or folder', () => { void dispatch({ type: 'floor.picker', open: true }); })}
+        <DropdownMenuSeparator />
+        {item('Agents & temps', 'Hire, import, configure and manage agents', () => go('team'))}
+        {item('Automations', 'Schedules, triggers and team activity', () => go('team'))}
+        {item('Engines & models', 'Provider and model settings', () => go('settings', { tab: 'providers' }))}
+        {item('Terminal', 'Live agent sessions', () => go('terminal'))}
+        <DropdownMenuSeparator />
+        {item('Connections', 'Integrations available to this floor', () => go('settings', { tab: 'connections' }))}
+        {item('Settings', 'Floor, account and app preferences', () => go('settings'))}
+        {item('Diagnostics', 'Service checks, event log and support bundle', () => go('health'))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

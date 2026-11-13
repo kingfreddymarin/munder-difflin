@@ -65,7 +65,7 @@ export function createMockProvider(): DataProvider {
       return {
         engines: s.engines.map((engine) => ({ id: engine.id, label: engine.name, models: engine.models.map((model) => ({ id: model, label: model })) })),
         defaultModel: s.engines[0]?.defaultModel,
-        agents: Object.fromEntries(s.agents.map((agent) => [agent.id, { engine: byName.get(agent.engine) ?? agent.engine, model: agent.model || undefined, installed: true }])),
+        agents: Object.fromEntries(s.agents.map((agent) => [agent.id, { engine: byName.get(agent.engine) ?? agent.engine, model: agent.model || undefined, installed: true, accountSelection: 'default' as const }])),
       };
     },
     async hire(manifest, options = {}) {
