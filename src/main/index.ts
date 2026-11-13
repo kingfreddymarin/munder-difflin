@@ -22,7 +22,7 @@ import { createBoardDeps } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
 import { offeredModelIds, resolveAgentModel } from './paramount-models';
 import { agentModelPick, readAgentModels, saveAgentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
-import { preserveEngineSession, switchEngineTransaction } from './paramount-engine-switch';
+import { preserveEngineSession, switchEngineTransaction, withAgentLifecycleLock } from './paramount-engine-switch';
 import { readOrg } from './paramount-org';
 import { floorSetupState, type FloorChoice, type FloorSetupDeps } from './paramount-floor-setup';
 import bakedModelCatalog from '../shared/modelCatalog.json';
@@ -4135,6 +4135,7 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
       return { ok: true };
     },
     restartAgent: async (agentId, mode) => {
+      const locked = await withAgentLifecycleLock(agentId, async () => {
       const root = hive.root();
       if (!root || !hive.enabled()) return { ok: false, error: 'Enable the Hive before restarting an agent.' };
       if (!claimFloor(root)) return { ok: false, error: 'Another Council or Munder process owns this floor.' };
@@ -4181,8 +4182,11 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
           : `Continue the existing assignment for this agent. Read your handoff at ${join(root, 'agents', agentId, 'handoff.md')}, your Rules in memory.md, the task context named in the handoff, and the current assignment in board.md/tasks.json. Continue from the recorded Next; do not recreate completed work. If the assignment or context is missing, inform god instead of guessing.`
       ].join('\n\n'), requires_reply: false }, 'system');
       return { ok: true, resumed: res.resumed === true };
+      });
+      return locked ?? { ok: false, error: 'Another lifecycle operation is already running for this agent.' };
     },
     switchAgent: async (agentId, target) => {
+      const locked = await withAgentLifecycleLock(agentId, async () => {
       const root = hive.root();
       if (!root || !hive.enabled()) return { ok: false, error: 'Enable the Hive before switching an agent.' };
       if (!claimFloor(root)) return { ok: false, error: 'Another Council or Munder process owns this floor.' };
@@ -4235,6 +4239,10 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
           targetResult = await spawnFor(target.provider, target.model || undefined, targetLauncher, false);
           return { ok: targetResult.ok, error: targetResult.error };
         },
+        targetViable: async () => {
+          const result = targetResult ? await ptyManager.waitForExit(agentId, 300) : { exited: true };
+          return result.exited ? { ok: false, error: `The target provider exited during startup${typeof result.exitCode === 'number' ? ` (exit ${result.exitCode})` : ''}.` } : { ok: true };
+        },
         persistTarget: async () => {
           saveAgentModelPick(root, agentId, target.provider, target.model || undefined);
           saveLauncherPick(root, 'agent', targetLauncher, agentId);
@@ -4265,7 +4273,11 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
             } else {
               try { sender.send('hive:agentSpawned', { id: agentId, name: raw.name, provider: fromProvider, cwd, role: raw.role }); } catch { /* window closed */ }
             }
-          } else restoreArchived(agentId, previousArchived);
+          } else {
+            const restored = await hive.ensureAgent({ id: agentId, name: raw.name, provider: fromProvider, ...(raw.role ? { role: raw.role } : {}), cwd }, { preserveAccountHome: true, ...(previousSession ? { sessionId: previousSession } : {}) });
+            void restored;
+            restoreArchived(agentId, previousArchived);
+          }
           return errors.length ? { ok: false, error: errors.join(' ') } : { ok: true };
         }
       });
@@ -4276,6 +4288,8 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
         `Read your durable rules and memory in ${join(root, 'agents', agentId)}, your handoff, and the existing assignment in board.md and tasks.json. Continue from durable files and report any missing context to god. Do not recreate completed work.`
       ].join('\n\n'), requires_reply: false }, 'system');
       return { ok: true };
+      });
+      return locked ?? { ok: false, error: 'Another lifecycle operation is already running for this agent.' };
     }
   };
 }

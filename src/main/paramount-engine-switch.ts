@@ -6,6 +6,16 @@ export interface EngineSwitchResult { ok: boolean; error?: string; rollbackError
 
 export interface AgentEngineSessionRecord { provider: string; at: string; sessionId?: string; model?: string; launcherId?: string }
 const HISTORY_FILE = 'paramount-agent-engine-history.json';
+const lifecycleLocks = new Set<string>();
+
+/** One lock shared by switch and restart handlers. A rejected contender must
+ * never take a snapshot or stop the process owned by the operation in flight. */
+export async function withAgentLifecycleLock<T>(agentId: string, operation: () => Promise<T>): Promise<T | undefined> {
+  if (lifecycleLocks.has(agentId)) return undefined;
+  lifecycleLocks.add(agentId);
+  try { return await operation(); }
+  finally { lifecycleLocks.delete(agentId); }
+}
 
 /** Keep pointers to retired provider sessions out of the registry's single active-session slot. */
 export function preserveEngineSession(root: string, agentId: string, record: AgentEngineSessionRecord): void {
@@ -27,6 +37,7 @@ export function preserveEngineSession(root: string, agentId: string, record: Age
 export async function switchEngineTransaction(deps: {
   stopCurrent(): Promise<{ ok: boolean; error?: string }>;
   startTarget(): Promise<{ ok: boolean; error?: string }>;
+  targetViable?(): Promise<{ ok: boolean; error?: string }>;
   persistTarget(): Promise<void>;
   stopTarget(): Promise<{ ok: boolean; error?: string }>;
   rollback(): Promise<{ ok: boolean; error?: string }>;
@@ -39,7 +50,11 @@ export async function switchEngineTransaction(deps: {
     const started = await deps.startTarget();
     targetStarted = started.ok;
     if (!started.ok) failure = started.error ?? 'The target provider session could not start.';
-    else await deps.persistTarget();
+    else {
+      const viable = await deps.targetViable?.();
+      if (viable && !viable.ok) failure = viable.error ?? 'The target provider exited during startup.';
+      else await deps.persistTarget();
+    }
   } catch (error) { failure = error instanceof Error ? error.message : 'Could not save the provider selection.'; }
   if (!failure) return { ok: true };
   if (targetStarted) {
