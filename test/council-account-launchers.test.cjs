@@ -317,3 +317,23 @@ test('a claude god with godProvider codex and a Codex orchestrator launcher star
   assert.equal((await team.run({ type: 'launchers.configure', scope: 'orchestrator', launcher: f.pick('dcxm') })).ok, false);
   assert.equal((await team.run({ type: 'launchers.configure', scope: 'orchestrator', launcher: f.pick('dcm') })).ok, true);
 });
+
+test('the god never falls back to the new-agent default launcher: its session lives in the account it ran in', async (t) => {
+  // Isolated check of b22e04ed on a copy of the Studio floor: the Codex orchestrator launcher was ignored,
+  // but the god fell back to claude's new-agent default dcm (another account), and its resume was refused
+  // ("Session is unavailable in the selected account").
+  const f = fixture(t); const team = teamFixture(f);
+  account.saveLauncherPick(f.root, 'orchestrator', f.pick('dcxm'));
+  account.saveLauncherPick(f.root, 'default', f.pick('dcm'), 'claude');
+  const agents = { god: { name: 'Frodzy', provider: 'claude', isGod: true, sessionId: 's-1' } };
+  Object.assign(team.deps, { agents: () => agents });
+  Object.assign(team.deps.team, { orchestratorProvider: () => 'codex', orchestratorId: () => 'god', setupComplete: () => true });
+  assert.equal((await team.run({ type: 'orchestrator.ensure' })).ok, true);
+  assert.equal(team.launched[0].launcher, null, "the CLI's own default account, not dcm");
+  // At spawn the same rule: an existing god resolves no launcher; a new claude agent gets dcm.
+  const resolve = (extra) => account.resolveLauncherForSpawn({ root: f.root, provider: 'claude', isGod: false, isTemp: false, ...extra }, f.discover());
+  assert.equal(resolve({ agentId: 'god', isGod: true, isNew: false }), undefined);
+  // A new ordinary claude hire with the Codex launcher sent by the form gets claude's new-agent default.
+  const hire = await team.run({ type: 'agent.hire', launcher: f.pick('dcxm'), manifest: { spec: 'munder-difflin/hire@1', name: 'Worker', provider: 'claude' } });
+  assert.equal(hire.ok, true); assert.match(hire.hire.launcher, /dcm/); assert.match(hire.hire.notes[0], /default launcher dcm/);
+});

@@ -247,17 +247,19 @@ export function launcherSessionExists(home: string, provider: string, sid: strin
 export function launcherProvider(pick: LauncherPick | null | undefined, discovery: Discovery = NOT_DISCOVERED): string | undefined {
   return pick ? discovery.profiles.find((f) => f.id === pick.id)?.provider : undefined;
 }
-/** A launcher for this engine: `pick` when it runs `provider`; otherwise the saved default launcher for
- *  `provider` when that one matches, else none (the engine's own default account). Owner run of
- *  ceeb4aaf: a Codex launcher saved for the orchestrator made every Claude orchestrator start and
- *  hire fail with "Selected launcher does not match this provider". */
-export function launcherForProvider(root: string | null, pick: LauncherPick | null | undefined, provider: string, discovery: Discovery = NOT_DISCOVERED): { pick: LauncherPick | null; ignored?: { id: string; provider: string } } {
+/** A launcher for this engine: `pick` when it runs `provider`; otherwise, for a NEW agent, the saved
+ *  default launcher for `provider` when that one matches, and in every other case none (the engine's
+ *  own default account, "Provider default"). Owner run of ceeb4aaf: a Codex launcher saved for the
+ *  orchestrator made every Claude orchestrator start and hire fail with "Selected launcher does not
+ *  match this provider". An existing agent such as the god never moves to the new-agent default: its
+ *  session lives in the account it ran in, and a resume elsewhere is refused. */
+export function launcherForProvider(root: string | null, pick: LauncherPick | null | undefined, provider: string, discovery: Discovery = NOT_DISCOVERED, newAgent = false): { pick: LauncherPick | null; ignored?: { id: string; provider: string } } {
   if (pick === null || pick === undefined) return { pick: null };
   // Anything malformed is returned as is, so validateLauncher still refuses it.
   const runs = typeof pick === 'object' && typeof pick.id === 'string' ? launcherProvider(pick, discovery) : undefined;
   if (runs === undefined || runs === provider) return { pick };
   let fallback: LauncherPick | null = null;
-  try { const d = readLauncherState(root).defaults?.[provider]; if (d && launcherProvider(d, discovery) === provider) fallback = d; } catch { fallback = null; }
+  if (newAgent) try { const d = readLauncherState(root).defaults?.[provider]; if (d && launcherProvider(d, discovery) === provider) fallback = d; } catch { fallback = null; }
   return { pick: fallback, ignored: { id: pick.id, provider: runs } };
 }
 export function resolveLauncherForSpawn(input: { root: string | null; agentId?: string; isGod: boolean; isTemp: boolean; provider: string; explicit?: LauncherPick | null; isNew?: boolean }, discovery?: Discovery | (() => Discovery)): Profile | undefined {
@@ -266,7 +268,7 @@ export function resolveLauncherForSpawn(input: { root: string | null; agentId?: 
   // A function is called here only, once: spawns without a launcher never discover.
   const found = typeof discovery === 'function' ? discovery() : discovery;
   // A saved pick for another engine is not this agent's account: its engine's default applies.
-  const pick = input.explicit === undefined ? launcherForProvider(input.root, saved, input.provider, found).pick : saved;
+  const pick = input.explicit === undefined ? launcherForProvider(input.root, saved, input.provider, found, !!input.isNew && !input.isGod).pick : saved;
   if (pick === null) return undefined;
   const result = validateLauncher(pick, input.provider, found);
   let available = false;

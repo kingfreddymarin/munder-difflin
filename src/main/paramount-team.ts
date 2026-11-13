@@ -464,7 +464,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           const discovery = team.launcherDiscovery?.();
           const wanted = command.launcher === undefined ? runtimeLauncher(team.hiveRoot(), undefined, isGod, false, undefined, provider, true) : command.launcher as LauncherPick | null;
           // A launcher for another engine (saved, or preselected by the form) is ignored with a note.
-          const fitted = wanted === undefined ? undefined : launcherForProvider(team.hiveRoot(), wanted, provider, discovery);
+          const fitted = wanted === undefined ? undefined : launcherForProvider(team.hiveRoot(), wanted, provider, discovery, !isGod);
           if (fitted?.ignored) notes.push(`Launcher ${fitted.ignored.id} runs ${engineLabel(engines, fitted.ignored.provider)}, not ${engineLabel(engines, provider)}; ${fitted.pick ? `${engineLabel(engines, provider)}'s default launcher ${fitted.pick.id}` : `${engineLabel(engines, provider)}'s default account`} is used.`);
           launcherPick = fitted === undefined ? undefined : fitted.pick;
           if (launcherPick !== undefined && launcherPick !== null) profile = validateLauncher(launcherPick, provider, discovery); }
