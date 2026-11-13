@@ -142,7 +142,12 @@ test('automatic startup does not retry a failed start; it reports it', async (t)
 
 test('index.ts: a failed orchestrator start is logged and its entry is not archived', () => {
   const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
-  assert.match(code, /function teardownPty\(id: string, opts: \{ keepEntry\?: boolean \} = \{\}\)/);
+  const syntax = require('typescript');
+  const tree = syntax.createSourceFile('index.ts', code, syntax.ScriptTarget.Latest, true);
+  const teardown = tree.statements.find((node) => syntax.isFunctionDeclaration(node) && node.name?.text === 'teardownPty');
+  const options = teardown?.parameters.find((parameter) => parameter.name.getText(tree) === 'opts');
+  assert.ok(options && syntax.isTypeLiteralNode(options.type), 'teardown has explicit lifecycle options');
+  assert.ok(options.type.members.some((member) => member.name?.getText(tree) === 'keepEntry' && member.questionToken && member.type?.kind === syntax.SyntaxKind.BooleanKeyword), 'keepEntry remains an optional boolean regardless of additional lifecycle options');
   assert.match(code, /if \(hive\.enabled\(\) && !opts\.keepEntry\) \{\s*try \{ hive\.setArchived\(agentId, true\);/);
   const exit = code.slice(code.indexOf('ptyManager.setExitHandler('));
   const watched = exit.indexOf('orchestratorStart.exited(');
@@ -170,7 +175,7 @@ function indexPieces(hive, spawnCore) {
   const js = ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const ptyToAgent = new Map();
   const noop = () => {};
-  const ctx = { module: { exports: {} }, console, hive, ptyToAgent, liveWorkers: new Map(), worktreePaths: new Map(), worktreeOrigins: new Map(),
+  const ctx = { module: { exports: {} }, console, hive, ptyToAgent, ptySignInAccount: new Map(), liveWorkers: new Map(), worktreePaths: new Map(), worktreeOrigins: new Map(),
     paramountOrchestrators: new Set(), integrationBroker: { revoke: noop }, workerWake: { forget: noop }, breaker: { forget: noop },
     telemetry: { forgetAgent: noop }, grokLedgerGate: { forget: noop }, orchestratorStart: createOrchestratorStartWatch(),
     saveLauncherPick: noop, paramountLog: noop, broadcastParamountInvalidation: noop, syncKeepAwake: noop, liveWebContents: () => null, finalizeWorkerWorktree: noop, removeWorktree: async () => ({}), newErrorId: () => 'E-test', setAgentTokenCap: noop, sender: null,

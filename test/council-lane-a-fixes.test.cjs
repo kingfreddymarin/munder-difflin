@@ -144,7 +144,11 @@ test('P2: a spawn discovers at most once, and not at all without a launcher', (t
   assert.equal(g.discoveries(), 1);
   // index.ts: spawnAgentCore hands the resolver the cache, never a fresh discovery, and never validates again.
   const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
-  const core = code.slice(code.indexOf('async function spawnAgentCore'), code.indexOf("ipcMain.handle('paramount:dispatch'"));
+  const syntax = require('typescript');
+  const tree = syntax.createSourceFile('index.ts', code, syntax.ScriptTarget.Latest, true);
+  const declaration = tree.statements.find((node) => syntax.isFunctionDeclaration(node) && node.name?.text === 'spawnAgentCore');
+  assert.ok(declaration, 'the production spawn function exists');
+  const core = declaration.getText(tree);
   assert.equal(core.includes('validateLauncher('), false);
   assert.doesNotMatch(core, /discoverLaunchers(Async)?\(/, 'no direct discovery call (the cache is built with the functions, not their results)');
   assert.match(core, /resolveLauncherForSpawn\([\s\S]*?\}, \(\) => launcherDiscovery\.current\(\)\);/);
