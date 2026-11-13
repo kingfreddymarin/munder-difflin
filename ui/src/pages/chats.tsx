@@ -8,13 +8,15 @@ import { X } from '@/components/animate-ui/icons/x';
 import { AgentAvatar } from '@/components/app/agent-avatar';
 import { AgentSummary } from '@/components/app/agent-summary';
 import { MessageItem } from '@/components/app/message-item';
+import { EngineSignInActions } from '@/components/app/engine-sign-in-actions';
 import { isOpenAsk } from '@/features/home/ask-preview';
 import { roleMeta, statusMeta } from '@/components/app/status';
 import { clock } from '@/components/app/format';
-import { useDispatch, useFloor } from '@/data/store';
+import { useDispatch, useFloor, useTeamApi } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { UPDATE_KINDS, type Agent, type Chat, type Message } from '@/data/types';
+import type { ParamountTeamModels } from '@/data/paramount-api';
 import { Screen } from '@/components/app/screen';
 import { findBridge } from '@/data/bridge';
 
@@ -42,6 +44,7 @@ export function ChatsPage() {
   const agents = useFloor((s) => s.agents);
   const view = useFloor((s) => s.chatView);
   const dispatch = useDispatch();
+  const teamApi = useTeamApi();
   const { route, go } = useRouter();
   const [filter, setFilter] = React.useState<Filter>('all');
   const [q, setQ] = React.useState('');
@@ -102,6 +105,15 @@ export function ChatsPage() {
   const hiddenHere = updates.filter((m) => hideUpdates || hiddenIds.has(m.id)).length;
   const thread = fullThread.filter((m) => !isUpdate(m) || !(hideUpdates || hiddenIds.has(m.id)));
   const focus = chat ? agents.find((a) => a.id === chat.agentIds[0]) : undefined;
+  const [accountModels, setAccountModels] = React.useState<ParamountTeamModels | null>(null);
+  const accountModel = focus ? accountModels?.agents[focus.id] : undefined;
+  React.useEffect(() => {
+    setAccountModels(null);
+    if (!focus || (focus.engine !== 'claude' && focus.engine !== 'codex') || !teamApi) return;
+    let active = true;
+    teamApi.models().then((models) => { if (active) setAccountModels(models); }, () => { if (active) setAccountModels(null); });
+    return () => { active = false; };
+  }, [teamApi, focus?.id, focus?.engine]);
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
@@ -248,6 +260,10 @@ export function ChatsPage() {
         )}
         <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-4">
           <div className="mt-auto" />
+          {chat?.kind === 'agent' && focus?.status === 'crashed' && (focus.engine === 'claude' || focus.engine === 'codex') && accountModel && <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+            <div className="mb-2 flex flex-col gap-1"><span className="text-sm font-medium">{focus.engine === 'codex' ? 'Codex' : 'Claude Code'} unavailable?</span><span className="text-muted-foreground text-xs">Check sign-in for this chat’s account{accountModel.launcher ? ` (${accountModel.launcher?.label})` : ' (provider default)'}. Sign in here if needed; then check again. Restart the agent after access is restored.</span></div>
+            <EngineSignInActions provider={focus.engine} state="unknown" cliAvailable={accountModel.installed} accountId={accountModel.launcher?.id} accountFingerprint={accountModel.launcher?.fingerprint} accountLabel={accountModel.launcher?.label} />
+          </div>}
           {hiddenHere > 0 && (
             <div className="text-muted-foreground flex items-center justify-center gap-2 self-center text-xs">
               {hiddenHere} update{hiddenHere === 1 ? '' : 's'} hidden

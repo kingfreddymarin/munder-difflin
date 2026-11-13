@@ -59,10 +59,20 @@ function profile(id: keyof typeof KNOWN, definition: string, home: string, inher
   const selectedHome = explicitHome ?? (unsetKey ? defaultHome : inheritedHomes[homeKey] || defaultHome);
   const account = selectedHome === defaultHome ? 'Main' : 'Alternate';
   if (!isAbsolute(selectedHome) || /[\0\r\n]/.test(selectedHome)) throw new Error('invalid home');
-  // No arbitrary config/auth/env overrides. Extend deliberately as formats evolve.
-  const permitted = provider === 'claude' ? ['--dangerously-skip-permissions'] : ['--yolo', '--dangerously-bypass-approvals-and-sandbox'];
-  if (tokens.some((arg) => !permitted.includes(arg))) throw new Error('unsupported launcher arguments');
-  return { id, provider, label: `${id} · ${account}`, fingerprint: createHash('sha256').update(definition).update(home).update(selectedHome).digest('hex'), unrestricted: tokens.length > 0, bin, args: tokens, home: selectedHome };
+  // No arbitrary config/auth/env overrides. These channel arguments are the
+  // exact owner-approved Claude Telegram plugin flag; they do not change the
+  // CLI's permission or sandbox mode.
+  const args: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const arg = tokens[i];
+    if (provider === 'claude' && arg === '--dangerously-skip-permissions') { args.push(arg); continue; }
+    if (provider === 'claude' && arg === '--channels' && tokens[i + 1] === 'plugin:telegram@claude-plugins-official') {
+      args.push(arg, tokens[++i]); continue;
+    }
+    if (provider === 'codex' && ['--yolo', '--dangerously-bypass-approvals-and-sandbox'].includes(arg)) { args.push(arg); continue; }
+    throw new Error('unsupported launcher arguments');
+  }
+  return { id, provider, label: `${id} · ${account}`, fingerprint: createHash('sha256').update(definition).update(home).update(selectedHome).digest('hex'), unrestricted: args.some((arg) => ['--dangerously-skip-permissions', '--yolo', '--dangerously-bypass-approvals-and-sandbox'].includes(arg)), bin, args, home: selectedHome };
 }
 
 export function discoverLaunchers(): Discovery { return discoverShellLaunchers(); }

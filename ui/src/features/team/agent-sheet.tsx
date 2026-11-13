@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { AgentSummary } from '@/components/app/agent-summary';
+import { EngineSignInActions } from '@/components/app/engine-sign-in-actions';
 import { clock } from '@/components/app/format';
 import { accent } from '@/components/app/status';
 import { UnsupportedReason } from '@/components/app/error-notice';
@@ -25,7 +26,6 @@ import type { Agent } from '@/data/types';
 import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
-import { EngineSignInActions } from '@/components/app/engine-sign-in-actions';
 
 // Choices offered for tone and autonomy when the provider stores them (the sample data does; the core does not yet).
 const tones = ['Concise', 'Detailed', 'Friendly', 'Formal'];
@@ -140,7 +140,7 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
                   {agentSignIn && agentSignIn.state !== 'ready' && agentSignIn.signInProvider && <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
                     <p className="mb-2 text-sm font-medium">{agentSignIn.state === 'unknown' ? `Sign-in status for ${agentSignIn.signInAccountLabel ?? engineId} is unknown` : `${agent.name} needs to sign in to ${agentSignIn.signInAccountLabel ?? engineId}`}</p>
                     <p className="text-muted-foreground mb-2 text-xs">This action uses the exact account selected for this agent. Sign-in stays in the provider CLI; refresh confirms recovery without restarting Paramount.</p>
-                    <EngineSignInActions provider={agentSignIn.signInProvider} state={agentSignIn.state} accountId={agentSignIn.signInAccountId} accountFingerprint={agentSignIn.signInAccountFingerprint} accountLabel={agentSignIn.signInAccountLabel} />
+                    <EngineSignInActions provider={agentSignIn.signInProvider} state={agentSignIn.state} cliAvailable={models?.agents[agent.id]?.installed ?? true} accountId={agentSignIn.signInAccountId} accountFingerprint={agentSignIn.signInAccountFingerprint} accountLabel={agentSignIn.signInAccountLabel} />
                   </div>}
                   <LauncherSettings agentId={agent.id} provider={engineId} scope={agent.id === models?.orchestratorId || agent.id === 'god' ? 'orchestrator' : 'agent'} />
                   <div className="mt-3 flex gap-2">

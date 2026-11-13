@@ -759,6 +759,8 @@ const api = {
     ipcRenderer.invoke('engine-signin:start', { provider, accountId, accountFingerprint }),
   refreshEngineSignIn: (provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string) =>
     ipcRenderer.invoke('engine-signin:refresh', { provider, accountId, accountFingerprint }),
+  prepareClaudeTelegramChannels: () => ipcRenderer.invoke('claude-channel:prepare'),
+  applyClaudeTelegramChannels: (planId: string) => ipcRenderer.invoke('claude-channel:apply', { planId }),
   onParamountEvent: (cb: (event: ParamountUpdate) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, event: ParamountUpdate) => cb(event);
     ipcRenderer.on('paramount:event', listener);

@@ -1,4 +1,5 @@
 // The prerequisites this machine needs. Used by the first-run setup dialog and Settings › Setup.
+import * as React from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { CopyButton } from '@/components/animate-ui/components/buttons/copy';
@@ -43,9 +44,53 @@ function Row({ p, featured }: { p: Prerequisite; featured?: boolean }) {
         </div>
       )}
       {p.signInProvider && <EngineSignInActions provider={p.signInProvider} state={p.state} accountId={p.signInAccountId} accountFingerprint={p.signInAccountFingerprint} accountLabel={p.signInAccountLabel} />}
+      {p.id === 'claude-cli' && p.state === 'ready' && <ClaudeTelegramChannelAction />}
       <UnsupportedReason reason={!p.signInProvider && p.state !== 'ready' ? reason : null} />
     </div>
   );
+}
+
+function ClaudeTelegramChannelAction() {
+  const [plan, setPlan] = React.useState<{ id: string; changed: string[] } | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [message, setMessage] = React.useState('');
+  const [error, setError] = React.useState('');
+  const prepare = async () => {
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const result = await window.paramount?.prepareClaudeTelegramChannels();
+      if (!result) throw new Error('This desktop build cannot prepare a scoped launcher update.');
+      if (result.canceled) return;
+      if (!result.ok) throw new Error(result.error ?? 'Could not prepare the launcher update.');
+      if (result.alreadyConfigured) { setMessage('Claude, dc and dcm already include the Telegram channel.'); return; }
+      if (!result.planId || !result.changed) throw new Error('The prepared change is incomplete.');
+      setPlan({ id: result.planId, changed: result.changed });
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not prepare the launcher update.'); }
+    finally { setBusy(false); }
+  };
+  const apply = async () => {
+    if (!plan) return;
+    setBusy(true); setError('');
+    try {
+      const result = await window.paramount?.applyClaudeTelegramChannels(plan.id);
+      if (!result) throw new Error('This desktop build cannot apply the launcher update.');
+      if (!result.ok) throw new Error(result.error ?? 'The launcher update failed.');
+      setMessage(`Updated ${result.changed?.join(', ')} in ${result.target}; backup saved to ${result.backup}.`);
+      setPlan(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not apply the launcher update.'); }
+    finally { setBusy(false); }
+  };
+  return <div className="flex flex-col gap-2 rounded border border-dashed p-2">
+    <p className="text-muted-foreground text-xs">Add the official Telegram channel to the Claude, dc and dcm launchers. Paramount opens access to <code>~/.minion-aliases.sh</code> only for this change, checks the shell syntax, saves a backup and verifies the write.</p>
+    {!plan && <Button size="sm" variant="outline" className="self-start" disabled={busy} onClick={() => void prepare()}>{busy ? 'Preparing…' : 'Review Telegram launcher update'}</Button>}
+    {plan && <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Review Claude channel update">
+      <span className="text-xs">Proposed file: <code>~/.minion-aliases.sh</code> · aliases: {plan.changed.join(', ')}</span>
+      <Button size="sm" disabled={busy} onClick={() => void apply()}>{busy ? 'Applying…' : 'Apply reviewed change'}</Button>
+      <Button size="sm" variant="ghost" disabled={busy} onClick={() => setPlan(null)}>Cancel</Button>
+    </div>}
+    {message && <p role="status" className="text-xs">{message}</p>}
+    {error && <p role="alert" className="text-destructive text-xs">{error}</p>}
+  </div>;
 }
 
 export function PrereqList({ compact }: { compact?: boolean }) {

@@ -5,6 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const loadTs = require('./load-ts.cjs');
 const { createSignInMonitor, signInFailure, STATUS_TTL_MS } = loadTs('src/main/engine-signin.ts');
 const tick = () => new Promise(setImmediate);
@@ -67,8 +68,27 @@ test('Codex status and expired-token findings stay scoped to the selected accoun
   assert.doesNotMatch(JSON.stringify(runs), /token|credential/i);
 });
 
+test('Check again clears stale account expiry without restarting and keeps provider defaults scoped', async () => {
+  const runs = [];
+  const m = createSignInMonitor({ path: () => '/bin/codex', run: async (_bin, _args, _timeout, env) => {
+    runs.push({ home: env?.CODEX_HOME, key: env?.OPENAI_API_KEY });
+    return { code: 0 };
+  } });
+  const account = { id: 'dcx', label: 'dcx · Main', home: '/fixture/dcx', bin: '/bin/codex' };
+  m.agentExited('codex', 'refresh token was revoked', account);
+  assert.equal(m.status('codex', account).state, 'expired');
+  const refreshed = await m.refresh('codex', account);
+  assert.equal(refreshed.state, 'signed-in');
+  assert.equal(refreshed.accountId, 'dcx');
+  await m.refresh('codex');
+  assert.equal(runs[0].home, '/fixture/dcx');
+  assert.equal(runs.at(-1).home, path.join(os.homedir(), '.codex'));
+  assert.ok(runs.every((run) => run.key === undefined));
+});
+
 test('index.ts wires exits and the snapshot to the monitor', () => {
   const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
   assert.match(code, /engineSignIn\.agentExited\(String\(hive\.registry\(\)\.agents\[dyingAgent\]\?\.provider \?\? 'claude'\), info\?\.tail, ptySignInAccount\.get\(id\)\)/);
   assert.match(code, /engineSignIn\.status\(profile\.provider as 'claude' \| 'codex', profile\)/);
+  assert.match(code, /ipcMain\.handle\('engine-signin:refresh'[\s\S]+engineSignIn\.refresh\(provider, account \?\? undefined\)/);
 });

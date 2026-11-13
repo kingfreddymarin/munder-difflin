@@ -8,6 +8,8 @@
 // Each result names the exact fix. Exit 0 means signed in; any other exit means signed out; a
 // timeout or a spawn error is "unknown" and is not flagged.
 import { execFile } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { LAUNCHER_AUTH_ENV } from './council-account-launchers';
 
 export type SignInEngine = 'claude' | 'codex';
@@ -45,10 +47,9 @@ export function createSignInMonitor(opts: { path: (engine: SignInEngine) => stri
   const pending = new Map<string, Promise<void>>();
   const expired = new Map<string, string>();
   const environment = (engine: SignInEngine, account?: SignInAccount): NodeJS.ProcessEnv | undefined => {
-    if (!account) return undefined;
     const env = { ...process.env };
     for (const name of LAUNCHER_AUTH_ENV) delete env[name];
-    env[engine === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'] = account.home;
+    env[engine === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'] = account?.home ?? join(homedir(), engine === 'codex' ? '.codex' : '.claude');
     return env;
   };
   const probe = (engine: SignInEngine, account?: SignInAccount): void => {

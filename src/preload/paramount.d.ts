@@ -202,6 +202,8 @@ export interface ParamountPreloadAPI {
   startEngineSignIn(provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string): Promise<{ ok: boolean; ptyId?: string; cwd?: string; error?: string }>;
   /** Forces an account-scoped CLI status check without restarting the app. */
   refreshEngineSignIn(provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string): Promise<{ ok: boolean; status?: ParamountSignInState; error?: string }>;
+  prepareClaudeTelegramChannels(): Promise<{ ok: boolean; canceled?: boolean; alreadyConfigured?: boolean; planId?: string; target?: string; changed?: string[]; error?: string }>;
+  applyClaudeTelegramChannels(planId: string): Promise<{ ok: boolean; target?: string; backup?: string; changed?: string[]; error?: string }>;
   onParamountEvent(cb: (event: ParamountUpdate) => void): () => void;
   hiveSend(msg: { to: string; act: 'request' | 'inform' | 'propose' | 'query' | 'agree' | 'refuse' | 'done'; subject: string; body: string }, from?: string): Promise<{ ok: boolean; error?: string; message?: unknown }>;
   hivePatchTask(id: string, patch: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
@@ -343,7 +345,7 @@ export interface ParamountTeamModels {
   launchers?: CouncilLauncherDiscovery;
   launcherState?: CouncilLauncherState;
   /** Model chosen per agent in Paramount; an agent missing here runs the default. */
-  agents: Record<string, { engine: string; model?: string }>;
+  agents: Record<string, { engine: string; model?: string; installed: boolean; launcher?: { id: string; fingerprint: string; label: string } }>;
 }
 export interface ParamountOrganization { version: 1; teams: Array<{ id: string; name: string; leadId: string; memberIds: string[] }>; reportsTo: Record<string, string> }
 export interface ParamountHirePlan {

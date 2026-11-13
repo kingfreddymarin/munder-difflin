@@ -61,6 +61,22 @@ test('selection rejects removed/changed launchers, mismatched provider and unack
   f.write(['dcm']); fs.writeFileSync(f.file, defs.dcm.replace('.claude-minion', '.claude-new')); 
   assert.throws(() => account.validateLauncher(p, 'claude', f.discover()), /changed/);
 });
+test('Claude Telegram channel flag is accepted exactly and does not grant unrestricted execution', (t) => {
+  const f = fixture(t, ['dc']);
+  const channel = 'plugin:telegram@claude-plugins-official';
+  fs.writeFileSync(f.file, `function dc() {\n unset CLAUDE_CONFIG_DIR\n command claude --channels ${channel} "$@"\n}`);
+  const discovery = f.discover();
+  assert.equal(discovery.status, 'ok');
+  const profile = discovery.profiles[0];
+  assert.deepEqual(profile.args, ['--channels', channel]);
+  assert.equal(profile.unrestricted, false);
+  assert.equal(account.validateLauncher({ id: profile.id, fingerprint: profile.fingerprint }, 'claude', discovery).unrestricted, false);
+
+  for (const value of ['plugin:other@claude-plugins-official', 'plugin:telegram@attacker', '--dangerously-bypass-approvals-and-sandbox']) {
+    fs.writeFileSync(f.file, `function dc() {\n command claude --channels ${value} "$@"\n}`);
+    assert.equal(f.discover().status, 'failed', value);
+  }
+});
 for (const id of Object.keys(defs)) test(`${id}: fake executable records exact argv and isolated account home`, (t) => {
   const f = fixture(t); const pick = f.pick(id);
   const provider = id.startsWith('dcx') ? 'codex' : 'claude';
@@ -118,6 +134,15 @@ function teamFixture(f) {
   } };
   return { deps, launched, events, run: (cmd) => dispatchParamount(cmd, deps) };
 }
+test('team models expose only the selected account identity needed for inline sign-in recovery', (t) => {
+  const f = fixture(t); const team = teamFixture(f);
+  const pick = f.pick('dcm');
+  account.saveLauncherPick(f.root, 'agent', pick, 'jim');
+  const result = team.run({ type: 'team.models' });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.models.agents.jim.launcher, { id: 'dcm', fingerprint: pick.fingerprint, label: 'dcm · Alternate' });
+  assert.doesNotMatch(JSON.stringify(result.models), /accountHome|token|credential/i);
+});
 test('hire boundary validates profile/model, passes selection into real spawn adapter, and revalidates confirmation', async (t) => {
   const f = fixture(t); const team = teamFixture(f);
   const launcher = f.pick('dcm'); const cmd = { type: 'agent.hire', manifest: { spec: 'munder-difflin/hire@1', name: 'Fixture', provider: 'claude', model: 'claude-fixture' }, launcher };

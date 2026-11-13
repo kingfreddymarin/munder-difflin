@@ -4,8 +4,8 @@ import { PtyTerminalView } from '@/components/app/terminal/pty-terminal-view';
 import { useTeamApi } from '@/data/store';
 import type { PrereqState } from '@/data/types';
 
-export function EngineSignInActions({ provider, state, accountId, accountFingerprint, accountLabel }: {
-  provider: 'claude' | 'codex'; state: PrereqState; accountId?: string; accountFingerprint?: string; accountLabel?: string;
+export function EngineSignInActions({ provider, state, accountId, accountFingerprint, accountLabel, cliAvailable = true }: {
+  provider: 'claude' | 'codex'; state: PrereqState; accountId?: string; accountFingerprint?: string; accountLabel?: string; cliAvailable?: boolean;
 }) {
   const api = useTeamApi();
   const [terminal, setTerminal] = React.useState<{ ptyId: string; cwd: string } | null>(null);
@@ -22,6 +22,7 @@ export function EngineSignInActions({ provider, state, accountId, accountFingerp
   }, [terminal?.ptyId]);
 
   const checkAgain = async () => {
+    if (!cliAvailable) { setError(`${provider} CLI is missing. Install it from Settings › Setup, then check again.`); return; }
     if (!api?.refreshEngineSignIn) { setError('Account status refresh is unavailable in this build.'); return; }
     setChecking(true); setError(''); setMessage('');
     try {
@@ -34,6 +35,7 @@ export function EngineSignInActions({ provider, state, accountId, accountFingerp
   };
 
   const startSignIn = async () => {
+    if (!cliAvailable) { setError(`${provider} CLI is missing. Install it from Settings › Setup before signing in.`); return; }
     if (!api?.startEngineSignIn) { setError('Sign-in is unavailable in this build.'); return; }
     setError(''); setMessage('');
     try { setTerminal(await api.startEngineSignIn(provider, accountId, accountFingerprint)); }
@@ -48,11 +50,12 @@ export function EngineSignInActions({ provider, state, accountId, accountFingerp
   };
 
   return <div className="flex flex-col gap-2">
-    <div className="flex flex-wrap items-center gap-2">
+    {cliAvailable && <div className="flex flex-wrap items-center gap-2">
       {signInAllowed && <Button size="sm" onClick={() => void startSignIn()} disabled={!!terminal}>Sign in{accountLabel ? ` · ${accountLabel}` : ''}</Button>}
       {current !== 'ready' && <Button size="sm" variant="outline" onClick={() => void checkAgain()} disabled={checking}>{checking ? 'Checking…' : 'Check again'}</Button>}
       {terminal && <Button size="sm" variant="outline" onClick={() => void stop()}>Stop sign-in</Button>}
-    </div>
+    </div>}
+    {!cliAvailable && <p className="text-muted-foreground text-xs" role="status">The {provider} command is missing. Install it in Settings › Setup, then return and check again.</p>}
     {message && <p className="text-muted-foreground text-xs" role="status">{message}</p>}
     {error && <p className="text-destructive text-xs" role="alert">{error}</p>}
     {terminal && <div className="h-64 overflow-hidden rounded-lg border"><PtyTerminalView ptyId={terminal.ptyId} cwd={terminal.cwd} label={`${accountLabel ?? provider} sign-in terminal`} /></div>}

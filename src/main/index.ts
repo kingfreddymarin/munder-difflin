@@ -5,10 +5,10 @@ import { bootFloorPlan, dataFolderRefusal, floorDataDirFor, floorSpawnPlan, move
 import { resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync, appendFileSync,
-  unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync, lstatSync,
+  unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync, lstatSync, chmodSync,
   readlinkSync, symlinkSync
 } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
@@ -32,6 +32,7 @@ import { defaultMunderHive, type AgentSourceRoots } from './agentSources';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
 import { createOrchestratorStartWatch } from './orchestrator-start';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
+import { prepareClaudeTelegramChannel, type ClaudeChannelPlan } from './claude-channel-recovery';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
@@ -3729,6 +3730,57 @@ ipcMain.handle('engine-signin:refresh', async (_event, input: unknown) => {
   const status = await engineSignIn.refresh(provider, account ?? undefined);
   broadcastParamountInvalidation('engine-signin');
   return { ok: true, status };
+});
+// The file picker is a one-file access grant for this narrowly scoped update;
+// no home-wide permission or persistent bookmark is saved.
+const pendingClaudeChannelPlans = new Map<string, { path: string; plan: ClaudeChannelPlan; mode: number; expiresAt: number }>();
+const claudeChannelTarget = join(homedir(), '.minion-aliases.sh');
+const syntaxCheckClaudeAliases = (text: string): boolean => {
+  const result = spawnSync('/bin/zsh', ['-n'], { input: text, encoding: 'utf8', timeout: 2000, windowsHide: true });
+  return result.status === 0 && !result.error;
+};
+ipcMain.handle('claude-channel:prepare', async () => {
+  const selected = await dialog.showOpenDialog({ title: 'Choose the Claude launcher file to update', defaultPath: claudeChannelTarget,
+    filters: [{ name: 'Claude launcher file', extensions: ['sh'] }], properties: ['openFile'] });
+  if (selected.canceled || selected.filePaths.length !== 1) return { ok: false, canceled: true };
+  const target = selected.filePaths[0];
+  if (target !== claudeChannelTarget) return { ok: false, error: 'Choose ~/.minion-aliases.sh so Paramount changes only the documented Claude launcher file.' };
+  try {
+    const info = lstatSync(target);
+    if (!info.isFile() || info.isSymbolicLink()) return { ok: false, error: 'The selected launcher file must be a regular file, not a link.' };
+    const plan = prepareClaudeTelegramChannel(readFileSync(target, 'utf8'), syntaxCheckClaudeAliases);
+    if (!plan.changed.length) return { ok: true, alreadyConfigured: true, target: '~/.minion-aliases.sh' };
+    const planId = randomBytes(24).toString('hex');
+    pendingClaudeChannelPlans.set(planId, { path: target, plan, mode: info.mode & 0o777, expiresAt: Date.now() + 5 * 60_000 });
+    return { ok: true, planId, target: '~/.minion-aliases.sh', changed: plan.changed };
+  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Could not prepare the launcher update.' }; }
+});
+ipcMain.handle('claude-channel:apply', (_event, input: unknown) => {
+  const planId = input && typeof input === 'object' ? (input as { planId?: unknown }).planId : undefined;
+  if (typeof planId !== 'string' || !/^[a-f0-9]{48}$/.test(planId)) return { ok: false, error: 'The prepared update is invalid; prepare it again.' };
+  const prepared = pendingClaudeChannelPlans.get(planId);
+  pendingClaudeChannelPlans.delete(planId);
+  if (!prepared || prepared.expiresAt < Date.now() || prepared.path !== claudeChannelTarget) return { ok: false, error: 'The prepared update expired; prepare it again.' };
+  const { path: target, plan, mode } = prepared;
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  let temporary: string | undefined;
+  try {
+    const info = lstatSync(target);
+    if (!info.isFile() || info.isSymbolicLink() || hash(readFileSync(target, 'utf8')) !== plan.sha256) return { ok: false, error: 'The launcher file changed after review. No changes were made; prepare it again.' };
+    if (!syntaxCheckClaudeAliases(plan.updated)) return { ok: false, error: 'The shell syntax check failed; no changes were made.' };
+    const backup = `${target}.backup-${new Date().toISOString().replace(/[-:.]/g, '')}-${randomBytes(3).toString('hex')}`;
+    copyFileSync(target, backup); chmodSync(backup, mode);
+    if (hash(readFileSync(target, 'utf8')) !== plan.sha256) return { ok: false, error: `The launcher changed during backup. No changes were made; backup saved as ${basename(backup)}.` };
+    temporary = join(dirname(target), `.minion-aliases-${randomBytes(8).toString('hex')}.tmp`);
+    writeFileSync(temporary, plan.updated, { encoding: 'utf8', mode }); chmodSync(temporary, mode);
+    renameSync(temporary, target); temporary = undefined;
+    if (hash(readFileSync(target, 'utf8')) !== hash(plan.updated) || !syntaxCheckClaudeAliases(readFileSync(target, 'utf8'))) {
+      copyFileSync(backup, target); chmodSync(target, mode);
+      return { ok: false, error: `Verification failed; the original file was restored from ${basename(backup)}.` };
+    }
+    return { ok: true, target: '~/.minion-aliases.sh', backup: `~/${basename(backup)}`, changed: plan.changed };
+  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Could not safely update the launcher file.' }; }
+  finally { if (temporary) try { unlinkSync(temporary); } catch { /* already removed */ } }
 });
 /** Async probe of a startable service's port, so a daemon started outside the app is
  *  seen. The result is logged under the caller's correlation id. */

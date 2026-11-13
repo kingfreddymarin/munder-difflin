@@ -405,7 +405,15 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         const agents: ParamountTeamModels['agents'] = {};
         for (const [id, raw] of Object.entries(registry)) {
           const engine = object(raw) && typeof raw.provider === 'string' ? raw.provider : 'claude';
-          agents[id] = picks[id] && picks[id].engine === engine ? picks[id] : { engine };
+          const selected = picks[id] && picks[id].engine === engine ? picks[id] : { engine };
+          let launcher: { id: string; fingerprint: string; label: string } | undefined;
+          let selectedProfile: ReturnType<NonNullable<ParamountTeamDeps['launcherDiscovery']>>['profiles'][number] | undefined;
+          try {
+            const pick = runtimeLauncher(team.hiveRoot(), id, id === team.orchestratorId(), false, undefined, engine, false);
+            const profile = pick && team.launcherDiscovery?.().profiles.find((entry) => entry.id === pick.id && entry.fingerprint === pick.fingerprint && entry.provider === engine);
+            if (profile) { selectedProfile = profile; launcher = { id: profile.id, fingerprint: profile.fingerprint, label: profile.label }; }
+          } catch { /* Account recovery remains available through provider default. */ }
+          agents[id] = { ...selected, installed: team.commandAvailable(selectedProfile?.bin ?? engine), ...(launcher ? { launcher } : {}) };
         }
         let launchers = publicDiscovery(team.launcherDiscovery?.());
         let launcherState;
