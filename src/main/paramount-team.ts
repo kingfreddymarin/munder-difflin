@@ -1,5 +1,5 @@
 import { resolveAgentModel } from './paramount-models';
-import { discoverLaunchers, publicDiscovery, launcherDisplayCommand, validateLauncher, readLauncherState, displayLauncherState, runtimeLauncher, saveLauncherPick, type LauncherPick } from './council-account-launchers';
+import { discoverLaunchers, publicDiscovery, launcherDisplayCommand, validateLauncher, readLauncherState, displayLauncherState, runtimeLauncher, saveLauncherPick, type LauncherPick, launcherForProvider, launcherProvider } from './council-account-launchers';
 // Paramount Team screen commands (lane d-team): new cards, per-agent models and
 // the Add-Agent hire form. dispatchParamount hands these over in one line; every
 // failure goes through the same span, so it carries an errorId and a code.
@@ -112,6 +112,20 @@ export function orchestratorEngine(team: Pick<ParamountTeamDeps, 'orchestratorPr
     ...(typeof raw.name === 'string' && raw.name ? { name: raw.name } : {}),
     ...(typeof raw.role === 'string' && raw.role.trim() ? { role: raw.role } : {}),
   };
+}
+
+/** An engine's display name ("Claude Code"), or its id when the catalog does not list it. */
+function engineLabel(engines: Array<{ id: string; label: string }>, id: string): string {
+  return engines.find((e) => e.id === id)?.label ?? id;
+}
+/** The orchestrator this floor starts: the registered god when there is one (its recorded engine,
+ *  model, name and role), else the configured engine for a NEW orchestrator. The one source the
+ *  hire sheet, Settings, orchestrator.ensure and agent.hire all use (owner run of ceeb4aaf: the
+ *  sheet used the configured codex while the backend kept the registered claude god). */
+export function currentOrchestrator(team: Pick<ParamountTeamDeps, 'orchestratorProvider' | 'orchestratorModel' | 'hiveRoot' | 'orchestratorId'>, agents: Record<string, unknown>): { id?: string; provider: ReturnType<typeof normalizeAgentProvider>; model?: string } {
+  const id = team.orchestratorId() ?? Object.entries(agents).find(([, a]) => object(a) && a.isGod === true)?.[0];
+  const engine = orchestratorEngine(team, id ? agents[id] : undefined, id);
+  return { ...(id ? { id } : {}), provider: engine.provider, ...(engine.model ? { model: engine.model } : {}) };
 }
 
 export function isTeamCommand(command: Record<string, unknown>): boolean {
@@ -244,7 +258,8 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (liveId && team.hasLivePty(liveId)) { state.failure = undefined; return done({}); }
         // Not latched and not counted: once the other process quits, the next ensure starts it.
         if (team.claimFloor && !team.claimFloor()) return fail('CONFLICT', OTHER_RUNTIME);
-        if (state.failure) return state.failure;
+        // The same failure again, with its own error id (each attempt is its own diagnostic).
+        if (state.failure && !state.failure.ok) return fail(state.failure.code, state.failure.message);
         const startFailure = team.orchestratorStartFailure?.();
         if (startFailure) return fail('CONFLICT', startFailure.message);
         if (state.starts >= 2) {
@@ -321,10 +336,12 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         const raw = typeof id === 'string' ? deps.agents()[id] : undefined;
         if (command.scope === 'agent' && !object(raw)) return fail('NOT_FOUND', 'Agent not found');
         if (command.launcher !== null) {
-          const provider = command.scope === 'default' ? String(command.provider ?? '') : command.scope === 'agent' && object(raw) ? String(raw.provider ?? 'claude') : command.scope === 'orchestrator' ? team.orchestratorProvider() ?? 'claude' : publicDiscovery(team.launcherDiscovery?.()).choices.find((c) => c.id === (command.launcher as LauncherPick)?.id)?.provider ?? '';
+          const provider = command.scope === 'default' ? String(command.provider ?? '') : command.scope === 'agent' && object(raw) ? String(raw.provider ?? 'claude') : command.scope === 'orchestrator' ? currentOrchestrator(team, deps.agents()).provider ?? 'claude' : publicDiscovery(team.launcherDiscovery?.()).choices.find((c) => c.id === (command.launcher as LauncherPick)?.id)?.provider ?? '';
           try { validateLauncher(command.launcher, provider, team.launcherDiscovery?.()); } catch (e) { return fail('INVALID_INPUT', e instanceof Error ? e.message : 'Invalid launcher'); }
         }
         writeAttempted = true;
+        // A changed launcher can be what an automatic start failed on: let the next ensure try again.
+        automaticOrchestrators.delete(root);
         saveLauncherPick(root, command.scope === 'agent' && (object(raw) && raw.isGod === true || id === team.orchestratorId()) ? 'orchestrator' : command.scope as 'orchestrator' | 'temps' | 'agent' | 'default', command.launcher as LauncherPick | null, command.scope === 'default' ? String(command.provider ?? '') : typeof id === 'string' ? id : undefined);
         return done({});
       }
@@ -342,15 +359,26 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         let launcherState;
         try { launcherState = displayLauncherState(readLauncherState(team.hiveRoot())); }
         catch { launchers = { status: 'failed', choices: [], message: 'Council launcher settings are unreadable or unsupported. Provider defaults remain available; repair the extension file before restoring saved selections.' }; }
-        const orchestratorModel = resolveAgentModel(team.orchestratorProvider() ?? 'claude', [team.orchestratorModel()], (engine) => engines.find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
+        const current = currentOrchestrator(team, registry);
+        const orchestratorProvider = current.provider ?? 'claude';
+        const orchestratorModel = resolveAgentModel(orchestratorProvider, [current.model], (engine) => engines.find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
+        const configured = team.orchestratorProvider() ?? 'claude';
+        let orchestratorLauncherNote: string | undefined;
+        try {
+          const saved = readLauncherState(team.hiveRoot()).orchestrator;
+          const runs = launcherProvider(saved, team.launcherDiscovery?.());
+          if (saved && runs && runs !== orchestratorProvider) orchestratorLauncherNote = `The saved orchestrator launcher ${saved.id} runs ${engineLabel(engines, runs)}, but this floor's orchestrator runs ${engineLabel(engines, orchestratorProvider)}. It is ignored and ${engineLabel(engines, orchestratorProvider)}'s default account is used; choose a ${engineLabel(engines, orchestratorProvider)} launcher or Provider default to clear this.`;
+        } catch { /* reported through launchers above */ }
         return done({ models: {
           engines,
           launchers,
           ...(launcherState ? { launcherState } : {}),
           ...(team.defaultModel() ? { defaultModel: team.defaultModel() } : {}),
           ...(team.orchestratorId() ? { orchestratorId: team.orchestratorId() } : {}),
-          orchestratorProvider: team.orchestratorProvider() ?? 'claude',
+          orchestratorProvider,
+          ...(configured !== orchestratorProvider ? { orchestratorConfiguredProvider: configured } : {}),
           ...(orchestratorModel ? { orchestratorModel } : {}),
+          ...(orchestratorLauncherNote ? { orchestratorLauncherNote } : {}),
           agents
         } });
       }
@@ -420,13 +448,26 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
             if (!flagModel || !resolveAgentModel(provider, [flagModel], offered)) return fail('INVALID_INPUT', 'Pick a model supported by this provider');
           } else flags.push(flag);
         }
-        if (manifest.model && (!resolveAgentModel(provider, [manifest.model], offered) || flagModel && flagModel !== manifest.model)) return fail('INVALID_INPUT', 'Pick one model supported by this provider');
-        const model = resolveAgentModel(provider, [flagModel, manifest.model, recorded ? recorded.model : team.defaultModel()], offered);
+        if (flagModel && manifest.model && flagModel !== manifest.model) return fail('INVALID_INPUT', 'Pick one model supported by this provider');
+        const engines = teamModels(team.modelCatalog(), team.appVersion);
+        const notes: string[] = [];
+        // The orchestrator's model comes from saved settings: one for another engine falls back to this
+        // engine's default (owner run of ceeb4aaf: a Codex model sent for the Claude god failed every
+        // start). For any other hire an explicit cross-engine model is still refused (review row 16).
+        if (!isGod && manifest.model && !resolveAgentModel(provider, [manifest.model], offered)) return fail('INVALID_INPUT', 'Pick one model supported by this provider');
+        const manifestModel = manifest.model && !resolveAgentModel(provider, [manifest.model], offered) ? undefined : manifest.model;
+        if (manifest.model && !manifestModel) notes.push(`${manifest.model} is not a ${engineLabel(engines, provider)} model; ${engineLabel(engines, provider)}'s default is used.`);
+        const model = resolveAgentModel(provider, [flagModel, manifestModel, recorded ? recorded.model : team.defaultModel()], offered);
         let launcherPick: LauncherPick | null | undefined;
         let profile;
         try {
-          launcherPick = command.launcher === undefined ? runtimeLauncher(team.hiveRoot(), undefined, isGod, false, undefined, provider, true) : command.launcher as LauncherPick | null;
-          if (launcherPick !== undefined && launcherPick !== null) profile = validateLauncher(launcherPick, provider, team.launcherDiscovery?.()); }
+          const discovery = team.launcherDiscovery?.();
+          const wanted = command.launcher === undefined ? runtimeLauncher(team.hiveRoot(), undefined, isGod, false, undefined, provider, true) : command.launcher as LauncherPick | null;
+          // A launcher for another engine (saved, or preselected by the form) is ignored with a note.
+          const fitted = wanted === undefined ? undefined : launcherForProvider(team.hiveRoot(), wanted, provider, discovery);
+          if (fitted?.ignored) notes.push(`Launcher ${fitted.ignored.id} runs ${engineLabel(engines, fitted.ignored.provider)}, not ${engineLabel(engines, provider)}; ${fitted.pick ? `${engineLabel(engines, provider)}'s default launcher ${fitted.pick.id}` : `${engineLabel(engines, provider)}'s default account`} is used.`);
+          launcherPick = fitted === undefined ? undefined : fitted.pick;
+          if (launcherPick !== undefined && launcherPick !== null) profile = validateLauncher(launcherPick, provider, discovery); }
         catch (e) { return fail('INVALID_INPUT', e instanceof Error ? e.message : 'Invalid launcher'); }
         if (profile && model && !teamModels(team.modelCatalog(), team.appVersion).find((e) => e.id === provider)?.models.some((m) => m.id === model)) return fail('INVALID_INPUT', 'Pick a model supported by this provider');
         if (profile && rawFlags.length) return fail('INVALID_INPUT', 'Account launcher hires do not accept extra command flags');
@@ -447,6 +488,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           command: profile ? launcherDisplayCommand([profile.bin, ...profile.args, ...args].join(' ')) : [launch.bin, ...args].join(' '), engineInstalled: team.commandAvailable(profile?.bin ?? launch.bin),
           confirmed: command.confirm === true, consentRequired: check.consentRequired ?? [],
           ignored: IGNORED_FIELDS.filter((f) => manifest[f] !== undefined && !(Array.isArray(manifest[f]) && (manifest[f] as unknown[]).length === 0)),
+          ...(notes.length ? { notes } : {}),
         };
         deps.logStep?.({ kind: 'paramount-hire', cid: span.cid, step: plan.confirmed ? 'confirmed' : 'plan', agentId, engine: provider, command: plan.command, cwd });
         if (!plan.confirmed) return done({ hire: plan });

@@ -88,7 +88,8 @@ test('orchestrator, agent restore and temp defaults persist independently, no re
   assert.equal(resolve({ agentId: 'god', isGod: true }).id, 'dcm');
   assert.equal(resolve({ agentId: 'jim' }).id, 'dc');
   assert.equal(resolve({ agentId: 'worker-1', isTemp: true, provider: 'codex' }).id, 'dcxm');
-  assert.throws(() => resolve({ agentId: 'worker-1', isTemp: true, provider: 'claude' }), /provider/);
+  // A saved pick for another engine is ignored: that engine's default account (owner run of ceeb4aaf).
+  assert.equal(resolve({ agentId: 'worker-1', isTemp: true, provider: 'claude' }), undefined);
   assert.equal(resolve({ agentId: 'ordinary' }), undefined);
   assert.equal(resolve({ isGod: true, explicit: null }), undefined);
   assert.equal(fs.existsSync(path.join(f.root, 'registry.json')), false);
@@ -122,8 +123,11 @@ test('hire boundary validates profile/model, passes selection into real spawn ad
   const launcher = f.pick('dcm'); const cmd = { type: 'agent.hire', manifest: { spec: 'munder-difflin/hire@1', name: 'Fixture', provider: 'claude', model: 'claude-fixture' }, launcher };
   const preview = await team.run(cmd); assert.equal(preview.ok, true); assert.match(preview.hire.launcher, /dcm/); assert.equal(team.launched.length, 0);
   const started = await team.run({ ...cmd, confirm: true }); assert.equal(started.ok, true); assert.deepEqual(team.launched[0].launcher, launcher);
+  // A launcher for another engine falls back to this engine's default, with a note (owner run of ceeb4aaf).
+  // An explicit cross-engine model on an ordinary hire is still refused (review row 16).
   assert.equal((await team.run({ ...cmd, manifest: { ...cmd.manifest, model: 'gpt-fixture' } })).ok, false);
-  assert.equal((await team.run({ ...cmd, manifest: { ...cmd.manifest, provider: 'codex', model: 'gpt-fixture' } })).ok, false);
+  const wrongLauncher = await team.run({ ...cmd, manifest: { ...cmd.manifest, provider: 'codex', model: 'gpt-fixture' } });
+  assert.equal(wrongLauncher.ok, true); assert.equal(wrongLauncher.hire.launcher, undefined); assert.match(wrongLauncher.hire.notes.join(' '), /Launcher dcm runs .*, not /);
   f.write([]); const result = await team.run({ ...cmd, confirm: true }); assert.equal(result.ok, false); assert.match(result.errorId, /\S/); assert.equal(team.launched.length, 1);
 });
 test('first-run setup writes only Council launcher extension and baseline patch; snapshots expose discovered choices', (t) => {
@@ -272,4 +276,44 @@ test('bare aliases retain the shell-resolved account home; changed environment r
   const d = f.discover(); assert.equal(d.status, 'ok'); assert.equal(d.profiles[0].home, path.join(f.home, '.claude-minion')); assert.equal(d.choices[0].label, 'dc · Alternate');
   const pick = f.pick('dc'); fs.writeFileSync(f.file, 'alias dc=\'claude\'\n');
   assert.throws(() => account.validateLauncher(pick, 'claude', f.discover()), /changed/);
+});
+
+// Owner run of ceeb4aaf (failures/2026-11-12T2126-ceeb4aaf-hire-orchestrator): the Studio floor's god is
+// registered on claude, Council's settings say godProvider codex, and the saved orchestrator launcher is
+// dcxm (Codex). Every orchestrator start and hire failed ("Selected launcher does not match this
+// provider" x9, "Pick one model supported by this provider" x4).
+test('a claude god with godProvider codex and a Codex orchestrator launcher starts on claude; hires work', async (t) => {
+  const f = fixture(t); const team = teamFixture(f);
+  account.saveLauncherPick(f.root, 'orchestrator', f.pick('dcxm'));
+  account.saveLauncherPick(f.root, 'temps', f.pick('dcxm'));
+  const agents = { god: { name: 'Paramount', provider: 'claude', isGod: true, role: 'Paramount orchestrator' } };
+  Object.assign(team.deps, { agents: () => agents });
+  Object.assign(team.deps.team, { orchestratorProvider: () => 'codex', orchestratorModel: () => undefined, orchestratorId: () => 'god', setupComplete: () => true });
+  // What the hire sheet shows for the orchestrator: the registered god's engine, and why dcxm is ignored.
+  const models = await team.run({ type: 'team.models' });
+  assert.equal(models.ok, true);
+  assert.equal(models.models.orchestratorProvider, 'claude');
+  assert.equal(models.models.orchestratorConfiguredProvider, 'codex');
+  assert.match(models.models.orchestratorLauncherNote, /dcxm runs .* It is ignored/);
+  // Automatic start: on claude, without the Codex launcher.
+  const ensured = await team.run({ type: 'orchestrator.ensure' });
+  assert.equal(ensured.ok, true, JSON.stringify(ensured));
+  assert.equal(team.launched.length, 1);
+  assert.equal(team.launched[0].provider, 'claude');
+  assert.equal(team.launched[0].launcher, null, "claude's default account");
+  // The sheet's old payload (Codex launcher and model) for the orchestrator: claude, with notes.
+  agents.god.archived = true;
+  const fromSheet = await team.run({ type: 'agent.hire', orchestrator: true, confirm: false, launcher: f.pick('dcxm'), manifest: { spec: 'munder-difflin/hire@1', name: 'Paramount', provider: 'codex', model: 'gpt-fixture' } });
+  assert.equal(fromSheet.ok, true, JSON.stringify(fromSheet));
+  assert.equal(fromSheet.hire.engine, 'claude');
+  assert.equal(fromSheet.hire.launcher, undefined);
+  assert.equal(fromSheet.hire.notes.length, 2);
+  // A claude hire with the Codex temps launcher saved: hired on claude's default account.
+  const hire = await team.run({ type: 'agent.hire', confirm: true, launcher: f.pick('dcxm'), manifest: { spec: 'munder-difflin/hire@1', name: 'Worker', provider: 'claude' } });
+  assert.equal(hire.ok, true, JSON.stringify(hire));
+  assert.equal(team.launched.at(-1).provider, 'claude');
+  assert.equal(team.launched.at(-1).launcher, null);
+  // Setting the orchestrator launcher is checked against the god's engine, not the configured one.
+  assert.equal((await team.run({ type: 'launchers.configure', scope: 'orchestrator', launcher: f.pick('dcxm') })).ok, false);
+  assert.equal((await team.run({ type: 'launchers.configure', scope: 'orchestrator', launcher: f.pick('dcm') })).ok, true);
 });

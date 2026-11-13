@@ -1,3 +1,4 @@
+import { fitLauncher } from '@/lib/launcher-fit';
 import * as React from 'react';
 import type { CouncilLauncherDiscovery, CouncilLauncherPick, ParamountTeamModels } from '@/data/paramount-api';
 import { useDispatch, useTeamApi } from '@/data/store';
@@ -31,7 +32,14 @@ export function LauncherSettings({ agentId, provider, scope = 'agent' }: { agent
   const [error, setError] = React.useState<BackendError | null>(null);
   const [saved, setSaved] = React.useState(false);
   const load = React.useCallback(() => {
-    api?.models().then((m) => { setModels(m); setValue((scope === 'default' ? m.launcherState?.defaults?.[provider ?? ''] : scope === 'agent' ? m.launcherState?.agents[agentId ?? ''] : m.launcherState?.[scope]) ?? null); setError(null); }, (e) => setError(toBackendError(e, 'team.models')));
+    api?.models().then((m) => {
+      setModels(m);
+      // The orchestrator's saved launcher counts only when it runs the registered god's engine; a
+      // mismatched one is shown as ignored below, and Save (Provider default) clears it.
+      setValue(scope === 'orchestrator' ? fitLauncher(m.launcherState?.orchestrator, m.orchestratorProvider, m.launchers)
+        : (scope === 'default' ? m.launcherState?.defaults?.[provider ?? ''] : scope === 'agent' ? m.launcherState?.agents[agentId ?? ''] : m.launcherState?.[scope]) ?? null);
+      setError(null);
+    }, (e) => setError(toBackendError(e, 'team.models')));
   }, [api, agentId, scope, provider]);
   React.useEffect(load, [load]);
   if (!api) return null;
@@ -39,6 +47,8 @@ export function LauncherSettings({ agentId, provider, scope = 'agent' }: { agent
     <p className="text-sm">{scope === 'default' ? `${provider} default for new agents` : scope === 'temps' ? 'Default account launcher for new temps. Requests must use its provider.' : 'Session account launcher (applies at next start)'}</p>
     <p className="text-muted-foreground text-xs">Account selection: {models?.launchers?.choices.find((c) => c.id === value?.id && c.fingerprint === value.fingerprint)?.label ?? (value ? 'Unavailable — refresh and choose again' : 'Provider default')}</p>
     <LauncherSelect discovery={models?.launchers} provider={provider ?? (scope === 'orchestrator' ? models?.orchestratorProvider : undefined)} value={value} onChange={(v) => { setValue(v); setSaved(false); }} />
+    {scope === 'orchestrator' && models?.orchestratorLauncherNote && <p className="text-xs text-amber-500" data-testid="settings-orchestrator-launcher-note">{models.orchestratorLauncherNote}</p>}
+    {scope === 'orchestrator' && models?.orchestratorConfiguredProvider && <p className="text-muted-foreground text-xs" data-testid="settings-orchestrator-engine-note">This floor's orchestrator is registered on {models.orchestratorProvider}; the orchestrator engine chosen in setup ({models.orchestratorConfiguredProvider}) applies only to a new orchestrator.</p>}
     <button className="rounded border px-3 py-1 text-sm" onClick={async () => { await dispatch({ type: 'launchers.refresh' }); load(); }}>Refresh discovery</button>{' '}
     <button className="rounded border px-3 py-1 text-sm" onClick={async () => { setSaved(false); if (await dispatch({ type: 'launchers.configure', scope, ...(scope === 'default' ? { provider } : {}), ...(agentId ? { agentId } : {}), launcher: value })) setSaved(true); }}>Save launcher</button>
     {saved && <p role="status">Launcher saved for the next start.</p>}

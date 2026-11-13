@@ -318,6 +318,10 @@ export interface ParamountTeamModels {
   defaultModel?: string;
   /** Configured provider/model used by Munder's main god/orchestrator. */
   orchestratorProvider?: string;
+  /** The engine settings name for a NEW orchestrator, when the registered one runs on another. */
+  orchestratorConfiguredProvider?: string;
+  /** Set when the saved orchestrator launcher runs another engine (it is ignored; that engine's default applies). */
+  orchestratorLauncherNote?: string;
   orchestratorId?: string;
   orchestratorModel?: string;
   launchers?: CouncilLauncherDiscovery;
@@ -343,6 +347,8 @@ export interface ParamountHirePlan {
   consentRequired: string[];
   /** Fields of the manifest this build does not apply. */
   ignored: string[];
+  /** Saved picks that did not fit the engine and were replaced by its default, in plain words. */
+  notes?: string[];
 }
 /** The ok-result of a team command carries one of these payloads. */
 export type ParamountTeamResult = Extract<ParamountResult, { ok: true }> & {

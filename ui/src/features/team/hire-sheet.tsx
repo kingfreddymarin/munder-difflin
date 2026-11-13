@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ErrorNotice } from '@/components/app/error-notice';
 import { CopyDiagnosticsButton, useDispatch, useFloor, useTeamApi } from '@/data/store';
 import { findBridge } from '@/data/bridge';
+import { fitLauncher } from '@/lib/launcher-fit';
 import { chooseFolder } from '@/app/folder-pick';
 import { BackendError, toBackendError } from '@/data/errors';
 import type { ParamountHirePlan, ParamountTeamModels } from '@/data/paramount-api';
@@ -66,13 +67,15 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
     } catch (cause) { setForm(EMPTY); setError(toBackendError(cause, 'agent.hire')); }
     setLauncher(null);
     api?.models().then((next) => {
-      if (orchestrator) setLauncher(next.launcherState?.orchestrator ?? null);
-      else setLauncher(next.launcherState?.defaults?.[text(manifest?.provider) || next.engines[0]?.id || 'claude'] ?? null);
+      // The orchestrator runs the registered god's engine (orchestratorProvider); a saved launcher is
+      // preselected only when it runs that same engine.
+      const provider = orchestrator ? next.orchestratorProvider ?? 'claude' : text(manifest?.provider) || next.engines[0]?.id || 'claude';
+      setLauncher(fitLauncher(orchestrator ? next.launcherState?.orchestrator : next.launcherState?.defaults?.[provider], provider, next.launchers));
       setModels(next);
       if (orchestrator) setForm((current) => ({
         ...current,
-        provider: next.orchestratorProvider ?? current.provider,
-        model: next.orchestratorModel ?? current.model,
+        provider,
+        model: next.orchestratorModel ?? '',
       }));
     }, (cause) => setError(toBackendError(cause, 'team.models')));
     if (bundle) setTimeout(() => file.current?.click(), 0);
@@ -123,13 +126,15 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
           <div className="grid gap-1.5"><Label htmlFor="h-goal">Goal</Label><Textarea id="h-goal" rows={3} value={form.goal} onChange={(e) => edit({ goal: e.target.value })} /></div>
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5"><Label htmlFor="h-engine">Engine</Label>
-              <select id="h-engine" disabled={orchestrator} className="border-input bg-background h-9 rounded-md border px-2 text-sm" value={form.provider} onChange={(e) => { edit({ provider: e.target.value, model: '' }); setLauncher(models?.launcherState?.defaults?.[e.target.value || models.engines[0]?.id || 'claude'] ?? null); }}>
+              <select id="h-engine" disabled={orchestrator} className="border-input bg-background h-9 rounded-md border px-2 text-sm" value={form.provider} onChange={(e) => { edit({ provider: e.target.value, model: '' }); { const p = e.target.value || models?.engines[0]?.id || 'claude'; setLauncher(fitLauncher(models?.launcherState?.defaults?.[p], p, models?.launchers)); } }}>
                 <option value="">Default engine</option>
                 {models?.engines.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
                 {form.provider && !models?.engines.some((e) => e.id === form.provider) && <option value={form.provider}>{form.provider}</option>}
               </select></div>
             <Button variant="link" size="sm" onClick={async () => { setStep({ kind: 'form' }); await dispatch({ type: 'launchers.refresh' }); api?.models().then(setModels, (e) => setError(toBackendError(e, 'team.models'))); }}>Refresh launchers</Button>
             <LauncherSelect discovery={models?.launchers} provider={engine?.id} value={launcher} onChange={(v) => { setLauncher(v); setStep({ kind: 'form' }); }} />
+            {orchestrator && models?.orchestratorLauncherNote && <span className="text-xs text-amber-500" data-testid="orchestrator-launcher-note">{models.orchestratorLauncherNote}</span>}
+            {orchestrator && models?.orchestratorConfiguredProvider && <span className="text-muted-foreground text-xs" data-testid="orchestrator-engine-note">This floor's orchestrator is registered on {engine?.label ?? models.orchestratorProvider}; the engine in Settings ({models.orchestratorConfiguredProvider}) applies only to a new orchestrator.</span>}
             <div className="grid gap-1.5"><Label htmlFor="h-model">Model</Label>
               <ModelSelect id="h-model" models={models} engineId={engine?.id} value={form.model} onChange={(model) => edit({ model })} /></div>
           </div>
@@ -156,6 +161,7 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
               {!plan.engineInstalled && <span className="text-xs text-amber-500">The {plan.engine} CLI is not installed; install it from Health, then hire.</span>}
               {plan.consentRequired.length > 0 && <span className="text-xs text-amber-500">Not enabled (needs your consent later): {plan.consentRequired.join(', ')}</span>}
               {plan.ignored.length > 0 && <span className="text-muted-foreground text-xs">Not applied by this build: {plan.ignored.join(', ')}</span>}
+              {plan.notes?.map((note) => <span key={note} className="text-xs text-amber-500" data-testid="hire-plan-note">{note}</span>)}
               {step.kind === 'started' && <span role="status" className="text-xs text-emerald-500">Started. {plan.name} is on the Team and in Terminal.</span>}
             </div>
           )}

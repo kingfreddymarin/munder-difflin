@@ -44,6 +44,8 @@ export function defaultModelRows(catalog: DefaultModelCatalog, settings: Record<
 // on the configured engine. A switch saves to both, so Settings and the Team card always agree.
 export interface OrchestratorModelInfo extends DefaultModelCatalog {
   orchestratorProvider?: string;
+  /** Setup's engine for a NEW orchestrator, when the registered god runs another. */
+  orchestratorConfiguredProvider?: string;
   orchestratorId?: string;
   orchestratorModel?: string;
   agents?: Record<string, { engine: string; model?: string }>;
@@ -60,7 +62,9 @@ export interface OrchestratorModelRow {
 export function orchestratorModelRow(info: OrchestratorModelInfo): OrchestratorModelRow | null {
   const id = info.orchestratorId;
   const pick = id ? info.agents?.[id] : undefined;
-  const configuredEngine = info.orchestratorProvider ?? 'claude';
+  // godModel belongs to the engine setup configured for a NEW orchestrator, which can differ from the
+  // registered god's (orchestratorProvider): then only the god's own pick changes.
+  const configuredEngine = info.orchestratorConfiguredProvider ?? info.orchestratorProvider ?? 'claude';
   const engineId = pick?.engine ?? configuredEngine;
   const engine = info.engines.find((e) => e.id === engineId);
   if (!engine) return null;

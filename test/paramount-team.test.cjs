@@ -410,7 +410,10 @@ for (const [label, overrides, code] of [
     assert.ok(first.correlationId);
     assert.doesNotMatch(JSON.stringify(first) + JSON.stringify(f.state.steps), /sk-abcdefghijklmnopqrstuv/);
     const steps = f.state.steps.length;
-    assert.deepEqual(await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps), first);
+    // Latched: no new attempt. Owner run of ceeb4aaf: each failure now has its own error id.
+    const again = await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps);
+    assert.equal(again.ok, false); assert.equal(again.code, first.code); assert.equal(again.message, first.message);
+    assert.notEqual(again.errorId, first.errorId, 'a repeated failure is its own diagnostic, not a stale id');
     assert.equal(f.state.steps.length, steps);
     // Failure latching applies only to automatic startup; explicit recovery works.
     f.deps.team.commandAvailable = () => true;
