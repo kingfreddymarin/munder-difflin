@@ -18,6 +18,7 @@ import { performance } from 'node:perf_hooks';
 import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
+import { createSnapshotCommandDiscovery, fallbackCommandPath, installedSnapshotEngines, probeLoginShellCommand, snapshotCommandTools, snapshotSignInPath } from './snapshotCommandDiscovery';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
 import { createBoardDeps } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
@@ -149,6 +150,11 @@ const crashCapture = {
 installCrashCapture(crashCapture, process, app);
 
 const ptyManager = new PtyManager();
+const snapshotCommandDiscovery = createSnapshotCommandDiscovery({
+  probe: probeLoginShellCommand,
+  fallback: fallbackCommandPath,
+  onChange: () => broadcastParamountInvalidation('command-paths')
+});
 
 function runCodexDaemonCommand(
   executable: string,
@@ -3741,7 +3747,10 @@ const PARAMOUNT_STARTABLE: Record<string, { label: string; bin: string; command:
   skid: { label: 'Skidbladnir', bin: 'skid', command: 'skid doctor && skid run qwen-3.5-9b "ready"', port: 8000 }
 };
 const lastProbeState = new Map<string, string>();
-const engineSignIn = createSignInMonitor({ path: (engine) => ptyManager.commandPath(engine) });
+const engineSignIn = createSignInMonitor({
+  path: (engine) => snapshotSignInPath(snapshotCommandDiscovery, engine),
+  resolvePath: async (engine) => (await snapshotCommandDiscovery.resolve(engine, true)).path
+});
 function signInAccount(provider: SignInEngine, accountId?: unknown, fingerprint?: unknown): ReturnType<typeof validateLauncher> | null | undefined {
   if (accountId === undefined && fingerprint === undefined) return undefined;
   if (typeof accountId !== 'string' || typeof fingerprint !== 'string' || !/^[a-z0-9_-]{1,32}$/i.test(accountId) || !/^[a-f0-9]{64}$/.test(fingerprint)) return null;
@@ -3908,14 +3917,11 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   const integrationRecords = time('integrations', () => integrations.listRecordsRedacted());
   const skid = paramountStartPlan('skid', await time('skidProbe', () => paramountProbeService('skid', span.cid)));
   // What the packaged app needs from outside itself, resolved on the login-shell PATH as spawn does.
-  const tools = time('enginePaths', () => ({
-    claude: { path: ptyManager.commandPath('claude') },
-    codex: { path: ptyManager.commandPath('codex'), required: cfg.godProvider === 'codex' || Object.values(hive.registry().agents ?? {}).some((agent) => agent.provider === 'codex' && agent.archived !== true) },
-    mempalace: { path: ptyManager.commandPath('mempalace') }
-  }));
+  const tools = time('enginePaths', () => snapshotCommandTools(snapshotCommandDiscovery,
+    cfg.godProvider === 'codex' || Object.values(hive.registry().agents ?? {}).some((agent) => agent.provider === 'codex' && agent.archived !== true)));
   // Installed engines that are not signed in.
   const signIn = time('signIn', () => Object.fromEntries([
-    ...(['claude', 'codex'] as const).filter((e) => ptyManager.commandPath(e)).map((e) => [e, engineSignIn.status(e)] as const),
+    ...installedSnapshotEngines(snapshotCommandDiscovery).map((e) => [e, engineSignIn.status(e)] as const),
     ...(launcherDiscovery.peek()?.profiles ?? []).map((profile) => [
       `${profile.provider}-${profile.id}`,
       engineSignIn.status(profile.provider as 'claude' | 'codex', profile)

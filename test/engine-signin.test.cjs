@@ -86,6 +86,26 @@ test('Check again clears stale account expiry without restarting and keeps provi
   assert.ok(runs.every((run) => run.key === undefined));
 });
 
+test('Check again asynchronously refreshes a cold default command path and preserves explicit account bins', async () => {
+  const runs = [];
+  let resolves = 0;
+  const m = createSignInMonitor({
+    path: () => null,
+    resolvePath: async () => { resolves++; await tick(); return '/fixture/claude'; },
+    run: async (bin, args, timeout, env) => { runs.push({ bin, args, home: env?.CLAUDE_CONFIG_DIR }); return { code: 0 }; }
+  });
+  const selected = { id: 'alt', label: 'Alternate', home: '/fixture/alternate', bin: '/fixture/alternate/claude' };
+  const checkedAccount = await m.refresh('claude', selected);
+  assert.equal(checkedAccount.state, 'signed-in');
+  assert.equal(resolves, 0, 'selected account binary bypasses provider default discovery');
+  const checkedDefault = await m.refresh('claude');
+  assert.equal(checkedDefault.state, 'signed-in');
+  assert.equal(resolves, 1, 'default Check again awaits current async discovery');
+  assert.deepEqual(runs.map(({ bin, home }) => [bin, home]), [
+    ['/fixture/alternate/claude', '/fixture/alternate'], ['/fixture/claude', path.join(os.homedir(), '.claude')]
+  ]);
+});
+
 test('index.ts wires exits and the snapshot to the monitor', () => {
   const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
   assert.match(code, /engineSignIn\.agentExited\(String\(hive\.registry\(\)\.agents\[dyingAgent\]\?\.provider \?\? 'claude'\), info\?\.tail, ptySignInAccount\.get\(id\)\)/);

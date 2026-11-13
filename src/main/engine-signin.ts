@@ -39,7 +39,7 @@ const runStatus: Run = (bin, args, timeoutMs, env) => new Promise((done) => {
   });
 });
 
-export function createSignInMonitor(opts: { path: (engine: SignInEngine) => string | null; now?: () => number; run?: Run }) {
+export function createSignInMonitor(opts: { path: (engine: SignInEngine) => string | null; resolvePath?: (engine: SignInEngine) => Promise<string | null>; now?: () => number; run?: Run }) {
   const now = opts.now ?? Date.now;
   const run = opts.run ?? runStatus;
   const keyFor = (engine: SignInEngine, account?: SignInAccount) => `${engine}:${account?.id ?? 'default'}`;
@@ -80,7 +80,7 @@ export function createSignInMonitor(opts: { path: (engine: SignInEngine) => stri
     /** Force a status check for this exact account and return the refreshed result. */
     async refresh(engine: SignInEngine, account?: SignInAccount): Promise<SignInState> {
       const key = keyFor(engine, account);
-      const bin = account?.bin ?? opts.path(engine);
+      const bin = account?.bin ?? (opts.resolvePath ? await opts.resolvePath(engine) : opts.path(engine));
       if (!bin) return { state: 'unknown', ...fields(account) };
       expired.delete(key);
       probed.set(key, { at: now(), state: 'unknown' });

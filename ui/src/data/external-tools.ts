@@ -4,19 +4,27 @@ import type { Snapshot } from './types';
 /** The tools Paramount needs outside its own bundle, from main's login-PATH lookup. Missing from
  *  older cores (no `tools`): nothing is reported rather than a false "missing". */
 export function externalTools(tools: Record<string, unknown>): Snapshot['prerequisites'] {
-  const found = (id: string) => { const t = tools[id]; return t && typeof t === 'object' ? typeof (t as { path?: unknown }).path === 'string' && !!(t as { path: string }).path : null; };
+  const found = (id: string) => {
+    const t = tools[id];
+    if (!t || typeof t !== 'object') return null;
+    const item = t as { path?: unknown; state?: unknown };
+    if (item.state === 'checking' || item.state === 'unknown') return 'unknown' as const;
+    if (item.state === 'ready') return typeof item.path === 'string' && !!item.path ? 'ready' as const : 'unknown' as const;
+    if (item.state === 'missing') return 'missing' as const;
+    return typeof item.path === 'string' && !!item.path ? 'ready' as const : 'missing' as const;
+  };
   const out: Snapshot['prerequisites'] = [];
   const claude = found('claude');
   if (claude !== null) out.push({ id: 'claude-cli', name: 'Claude Code CLI (claude)', level: 'required',
-    state: claude ? 'ready' : 'missing', detail: claude ? 'Found on your login PATH' : 'Not found on your login PATH',
-    why: claude ? 'Paramount starts every agent with it.' : 'Paramount starts every agent with the claude command and cannot run agents without it. Install Claude Code, sign in once in Terminal, then reopen Paramount.' });
+    state: claude, detail: claude === 'ready' ? 'Found on your login PATH' : claude === 'missing' ? 'Not found on your login PATH' : 'Checking the login PATH; retrying in the background',
+    why: claude === 'ready' ? 'Paramount starts every agent with it.' : claude === 'missing' ? 'Paramount starts every agent with the claude command and cannot run agents without it. Install Claude Code, sign in once in Terminal, then reopen Paramount.' : 'Paramount is still checking whether the claude command is available.' });
   const codexRaw = tools.codex && typeof tools.codex === 'object' ? tools.codex as { path?: unknown; required?: unknown } : null;
-  const codex = codexRaw ? typeof codexRaw.path === 'string' && !!codexRaw.path : null;
-  if (codex !== null) out.push({ id: 'codex-cli', name: 'Codex CLI (codex)', level: codexRaw?.required === true ? 'required' : 'recommended', state: codex ? 'ready' : 'missing', detail: codex ? 'Found on your login PATH' : 'Not found on your login PATH', why: 'Codex agents need this command. Paramount reports account sign-in independently for each selected Codex launcher.' });
+  const codex = found('codex');
+  if (codex !== null) out.push({ id: 'codex-cli', name: 'Codex CLI (codex)', level: codexRaw?.required === true ? 'required' : 'recommended', state: codex, detail: codex === 'ready' ? 'Found on your login PATH' : codex === 'missing' ? 'Not found on your login PATH' : 'Checking the login PATH; retrying in the background', why: 'Codex agents need this command. Paramount reports account sign-in independently for each selected Codex launcher.' });
   const palace = found('mempalace');
   if (palace !== null) out.push({ id: 'mempalace', name: 'MemPalace (mempalace)', level: 'optional',
-    state: palace ? 'ready' : 'missing', detail: palace ? 'Found on your login PATH' : 'Not installed',
-    why: 'Optional semantic search over agent memory. Without it, agents still read and write their memory files.' });
+    state: palace, detail: palace === 'ready' ? 'Found on your login PATH' : palace === 'missing' ? 'Not installed' : 'Checking the login PATH; retrying in the background',
+    why: palace === 'unknown' ? 'Paramount is still checking whether MemPalace is available.' : 'Optional semantic search over agent memory. Without it, agents still read and write their memory files.' });
   return out;
 }
 

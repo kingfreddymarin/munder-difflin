@@ -6,11 +6,11 @@ import { spawnSync } from 'node:child_process';
 import { ensureKilled, hardKillTree } from './procKill';
 import { expandTilde } from './fs';
 import { buildPtyEnv } from './ptyEnv';
+import { fallbackCommandPath } from './snapshotCommandDiscovery';
 import {
   captureFromLoginShell,
   isSafeCommandName,
-  userShellPath,
-  windowsFallbackCandidates
+  userShellPath
 } from './shellEnv';
 
 /** APPEND the hive's bundled-node dir (`<HIVE_ROOT>/bin/runtime`, which holds a
@@ -471,8 +471,8 @@ export class PtyManager {
         if (exe) return { path: exe, found: true };
       } catch { /* fall through */ }
       // Common Windows install locations (npm global = %APPDATA%\npm\<cmd>.cmd).
-      const winCandidates = windowsFallbackCandidates(command);
-      for (const c of winCandidates) if (existsSync(c)) return { path: c, found: true };
+      const fallback = fallbackCommandPath(command);
+      if (fallback) return { path: fallback, found: true };
       // Last resort — let node-pty try; will fail with ENOENT if missing.
       return { path: command, found: false };
     }
@@ -484,14 +484,8 @@ export class PtyManager {
       if (path && existsSync(path)) return { path, found: true };
     }
     // Common explicit locations
-    const candidates = [
-      `/opt/homebrew/bin/${command}`,
-      `/usr/local/bin/${command}`,
-      `${process.env.HOME ?? ''}/.local/bin/${command}`,
-      `${process.env.HOME ?? ''}/.claude/local/${command}`,
-      `${process.env.HOME ?? ''}/.volta/bin/${command}`
-    ];
-    for (const c of candidates) if (existsSync(c)) return { path: c, found: true };
+    const fallback = fallbackCommandPath(command);
+    if (fallback) return { path: fallback, found: true };
     // Last resort — let node-pty try; will fail with ENOENT if missing.
     return { path: command, found: false };
   }

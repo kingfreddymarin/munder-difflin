@@ -28,10 +28,19 @@ test('found tools are ready; an older core without the lookup reports nothing ra
   assert.deepEqual(externalTools({}), []);
 });
 
+test('cold or failed command discovery stays unknown instead of prompting an install', () => {
+  const list = externalTools({ claude: { path: null, state: 'checking' }, codex: { path: null, state: 'unknown', required: true }, mempalace: { path: null, state: 'missing' } });
+  assert.equal(list.find((p) => p.id === 'claude-cli').state, 'unknown');
+  assert.match(list.find((p) => p.id === 'claude-cli').detail, /Checking/);
+  assert.equal(list.find((p) => p.id === 'codex-cli').state, 'unknown');
+  assert.equal(list.find((p) => p.id === 'mempalace').state, 'missing');
+});
+
 test('the snapshot carries the lookup from main and the setup dialog lists required blockers', () => {
   const main = readFileSync(new URL('../../src/main/index.ts', import.meta.url), 'utf8');
-  assert.match(main, /tools: \{ claude: \{ path: ptyManager\.commandPath\('claude'\) \}, codex: \{ path: ptyManager\.commandPath\('codex'\), required:/);
-  assert.match(main, /mempalace: \{ path: ptyManager\.commandPath\('mempalace'\) \} \}/);
+  assert.match(main, /snapshotCommandTools\(snapshotCommandDiscovery/);
+  assert.match(main, /installedSnapshotEngines\(snapshotCommandDiscovery\)/);
+  assert.match(main, /snapshotSignInPath\(snapshotCommandDiscovery, engine\)/);
   const provider = readFileSync(new URL('../src/data/electron-provider.ts', import.meta.url), 'utf8');
   assert.match(provider, /prerequisites\.push\(\.\.\.externalTools\(/);
   const gate = readFileSync(new URL('../src/app/setup-gate.tsx', import.meta.url), 'utf8');
