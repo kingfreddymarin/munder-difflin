@@ -102,6 +102,24 @@ test('keeps floor and per-agent budgets distinct and preserves unknown telemetry
   assert.equal(agent.breaker, 'healthy');
 });
 
+test('existing-agent preset save reaches the actual Paramount preload bridge and preserves outcomes', async () => {
+  const native = bridge();
+  const seen = [];
+  native.paramountSaveHirePreset = async (manifest) => {
+    seen.push(manifest);
+    return { canceled: false, path: '/tmp/review-worker.json' };
+  };
+  globalThis.window = { cth: native };
+  const manifest = { spec: 'munder-difflin/hire@1', name: 'Review Worker', provider: 'claude' };
+  const saved = await createElectronProvider().saveAgentPreset(manifest);
+  assert.deepEqual(seen, [manifest]);
+  assert.deepEqual(saved, { canceled: false, path: '/tmp/review-worker.json' });
+  native.paramountSaveHirePreset = async () => ({ canceled: true });
+  assert.deepEqual(await createElectronProvider().saveAgentPreset(manifest), { canceled: true });
+  native.paramountSaveHirePreset = async () => ({ canceled: false, error: 'Could not save the agent preset.' });
+  assert.deepEqual(await createElectronProvider().saveAgentPreset(manifest), { canceled: false, error: 'Could not save the agent preset.' });
+});
+
 test('rejects a malformed core response instead of showing fake data', async () => {
   globalThis.window = { cth: bridge({ agents: [] }) };
   await assert.rejects(createElectronProvider().snapshot(), /incomplete snapshot/);

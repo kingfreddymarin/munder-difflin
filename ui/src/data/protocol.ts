@@ -64,6 +64,8 @@ export interface DataProvider {
   diagnostics?(): Promise<ParamountDiagnostics>;
   /** Saves the redacted bundle through the core's save dialog, suggesting `name`; reports a cancel as canceled. */
   saveDiagnostics?(name: string): Promise<ParamountDiagnosticsSave>;
+  /** Save an existing agent's portable hire@1 definition through the native picker. */
+  saveAgentPreset?(manifest: Record<string, unknown>): Promise<{ canceled: boolean; path?: string; error?: string }>;
   /** Read-only list of agents defined in Claude Code, Codex and Munder setups. Absent when the provider cannot scan disk. */
   discoverAgents?(options?: { sources?: ParamountAgentSource[]; projectDir?: string }): Promise<ParamountAgentDiscovery>;
   /** Imports one discovered agent through the hire path; the human confirms the spawn in the Add-Agent form. */

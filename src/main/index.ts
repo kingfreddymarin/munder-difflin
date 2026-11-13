@@ -97,7 +97,8 @@ import { lagOp, startLagProbe } from './lag-probe';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { readHireManifestFiles } from './hire';
-import type { HireManifest } from '../shared/hire';
+import { validateHireManifest, type HireManifest } from '../shared/hire';
+import { saveParamountHirePreset } from './paramountHirePreset';
 import { ClosingTimeController } from './closingTime';
 import {
   argsWithAutoModeFlag,
@@ -2373,6 +2374,17 @@ ipcMain.handle('hire:openFile', async () => {
     error: batch.manifests.length === 0 ? 'no valid hire manifests selected' : undefined
   };
 });
+
+ipcMain.handle('paramount:saveHirePreset', async (evt, raw: unknown) => saveParamountHirePreset(raw, {
+  validate: validateHireManifest,
+  showSaveDialog: async (defaultName) => {
+    const owner = BrowserWindow.fromWebContents(evt.sender);
+    const options = { title: 'Save agent preset', defaultPath: defaultName, filters: [{ name: 'Agent preset', extensions: ['json'] }] };
+    const picked = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+    return { canceled: picked.canceled, filePath: picked.filePath };
+  },
+  writeFile: (path, content) => writeFile(path, content, { encoding: 'utf8', mode: 0o600 }),
+}));
 
 /**
  * Create a window. The PRIMARY window (no opts) restores saved geometry, uses

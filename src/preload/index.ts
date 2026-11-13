@@ -752,6 +752,7 @@ const api = {
   /** Aggregate fork-native read model. Paramount's UI provider projects it to
    *  its own Snapshot; existing hive and PTY methods remain available directly. */
   paramountSnapshot: (): Promise<ParamountRawSnapshot> => ipcRenderer.invoke('paramount:snapshot'),
+  paramountSaveHirePreset: (manifest: unknown) => ipcRenderer.invoke('paramount:saveHirePreset', manifest),
   /** Validated commands lacking a direct fork preload equivalent. */
   paramountDispatch: (command: ParamountCommand): Promise<ParamountResult> =>
     ipcRenderer.invoke('paramount:dispatch', command),

@@ -227,7 +227,7 @@ export function useOpeners() {
 export function useTeamApi() {
   const { provider } = useStore();
   return React.useMemo(() => provider.teamModels && provider.hire
-    ? { models: provider.teamModels.bind(provider), hire: provider.hire.bind(provider), organization: provider.organization?.bind(provider), saveOrganization: provider.saveOrganization?.bind(provider), delegate: provider.delegate?.bind(provider), archiveAgent: provider.archiveAgent?.bind(provider), sendNote: provider.sendNote?.bind(provider), startEngineSignIn: provider.startEngineSignIn?.bind(provider), refreshEngineSignIn: provider.refreshEngineSignIn?.bind(provider) }
+    ? { models: provider.teamModels.bind(provider), hire: provider.hire.bind(provider), saveAgentPreset: provider.saveAgentPreset?.bind(provider), organization: provider.organization?.bind(provider), saveOrganization: provider.saveOrganization?.bind(provider), delegate: provider.delegate?.bind(provider), archiveAgent: provider.archiveAgent?.bind(provider), sendNote: provider.sendNote?.bind(provider), startEngineSignIn: provider.startEngineSignIn?.bind(provider), refreshEngineSignIn: provider.refreshEngineSignIn?.bind(provider) }
     : null, [provider]);
 }
 

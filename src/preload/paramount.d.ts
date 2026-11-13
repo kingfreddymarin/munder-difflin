@@ -196,6 +196,8 @@ export interface ParamountRawSnapshot {
 export interface ParamountPreloadAPI {
   /** Rejects with an Error whose message starts with "[<errorId>] <code>:". */
   paramountSnapshot(): Promise<ParamountRawSnapshot>;
+  /** Save a validated portable hire@1 preset through a native save picker. */
+  paramountSaveHirePreset(manifest: unknown): Promise<{ canceled: boolean; path?: string; error?: string }>;
   /** GAP commands only. chat.send/card.move/terminal.input use the calls below. */
   paramountDispatch(command: ParamountCommand): Promise<ParamountResult>;
   /** Opens the selected provider's login command in a visible Paramount terminal. */

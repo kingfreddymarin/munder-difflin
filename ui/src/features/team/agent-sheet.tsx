@@ -17,6 +17,7 @@ import { accent } from '@/components/app/status';
 import { UnsupportedReason } from '@/components/app/error-notice';
 import { ErrorNotice } from '@/components/app/error-notice';
 import { ModelSelect } from '@/features/team/hire-sheet';
+import { saveExistingAgentPreset } from './agent-preset';
 import { LauncherSelect } from '@/features/team/launcher-select';
 import { NewCardDialog } from '@/features/team/new-card-dialog';
 import { useDispatch, useFloor, useTeamApi, useUnsupported } from '@/data/store';
@@ -49,6 +50,8 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
   const [model, setModel] = React.useState('');
   const [modelsError, setModelsError] = React.useState<BackendError | null>(null);
   const [saving, setSaving] = React.useState(false);
+  const [presetSaving, setPresetSaving] = React.useState(false);
+  const [presetMessage, setPresetMessage] = React.useState<{ kind: 'status' | 'error'; text: string } | null>(null);
   const [restartMessage, setRestartMessage] = React.useState('');
   const [switchProvider, setSwitchProvider] = React.useState('');
   const [switchModel, setSwitchModel] = React.useState('');
@@ -70,6 +73,7 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
     }, (cause) => setModelsError(toBackendError(cause, 'team.models')));
   }, [teamApi, agentId]);
   React.useEffect(() => { setModels(null); setModel(''); loadModels(); }, [loadModels]);
+  React.useEffect(() => { setPresetMessage(null); setPresetSaving(false); }, [agentId]);
 
   const mine = React.useMemo(() => cards.filter((c) => c.agentId === agentId && c.status !== 'done'), [cards, agentId]);
   const events = React.useMemo(() => activity.filter((e) => e.agentId === agentId).slice(0, 8), [activity, agentId]);
@@ -93,6 +97,20 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
     for (const k of changes) if (!(await dispatch({ type: 'agent.update', agentId: agent.id, patch: { [k]: form[k] } }))) break;
     if (modelChanged && await dispatch({ type: 'agent.update', agentId: agent.id, patch: { model } })) loadModels();
     setSaving(false);
+  };
+  const savePreset = async () => {
+    if (!agent || !teamApi?.saveAgentPreset || presetSaving) return;
+    setPresetSaving(true);
+    setPresetMessage(null);
+    try {
+      const result = await saveExistingAgentPreset({ name: agent.name, provider: accountModel?.engine ?? agent.engine,
+        model: accountModel?.model ?? agent.model, accent: agent.color, tokenCapMillions: agent.tokensCap }, teamApi.saveAgentPreset);
+      if (result.canceled) setPresetMessage({ kind: 'status', text: 'Preset save canceled.' });
+      else if (result.error) setPresetMessage({ kind: 'error', text: result.error });
+      else setPresetMessage({ kind: 'status', text: `Preset saved to ${result.path ?? 'the selected file'}.` });
+    } catch (cause) {
+      setPresetMessage({ kind: 'error', text: cause instanceof Error ? cause.message : 'Could not prepare this agent preset.' });
+    } finally { setPresetSaving(false); }
   };
   const restart = async (mode: 'resume' | 'fresh') => {
     if (!agent) return;
@@ -140,6 +158,10 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
               <TabsContents className="min-h-0 flex-1">
                 <TabsContent value="overview">
                   <AgentSummary agent={agent} />
+                  <div className="flex flex-col items-start gap-2">
+                    <Button size="sm" variant="outline" disabled={!teamApi?.saveAgentPreset || presetSaving} onClick={() => void savePreset()}>{presetSaving ? 'Saving preset…' : 'Save agent preset'}</Button>
+                    {presetMessage && <span role={presetMessage.kind === 'error' ? 'alert' : 'status'} className="text-muted-foreground text-xs">{presetMessage.text}</span>}
+                  </div>
                   {(accountSelection === 'stale' || accountSelection === 'unavailable') && <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">{accountSelection === 'stale' ? `The saved account ${savedLauncher?.id ?? ''} changed or is no longer available.` : 'The saved account selection could not be read.'} Refresh launcher discovery and explicitly reselect the account below. Sign-in checks and login are disabled until the selection is resolved.</div>}
                   {agentSignIn && agentSignIn.state !== 'ready' && agentSignIn.signInProvider && <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
                     <p className="mb-2 text-sm font-medium">{agentSignIn.state === 'unknown' ? `Sign-in status for ${agentSignIn.signInAccountLabel ?? engineId} is unknown` : `${agent.name} needs to sign in to ${agentSignIn.signInAccountLabel ?? engineId}`}</p>

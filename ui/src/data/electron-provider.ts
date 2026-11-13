@@ -9,7 +9,7 @@ import { askOptions, cardAsks, heartbeatUpdate, logActivity } from './projection
 import type { Command, DataProvider, FloorEvent } from './protocol';
 import type { Agent, Card, CardRef, CardStatus, FloorSetup, Message, Snapshot } from './types';
 
-type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'saveDiagnostics' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn' | 'teamModels' | 'hire' | 'artifacts'>> & { kind: 'electron' };
+type ElectronProvider = DataProvider & Required<Pick<DataProvider, 'onRefresh' | 'diagnostics' | 'saveDiagnostics' | 'saveAgentPreset' | 'unsupported' | 'discoverAgents' | 'importAgent' | 'openExternal' | 'openIn' | 'teamModels' | 'hire' | 'artifacts'>> & { kind: 'electron' };
 
 const CORE_COLUMNS: readonly string[] = ['todo', 'doing', 'blocked', 'done'];
 /** Agent fields the core's agent.update accepts (name, budget; model via the Team module). */
@@ -368,6 +368,11 @@ export function createElectronProvider(): ElectronProvider {
     },
     saveDiagnostics(name: string): Promise<ParamountDiagnosticsSave> {
       return query({ type: 'diagnostics.save', name }, 'saved', 'The core did not say whether the file was saved.');
+    },
+    async saveAgentPreset(manifest: Record<string, unknown>) {
+      const bridge = requireBridge();
+      if (!bridge.paramountSaveHirePreset) return { canceled: false, error: 'This Paramount core cannot save agent presets.' };
+      return bridge.paramountSaveHirePreset(manifest);
     },
     discoverAgents(options = {}): Promise<ParamountAgentDiscovery> {
       return query({ type: 'agents.discover', ...options }, 'discovery', 'The core returned no agent list.');
