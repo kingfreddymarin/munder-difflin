@@ -120,14 +120,15 @@ test('paramountShell: floor flags pick the data folder before anything reads it;
 });
 
 // ─── index.ts: picker, open here, New Floor process ─────────────────────────
-function floorsBlock(gate, config, userData, spawnImpl) {
+function floorsBlock(gate, config, userData, spawnImpl, proc = {}) {
   const src = INDEX.slice(INDEX.indexOf('// ─── Floors (owner requests 2026-11-12'), INDEX.indexOf('/** First-run floor setup (paramount-floor-setup.ts)'));
   assert.ok(src.includes('function openFloorProcess('), 'index.ts has the floor process model');
   const calls = [];
   const ctx = { console, process, statSync: fs.statSync, mkdirSync: fs.mkdirSync, basename: path.basename, floorGate: gate,
     ...floors, floorOwnerName: loadTs('src/main/floor-lock.ts').floorOwnerName, spawn: spawnImpl ?? spawn,
-    sharedDataDir: () => userData, TEST_LABEL: null,
-    app: { getPath: () => userData, getVersion: () => 'test', getAppPath: () => path.join(__dirname, 'fixtures', 'floor-child.cjs'), isPackaged: false },
+    sharedDataDir: () => userData, TEST_LABEL: null, setTimeout,
+    isFloorProcess: () => !!proc.home, floorProcessHome: () => proc.home ?? null, allowQuit: false,
+    app: { getPath: () => userData, getVersion: () => 'test', getAppPath: () => path.join(__dirname, 'fixtures', 'floor-child.cjs'), isPackaged: false, quit: () => calls.push(['app.quit']) },
     readConfig: () => config,
     writeConfig: (patch) => { calls.push(['writeConfig', patch]); if (patch.harnessHome) config.recentHives = [patch.harnessHome, ...(config.recentHives ?? []).filter((h) => h !== patch.harnessHome)]; Object.assign(config, patch); },
     ensureHarnessHome: (h) => { calls.push(['ensureHarnessHome', h]); fs.mkdirSync(path.join(h, 'hive'), { recursive: true }); return { ok: true }; },
@@ -137,15 +138,18 @@ function floorsBlock(gate, config, userData, spawnImpl) {
     BrowserWindow: { getAllWindows: () => [], getFocusedWindow: () => null }, ipcMain: { handle: () => {} } };
   const js = ts.transpileModule(src + '\nObject.assign(globalThis, { floorChoice, openChosenFloor, openFloorProcess, requestFloorPicker, floorWindowTitle, switchFloor });', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   vm.runInNewContext(js, ctx);
-  return { ...ctx, calls };
+  ctx.calls = calls; // the live context, so flags the code sets (allowQuit) are visible
+  return ctx;
 }
 
 test('boot: the main process claims no floor; a floor process opens its own; a location change reopens directly', () => {
   const boot = INDEX.slice(INDEX.indexOf('registerParamountProtocol();'), INDEX.indexOf('registerParamountRuntime({'));
-  assert.doesNotMatch(boot.replace('if (floorProcessHome()) { floorChosen = true; bootstrapHiveServices(); }', ''), /bootstrapHiveServices\(\);/);
-  assert.match(boot, /if \(floorProcessHome\(\)\) \{ floorChosen = true; bootstrapHiveServices\(\); \}/);
+  const floorBoot = 'if (floorProcessHome() && boot.open) { if (boot.rewriteConfig) writeConfig({ harnessHome: boot.open }); floorChosen = true; bootstrapHiveServices(); }';
+  assert.ok(boot.includes(floorBoot), 'a floor process opens the home bootFloorPlan names');
+  assert.match(boot, /const boot = bootFloorPlan\(process\.argv, readConfig\(\)\.harnessHome \?\? null\);/);
+  assert.doesNotMatch(boot.replace(floorBoot, ''), /bootstrapHiveServices\(\);/);
   assert.match(boot, /!dataFolderRefusal\(cfg\.harnessHome, appDataDirs\(\)\)\) writeConfig\(\{ onboardingComplete: true \}\)/, 'a data-folder home is not re-marked as set up');
-  assert.match(INDEX, /app\.relaunch\(\{ args: \[\.\.\.process\.argv\.slice\(1\)\.filter\(\(a\) => a !== OPEN_LAST_FLOOR_FLAG\), OPEN_LAST_FLOOR_FLAG\] \}\);/);
+  assert.match(INDEX, /app\.relaunch\(\{ args: moveRelaunchArgs\(process\.argv\.slice\(1\), moveTo\) \}\);/);
 });
 
 test('launch picker: recents with their state, last preselectable, nothing locked before a choice', (t) => {
@@ -258,8 +262,58 @@ test('Switch floor: stops agents through the quit path and relaunches at the pic
   assert.equal(fs.readFileSync(path.join(w.a, 'hive', 'registry.json'), 'utf8'), '{"floor":"A"}', "A's agent records are untouched");
   gate.release();
   const body = INDEX.slice(INDEX.indexOf('function teardownAndQuit('), INDEX.indexOf("ipcMain.handle('app:confirmClose'"));
-  const order = ['for (const fn of beforeTeardown)', 'ptyManager.killAll()', 'if (opts.relaunch) app.relaunch();', 'app.quit();'].map((x) => body.indexOf(x));
+  const order = ['for (const fn of beforeTeardown)', 'ptyManager.killAll()', 'if (opts.relaunch) app.relaunch({ args: switchRelaunchArgs(process.argv.slice(1)) });', 'app.quit();'].map((x) => body.indexOf(x));
   assert.ok(order.every((i) => i > 0) && order.every((v, i) => i === 0 || v > order[i - 1]), 'live agents recorded, terminals stopped, then relaunch and quit');
+});
+
+// Review F1, F2 (52051eda): Switch floor reopened the same floor in a floor process or after a Floor
+// location change, and a floor process opened whatever home its config named, not its --floor-home.
+const floorArgv = (data, shared, home) => ['/App/Paramount', `--floor-data=${data}`, `--floor-shared=${shared}`, `--floor-home=${home}`];
+
+test('boot plan: a floor process opens its own --floor-home even when its config names another home; after Switch, the picker', () => {
+  const argv = floorArgv('/S/floors/b', '/S', '/w/B');
+  assert.deepEqual(plain(floors.bootFloorPlan(argv, '/w/C')), { open: '/w/B', rewriteConfig: true });
+  assert.deepEqual(plain(floors.bootFloorPlan(argv, '/w/B')), { open: '/w/B', rewriteConfig: false });
+  assert.deepEqual(plain(floors.bootFloorPlan([...argv, floors.FLOOR_PICKER_FLAG], '/w/B')), { open: null, rewriteConfig: false });
+  assert.deepEqual(plain(floors.bootFloorPlan(['/App/Paramount'], '/w/A')), { open: null, rewriteConfig: false }, 'main: the picker');
+  assert.deepEqual(plain(floors.bootFloorPlan(['/App/Paramount', floors.OPEN_LAST_FLOOR_FLAG], '/w/A')), { open: '/w/A', rewriteConfig: false }, 'main after a location change');
+});
+
+test('Switch floor relaunch args: never the Floor location flag; a floor process keeps its floor and starts at its picker', () => {
+  const args = floorArgv('/S/floors/b', '/S', '/w/B').slice(1);
+  const sw = floors.switchRelaunchArgs(args);
+  assert.deepEqual(sw, [...args, floors.FLOOR_PICKER_FLAG]);
+  assert.deepEqual(floors.switchRelaunchArgs(sw), sw, 'a second Switch adds no second flag');
+  assert.equal(floors.bootFloorPlan(['/App/Paramount', ...sw], '/w/B').open, null, 'the relaunched floor process shows the picker');
+  assert.deepEqual(floors.switchRelaunchArgs(['--user-data-dir=/P', floors.OPEN_LAST_FLOOR_FLAG]), ['--user-data-dir=/P'], 'main after a location change: the picker');
+  assert.equal(floors.bootFloorPlan(['/App/Paramount', '--user-data-dir=/P'], '/w/A').open, null);
+});
+
+test('Floor location in a floor process restarts it as the new home\'s floor, on that home\'s data folder', () => {
+  const args = floorArgv('/S/floors/b', '/S', '/w/B').slice(1);
+  const moved = floors.moveRelaunchArgs([...args, floors.FLOOR_PICKER_FLAG], { home: '/w/C', dataDir: '/S/floors/c' });
+  assert.deepEqual(moved, ['--floor-data=/S/floors/c', '--floor-shared=/S', '--floor-home=/w/C']);
+  assert.deepEqual(plain(floors.bootFloorPlan(['/App/Paramount', ...moved], '/w/C')), { open: '/w/C', rewriteConfig: false });
+  assert.deepEqual(floors.moveRelaunchArgs(['--user-data-dir=/P', floors.OPEN_LAST_FLOOR_FLAG], { home: '/w/C', dataDir: 'x' }), ['--user-data-dir=/P', floors.OPEN_LAST_FLOOR_FLAG], 'main: reopen the configured floor once');
+  assert.match(INDEX, /if \(isFloorProcess\(\)\) \{\s*try \{\s*mkdirSync\(moveTo\.dataDir, \{ recursive: true \}\);\s*writeFileSync\(join\(moveTo\.dataDir, 'config\.json'\), JSON\.stringify\(readConfig\(\), null, 2\), \{ encoding: 'utf8', mode: 0o600 \}\);/);
+});
+
+test('a floor process at its picker opens another floor as that floor\'s own process, then closes', async (t) => {
+  const w = world(t);
+  const config = { onboardingComplete: true, harnessHome: w.a, recentHives: [w.a, w.b] };
+  const gate = createFloorGate(me(w.userData), isAlive);
+  const plans = [];
+  const recordSpawn = (command, args, opts) => { plans.push({ command, args, opts }); return spawn(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' }); };
+  const c = floorsBlock(gate, config, w.userData, recordSpawn, { home: w.a });
+  assert.equal(c.floorChoice().pending, true, 'relaunched after Switch: nothing open');
+  const r = await c.openFloorProcess(w.b);
+  assert.equal(r.ok, true);
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0].args.at(-1), `--floor-home=${w.b}`);
+  await new Promise((res) => setTimeout(res, 400));
+  assert.equal(c.allowQuit, true);
+  assert.deepEqual(plain(c.calls.filter((x) => x[0] === 'app.quit')), [['app.quit']], 'this floor process closes');
+  assert.equal(config.harnessHome, w.a, "this process's config still names its own home");
 });
 
 // ─── commands ───────────────────────────────────────────────────────────────
@@ -271,6 +325,17 @@ function commandFixture({ pending = true, openState = { state: 'open', floor: '/
       picker: (open) => calls.push(['picker', open]), switchFloor: () => calls.push(['switchFloor']), dataFolderRefusal: () => null } };
   return { calls, run: (cmd) => dispatchFloorSetup(cmd, deps, span) };
 }
+
+test('floor.open in a floor process at its picker: its own home opens here, any other home as its own process', async () => {
+  const calls = [];
+  const deps = { config: () => ({ onboardingComplete: true, harnessHome: '/f/a' }), suggestedHome: () => '/tmp/P', engines: () => [], publish: () => {},
+    floor: { state: () => ({ state: 'none' }), claim() {}, retry() {}, chooseAnother() {}, choice: () => ({ pending: true, newFloor: false, last: '/f/a', recents: [] }),
+      open: (home) => { calls.push(['open', home]); return { state: 'open', floor: home }; }, openProcess: async (home) => { calls.push(['openProcess', home]); return { ok: true, home }; },
+      ownHome: () => '/f/a', picker() {}, switchFloor() {}, dataFolderRefusal: () => null } };
+  assert.equal(dispatchFloorSetup({ type: 'floor.open', home: '/f/a' }, deps, span).ok, true);
+  assert.equal((await dispatchFloorSetup({ type: 'floor.open', home: '/f/b' }, deps, span)).ok, true);
+  assert.deepEqual(calls, [['open', '/f/a'], ['openProcess', '/f/b']]);
+});
 
 test('floor.open opens here at launch and starts a process with a floor open; floor.picker; refusals', async () => {
   let f = commandFixture();

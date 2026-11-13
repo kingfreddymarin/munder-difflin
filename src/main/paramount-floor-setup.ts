@@ -6,7 +6,7 @@ import { resolveAgentModel } from './paramount-models';
 // write; the caller's existing config path then bootstraps the hive.
 import { discoverLaunchers, publicDiscovery, validateLauncher, saveLauncherPick, type LauncherDiscovery, type LauncherPick } from './council-account-launchers';
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { ParamountCommand, ParamountErrorCode, ParamountEvent, ParamountResult } from '../preload/paramount';
 import type { FloorGateState } from './floor-lock';
 
@@ -54,6 +54,8 @@ export interface FloorSetupDeps {
     open?(home: string): FloorGateState;
     /** New Floor…: start the floor as its own app process (Munder's floor:open). */
     openProcess?(home: string): Promise<{ ok: true; home: string } | { ok: false; error: string; refusal?: string }>;
+    /** A floor process's own home (null in the main process): the only floor it opens itself. */
+    ownHome?(): string | null;
     /** Show or close the New Floor… picker. */
     picker?(open: boolean): void;
     /** Stop this floor's agents as quit does and restart at the launch picker. */
@@ -198,7 +200,9 @@ function dispatchFloorChoice(command: Record<string, unknown>, deps: FloorSetupD
   if (Object.keys(command).some((k) => k !== 'type' && k !== 'home')) return fail('INVALID_INPUT', 'floor.open takes home');
   if (!oneLine(command.home, 1024) || !isAbsolute(command.home.trim())) return fail('INVALID_INPUT', 'Choose a full folder path for the floor');
   const home = command.home.trim();
-  if (!floor.choice().pending) {
+  // A floor process opens only its own home; any other floor starts as that floor's own process.
+  const own = floor.ownHome?.() ?? null;
+  if (!floor.choice().pending || (own && resolve(home) !== resolve(own))) {
     return floor.openProcess(home).then((r) => r.ok ? done() : fail(r.refusal === 'held' ? 'CONFLICT' : r.refusal === 'data-folder' || r.refusal === 'invalid' || r.refusal === 'current' ? 'INVALID_INPUT' : 'INTERNAL', r.error));
   }
   const state = floor.open(home);

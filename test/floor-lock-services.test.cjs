@@ -54,21 +54,25 @@ test('F2: index.ts gives every floor-bound service the gated home and refuses fl
 // The real config:changeHome handler from index.ts, with app teardown stubbed and real files in
 // temporary folders (the review's command B, with the real floor gate).
 function changeHome(oldHome, gate) { return changeHomeWith(oldHome, gate, () => null); }
-function changeHomeWith(oldHome, gate, refusal) {
+function changeHomeWith(oldHome, gate, refusal, proc = {}) {
   const filterSrc = INDEX.slice(INDEX.indexOf('function isNotFloorLockPath('), INDEX.indexOf('// Change the harnessHome folder.'));
   const handlerSrc = INDEX.slice(INDEX.indexOf("ipcMain.handle('config:changeHome'"), INDEX.indexOf('// ─── IPC: filesystem'));
   let handler; const calls = [];
   const noop = () => {};
-  const ctx = { ...fs, ...path, console, process, FLOOR_LOCK_FILE, floorGate: gate, OPEN_LAST_FLOOR_FLAG: '--council-open-floor',
+  const floorsTs = loadTs('src/main/floors.ts');
+  const cfg = { harnessHome: oldHome };
+  const ctx = { ...fs, ...path, console, process: proc.argv ? { ...process, argv: proc.argv } : process, FLOOR_LOCK_FILE, floorGate: gate,
+    floorDataDirFor: floorsTs.floorDataDirFor, moveRelaunchArgs: floorsTs.moveRelaunchArgs,
+    isFloorProcess: () => !!proc.argv, sharedDataDir: () => proc.shared ?? '/S',
     dataFolderRefusal: (home) => refusal(home), appDataDirs: () => [],
     ipcMain: { handle: (_, fn) => { handler = fn; } },
-    readConfig: () => ({ harnessHome: oldHome }), expandTilde: (x) => x,
+    readConfig: () => (proc.argv ? { ...cfg } : { harnessHome: oldHome }), expandTilde: (x) => x,
     ensureHarnessHome: (h) => { fs.mkdirSync(path.join(h, 'hive'), { recursive: true }); return { ok: true }; },
     clearMissionTimers: noop, clearContextTimers: noop, stopWebhookDoneObserver: noop, stopEphemeralWorkerWatcher: noop,
     integrationBroker: { stop: noop }, hive: { stopRouter: noop }, hookServer: { stop: noop }, stopSlackServer: noop,
     stopWebhookServer: noop, memory: { stop: noop, drain: async () => {} }, reflector: { stop: noop, drain: async () => {} }, bootstrapHiveServices: noop,
     startSlackServer: noop, reconcileWebhookServer: noop,
-    writeConfig: (c) => calls.push(['writeConfig', c]), ptyManager: { killAll: () => calls.push(['killAll']) },
+    writeConfig: (c) => { calls.push(['writeConfig', c]); Object.assign(cfg, c); }, ptyManager: { killAll: () => calls.push(['killAll']) },
     app: { relaunch: (o) => calls.push(['relaunch', o]), exit: () => calls.push(['exit']) }, allowQuit: false };
   vm.runInNewContext(ts.transpileModule(filterSrc + handlerSrc, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, ctx);
   return { run: (payload) => handler({}, payload), calls };
@@ -151,4 +155,24 @@ test('a location change relaunches straight onto the new floor', async (t) => {
   assert.equal((await h.run({ newHome: dest, mode: 'fresh' })).ok, true);
   const relaunch = h.calls.find((c) => c[0] === 'relaunch');
   assert.ok(relaunch[1].args.includes('--council-open-floor'));
+});
+
+test('review F2: a location change in a floor process restarts it as the new home\'s floor, with its config in that data folder', async (t) => {
+  const { old, dest } = homes(t);
+  const shared = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-shared-'));
+  t.after(() => fs.rmSync(shared, { recursive: true, force: true }));
+  const gate = createFloorGate(council, () => true);
+  gate.claim(old);
+  const floorsTs = loadTs('src/main/floors.ts');
+  const argv = ['/App/Paramount', `--floor-data=${floorsTs.floorDataDirFor(shared, old)}`, `--floor-shared=${shared}`, `--floor-home=${old}`];
+  const h = changeHomeWith(old, gate, () => null, { argv, shared });
+  assert.equal((await h.run({ newHome: dest, mode: 'fresh' })).ok, true);
+  const newData = floorsTs.floorDataDirFor(shared, dest);
+  const relaunch = h.calls.find((c) => c[0] === 'relaunch');
+  assert.deepEqual(relaunch[1].args, [`--floor-data=${newData}`, `--floor-shared=${shared}`, `--floor-home=${dest}`]);
+  const written = JSON.parse(fs.readFileSync(path.join(newData, 'config.json'), 'utf8'));
+  assert.equal(written.harnessHome, dest);
+  assert.equal(fs.statSync(path.join(newData, 'config.json')).mode & 0o777, 0o600);
+  assert.equal(floorsTs.bootFloorPlan(['/App/Paramount', ...relaunch[1].args], written.harnessHome).open, dest);
+  gate.release();
 });

@@ -1,7 +1,7 @@
 // Paramount identity (name, userData, UI scheme) — must evaluate before any
 // other module reads userData, so it is the first import.
-import { councilBuild, councilVersion, floorProcessHome, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
-import { dataFolderRefusal, floorDataDirFor, floorSpawnPlan, normaliseHome, probeFloor, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
+import { councilBuild, councilVersion, floorProcessHome, isFloorProcess, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
+import { bootFloorPlan, dataFolderRefusal, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
 import { resolveLauncherForSpawn, createLauncherDiscoveryCache, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
@@ -3463,7 +3463,16 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   // reserved for the relaunch (same profile, so the new process takes it over as its own).
   floorGate.release();
   // Straight back onto the new folder: the relaunch opens it instead of stopping at the picker.
-  app.relaunch({ args: [...process.argv.slice(1).filter((a) => a !== OPEN_LAST_FLOOR_FLAG), OPEN_LAST_FLOOR_FLAG] });
+  // A floor process restarts as the new home's floor (review F2): its config moves to that home's
+  // data folder, so the same home is never opened under two data folders.
+  const moveTo = { home: newHome, dataDir: floorDataDirFor(sharedDataDir(), newHome) };
+  if (isFloorProcess()) {
+    try {
+      mkdirSync(moveTo.dataDir, { recursive: true });
+      writeFileSync(join(moveTo.dataDir, 'config.json'), JSON.stringify(readConfig(), null, 2), { encoding: 'utf8', mode: 0o600 });
+    } catch (e) { console.error('[changeHome] floor config', e); }
+  }
+  app.relaunch({ args: moveRelaunchArgs(process.argv.slice(1), moveTo) });
   app.exit(0);
   return { ok: true as const }; // unreachable (process exits) — typed for the renderer
 });
@@ -3790,8 +3799,6 @@ function paramountPublish(event: ParamountEvent): void {
 // so several floors run at once. A floor process is started for one home and opens it directly.
 let floorChosen = false;
 let newFloorPicker = false;
-/** Set on the relaunch after a Floor location change: open the configured floor without the picker. */
-const OPEN_LAST_FLOOR_FLAG = '--council-open-floor';
 /** The app's data folders a floor may never use (this process's, and the shared main one). */
 const appDataDirs = (): string[] => [...new Set([app.getPath('userData'), sharedDataDir()])];
 function floorContext(): FloorContext {
@@ -3848,6 +3855,9 @@ async function openFloorProcess(home: string): Promise<{ ok: true; home: string 
         newFloorPicker = false;
         broadcastParamountInvalidation('floor-lock');
         done({ ok: true, home: v.home });
+        // A floor process at its picker (after Switch floor) hosts only its own home: another floor
+        // runs as that floor's process, and this one, with nothing open, closes (review F1, F2).
+        if (isFloorProcess() && floorGate.state().state !== 'open') { allowQuit = true; setTimeout(() => app.quit(), 250); }
       });
       child.once('error', (e) => done({ ok: false, error: e.message }));
     } catch (e) { done({ ok: false, error: e instanceof Error ? e.message : String(e) }); }
@@ -3908,6 +3918,7 @@ function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
       choice: floorChoice,
       open: openChosenFloor,
       openProcess: openFloorProcess,
+      ownHome: floorProcessHome,
       picker: requestFloorPicker,
       switchFloor,
     },
@@ -4406,7 +4417,8 @@ function teardownAndQuit(opts: { relaunch?: boolean } = {}): void {
   try { hive.stopAllProxyBridges(); } catch (e) { console.error('[quit] stopAllProxyBridges:', e); }
   try { ptyManager.killAll(); } catch (e) { console.error('[quit] killAll:', e); }
   // Switch floor: the same quit (will-quit still releases the floor last), then start again at the picker.
-  if (opts.relaunch) app.relaunch();
+  // Never with the floor or Floor location flags (review F1): a floor process restarts at its picker.
+  if (opts.relaunch) app.relaunch({ args: switchRelaunchArgs(process.argv.slice(1)) });
   app.quit();
 }
 ipcMain.handle('app:confirmClose', () => {
@@ -6063,8 +6075,10 @@ app.whenReady().then(() => {
   // Owner request 2026-11-12: the main process claims no floor at boot. The picker opens one
   // (openChosenFloor) and first-run setup opens the floor it creates. A floor process was started
   // for one home (floor.open in another floor) and opens it now.
-  if (floorProcessHome()) { floorChosen = true; bootstrapHiveServices(); }
-  else if (process.argv.includes(OPEN_LAST_FLOOR_FLAG) && readConfig().harnessHome) openChosenFloor(readConfig().harnessHome as string);
+  // A floor process opens its own --floor-home, never another home its config was pointed at (review F2).
+  { const boot = bootFloorPlan(process.argv, readConfig().harnessHome ?? null);
+    if (floorProcessHome() && boot.open) { if (boot.rewriteConfig) writeConfig({ harnessHome: boot.open }); floorChosen = true; bootstrapHiveServices(); }
+    else if (boot.open) openChosenFloor(boot.open); }
   registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, log: (step) => paramountLog(step), onQuit: (fn) => { beforeTeardown.push(fn); app.on('will-quit', fn); keepFloorReleaseLast(); } }); // Munder useRestoreTeam parity (paramount-runtime.ts)
   // A timed YOLO window that ended while the app was closed turns autoMode off now.
   armAutoModeExpiry();

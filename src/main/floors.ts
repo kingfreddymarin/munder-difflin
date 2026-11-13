@@ -35,6 +35,41 @@ export function parseFloorArgs(argv: readonly string[]): FloorArgs | null {
   return { dataDir: resolve(dataDir), sharedDir: resolve(sharedDir), home: home && isAbsolute(home) ? resolve(home) : null };
 }
 
+/** Set on the relaunch after a Floor location change: the main process opens the configured floor
+ *  without the picker. */
+export const OPEN_LAST_FLOOR_FLAG = '--council-open-floor';
+/** Set on a floor process's relaunch after Switch floor: start at the picker, not on its home. */
+export const FLOOR_PICKER_FLAG = '--council-floor-picker';
+
+/** What a process opens at boot (review F1, F2). A floor process opens its own --floor-home, never
+ *  the home in its config, and after Switch floor shows the picker instead. The main process opens
+ *  nothing (the picker) except on the relaunch after a Floor location change. `rewriteConfig` says
+ *  a floor process's config names another home and must be pointed back at its own. */
+export function bootFloorPlan(argv: readonly string[], configHome: string | null): { open: string | null; rewriteConfig: boolean } {
+  const floor = parseFloorArgs(argv);
+  if (floor?.home) {
+    if (argv.includes(FLOOR_PICKER_FLAG)) return { open: null, rewriteConfig: false };
+    return { open: floor.home, rewriteConfig: !configHome || resolve(configHome) !== floor.home };
+  }
+  if (argv.includes(OPEN_LAST_FLOOR_FLAG) && configHome) return { open: configHome, rewriteConfig: false };
+  return { open: null, rewriteConfig: false };
+}
+
+/** Relaunch arguments for Switch floor (review F1): never reopen a floor. The main process drops the
+ *  Floor location flag; a floor process keeps its floor flags and adds the picker flag. */
+export function switchRelaunchArgs(args: readonly string[]): string[] {
+  const rest = args.filter((a) => a !== OPEN_LAST_FLOOR_FLAG && a !== FLOOR_PICKER_FLAG);
+  return parseFloorArgs(rest)?.home ? [...rest, FLOOR_PICKER_FLAG] : rest;
+}
+
+/** Relaunch arguments after a Floor location change (review F2). The main process opens the new
+ *  home from its config; a floor process restarts as the new home's floor, on that home's data folder. */
+export function moveRelaunchArgs(args: readonly string[], move: { home: string; dataDir: string }): string[] {
+  const rest = args.filter((a) => a !== OPEN_LAST_FLOOR_FLAG && a !== FLOOR_PICKER_FLAG);
+  if (!parseFloorArgs(rest)?.home) return [...rest, OPEN_LAST_FLOOR_FLAG];
+  return rest.map((a) => a.startsWith(FLOOR_DATA_FLAG) ? `${FLOOR_DATA_FLAG}${move.dataDir}` : a.startsWith(FLOOR_HOME_FLAG) ? `${FLOOR_HOME_FLAG}${move.home}` : a);
+}
+
 /** A floor's own data folder: one per home folder, under the shared (main) data folder. */
 export function floorDataDirFor(sharedDir: string, home: string): string {
   return join(sharedDir, FLOORS_DIR, createHash('sha1').update(resolve(home)).digest('hex').slice(0, 12));
