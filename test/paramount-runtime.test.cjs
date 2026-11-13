@@ -223,7 +223,7 @@ test('the 4-second snapshot logs only failures, and the service probe only state
   await traced('paramount.snapshot', (e) => lines.push(e), {}, async () => { throw new Error('boom'); }, { quiet: true });
   assert.ok(lines.some((l) => l.phase === 'end' && l.outcome === 'fail'));
   const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
-  assert.match(code, /\}\), \{ rethrow: true, quiet: true \}\)\);\n\/\*\* Roots for agents\.discover\/import/);
+  assert.match(code, /\}\); \}, \{ rethrow: true, quiet: true \}\)\);\n\/\*\* Roots for agents\.discover\/import/);
   assert.match(code, /if \(lastProbeState\.get\(prereqId\) !== state\) \{/);
 });
 

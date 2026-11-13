@@ -2,7 +2,7 @@
 // other module reads userData, so it is the first import.
 import { councilBuild, councilVersion, floorProcessHome, isFloorProcess, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
 import { bootFloorPlan, dataFolderRefusal, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
-import { resolveLauncherForSpawn, createLauncherDiscoveryCache, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
+import { resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, saveLauncherPick, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
@@ -90,6 +90,7 @@ import { createFloorGate, FLOOR_LOCK_FILE, floorOwnerName, removeFloorContents, 
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { agentActivity, type ActivityFacts } from './paramount-activity';
+import { lagOp, startLagProbe } from './lag-probe';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { readHireManifestFiles } from './hire';
@@ -1384,6 +1385,7 @@ const costTotals = new CostLedgerTotals();
  *  hive's sibling sessions. PII-free; never throws (called from a timer). */
 function writeFleetSnapshot(): void {
   if (!hive.enabled()) return;
+  const doneLag = lagOp('fleet.snapshot');
   try {
     const reg = hive.registry();
     const snap = telemetry.snapshot();
@@ -1423,7 +1425,7 @@ function writeFleetSnapshot(): void {
     hive.writeFleetSnapshot({ ts: now, agents, hooks: hookServer.health() });
   } catch (e) {
     console.error('[fleet] snapshot failed:', e);
-  }
+  } finally { doneLag(); }
 }
 
 /** Arm the heartbeat with an adaptive, self-rescheduling cadence (recursive
@@ -3733,7 +3735,7 @@ function paramountSetIntegrationConnected(connectionId: string, connected: boole
 /** Paramount calls log `paramount-op` start/end lines and `paramount-error`
  *  lines into the hive's log.jsonl; see paramountObservability.ts. */
 const paramountLog: LogSink = (event) => hive.appendLog(event);
-ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => ({
+ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => { const cfg = readConfig(); return ({
   floorSetup: floorSetupState(paramountFloorSetupDeps(evt.sender)),
   hookSocket: hookServer.health(),
   ...(orchestratorStart.failure() ? { orchestratorFailure: orchestratorStart.failure() } : {}),
@@ -3742,14 +3744,14 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   log: hive.logTail(500), roster: roster.read(),
   // Live busy/idle, last tool, tokens and context per agent: the Team graph's status and 'doing'.
   activity: paramountActivity(),
-  config: { notifications: readConfig().notifications, autoMode: readConfig().autoMode, autoModeExpiresAt: readConfig().autoModeExpiresAt, accessMatrix: readConfig().accessMatrix ?? {},
-    defaultModel: readConfig().defaultModel, godProvider: readConfig().godProvider, orchestratorMaySpawn: readConfig().orchestratorMaySpawn,
-    ticketKeyPrefix: readConfig().ticketKeyPrefix ?? '',
-    semanticMemory: readConfig().semanticMemory, embeddingModel: readConfig().embeddingModel, reflectEnabled: readConfig().reflectEnabled,
-    maxTurns: readConfig().maxTurns, costCapTokens: readConfig().costCapTokens, circuitBreaker: effectiveCircuitBreaker(readConfig().circuitBreaker),
-    providerBaseUrls: readConfig().providerBaseUrls ?? {}, providerDefaultModels: readConfig().providerDefaultModels ?? {},
-    responseStyleBrief: readConfig().responseStyleBrief ?? '', claudeOutputStyle: readConfig().claudeOutputStyle ?? 'off' },
-  missions: readConfig().missions ?? [],
+  config: { notifications: cfg.notifications, autoMode: cfg.autoMode, autoModeExpiresAt: cfg.autoModeExpiresAt, accessMatrix: cfg.accessMatrix ?? {},
+    defaultModel: cfg.defaultModel, godProvider: cfg.godProvider, orchestratorMaySpawn: cfg.orchestratorMaySpawn,
+    ticketKeyPrefix: cfg.ticketKeyPrefix ?? '',
+    semanticMemory: cfg.semanticMemory, embeddingModel: cfg.embeddingModel, reflectEnabled: cfg.reflectEnabled,
+    maxTurns: cfg.maxTurns, costCapTokens: cfg.costCapTokens, circuitBreaker: effectiveCircuitBreaker(cfg.circuitBreaker),
+    providerBaseUrls: cfg.providerBaseUrls ?? {}, providerDefaultModels: cfg.providerDefaultModels ?? {},
+    responseStyleBrief: cfg.responseStyleBrief ?? '', claudeOutputStyle: cfg.claudeOutputStyle ?? 'off' },
+  missions: cfg.missions ?? [],
   // Main-process hires do not enter the legacy renderer-owned roster. Project
   // the live ownership map so Paramount can display their actual terminals.
   ptys: ptyManager.list().map((pty) => ({ ...pty, agentId: ptyToAgent.get(pty.id) })),
@@ -3762,7 +3764,7 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
     tools: { claude: { path: ptyManager.commandPath('claude') }, mempalace: { path: ptyManager.commandPath('mempalace') } },
     // Installed engines that are not signed in (owner run of ceeb4aaf: a revoked Codex token went unnoticed).
     signIn: Object.fromEntries((['claude', 'codex'] as const).filter((e) => ptyManager.commandPath(e)).map((e) => [e, engineSignIn.status(e)])) }
-}), { rethrow: true, quiet: true }));
+}); }, { rethrow: true, quiet: true }));
 /** Roots for agents.discover/import, resolved per call so a changed CODEX_HOME
  *  or Munder config is picked up. Read-only: agentSources.ts never writes. */
 function paramountAgentRoots(): AgentSourceRoots {
@@ -3942,7 +3944,8 @@ function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
 }
 /** Account launchers found in the login shell: one cached result, rerun only by
  *  `launchers.refresh` (setup screen, "Refresh launchers"). Never per snapshot. */
-const launcherDiscovery = createLauncherDiscoveryCache();
+// The login-shell probe runs off the main thread (owner use of 8f574966: beach ball); warmed at boot.
+const launcherDiscovery = createLauncherDiscoveryCache(discoverLaunchers, discoverLaunchersAsync);
 function paramountResolveModel(provider: string, choices: Array<string | undefined>): string | undefined {
   return resolveAgentModel(provider, choices, (engine) => teamModels(paramountModelCatalog(), app.getVersion()).find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
 }
@@ -3961,7 +3964,7 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
     addTask: (task) => hive.enabled() && hive.addTask(task as HiveTask),
     modelCatalog: paramountModelCatalog,
     launcherDiscovery: () => launcherDiscovery.current(),
-    refreshLaunchers: () => { launcherDiscovery.refresh(); },
+    refreshLaunchers: async () => { await launcherDiscovery.refresh(); },
     claimFloor: () => { const root = hive.root(); return !root || claimFloor(root); },
     appVersion: app.getVersion(),
     defaultModel: () => readConfig().defaultModel,
@@ -5933,7 +5936,7 @@ function armAlwaysOnBeats(): void {
   if (breakerBeatTimer) clearInterval(breakerBeatTimer);
   breakerBeatTimer = setInterval(() => { try { runBreakerBeat(300_000); } catch (e) { console.error('[breaker beat]', e); } }, 30_000);
   if (workerWakeTimer) clearInterval(workerWakeTimer);
-  workerWakeTimer = setInterval(() => { try { runWorkerWakeBeat(); } catch (e) { console.error('[worker-wake beat]', e); } }, WORKER_WAKE_POLL_MS);
+  workerWakeTimer = setInterval(() => { const doneLag = lagOp('worker-wake.beat'); try { runWorkerWakeBeat(); } catch (e) { console.error('[worker-wake beat]', e); } finally { doneLag(); } }, WORKER_WAKE_POLL_MS);
   runWorkerWakeBeat(); // catch-up on arm — power-resume re-arms and drains the backlog
   // The hook socket is the whole control plane; a session where it is silently
   // unbound looks exactly like "no workers have spawned yet" (#277). Verify it
@@ -6041,6 +6044,10 @@ app.whenReady().then(() => {
     enabled: readConfig().telemetryEnabled !== false
   });
 
+  // Main-thread lag probe (owner use of 8f574966: beach ball): a stall over 200 ms is logged to the
+  // floor as 'paramount-lag' with the operations running during it.
+  void launcherDiscovery.warm()?.catch(() => { /* a failed probe is reported when launchers are read */ });
+  startLagProbe({ now: () => Date.now(), log: (event) => { console.warn(`[lag] ${event.ms} ms during ${event.op}`); try { hive.appendLog(event); } catch { /* no floor yet */ } } });
   // Warm the model catalog cache before any picker opens. The renderer reads
   // the same cache over IPC on load; doing the network hop here means the file
   // is already fresh on disk by the time a modal is opened, and a failure is

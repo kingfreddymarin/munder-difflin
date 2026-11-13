@@ -21,7 +21,7 @@
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
-  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync
+  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, readSync, closeSync
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative } from 'node:path';
 import { homedir } from 'node:os';
@@ -390,6 +390,35 @@ function pruneCrashLogs(dir: string): void {
       try { unlinkSync(join(dir, stale)); } catch { /* already gone, or not ours */ }
     }
   } catch { /* unreadable directory is not worth failing an exit path over */ }
+}
+
+/** How long a cached mail folder is trusted without a change in its mtime. */
+const VOICE_CACHE_MS = 5 * 60_000;
+
+/** The last `n` non-empty lines of a text file, read backwards in chunks from its end. */
+export function tailLines(file: string, n: number): string[] {
+  if (n <= 0) return [];
+  const fd = openSync(file, 'r');
+  try {
+    const size = statSync(file).size;
+    const chunk = 64 * 1024;
+    let pos = size;
+    let text = '';
+    let newlines = 0;
+    while (pos > 0 && newlines <= n) {
+      const len = Math.min(chunk, pos);
+      pos -= len;
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, pos);
+      const part = buf.toString('latin1');
+      for (let i = 0; i < part.length; i++) if (part.charCodeAt(i) === 10) newlines++;
+      text = part + text;
+    }
+    // latin1 keeps byte offsets; decode as UTF-8 once, after dropping a possibly partial first line.
+    let body = Buffer.from(text, 'latin1');
+    if (pos > 0) { const nl = body.indexOf(10); body = nl >= 0 ? body.subarray(nl + 1) : Buffer.alloc(0); }
+    return body.toString('utf8').split('\n').filter(Boolean).slice(-n);
+  } finally { closeSync(fd); }
 }
 
 export class HiveManager {
@@ -2050,49 +2079,38 @@ export class HiveManager {
       return [];
     }
 
-    const seen = new Set<string>();
-    const out: VoiceMessage[] = [];
+    // Unchanged folders give the same cached lists: reuse the merged, sorted result.
+    const lists: VoiceMessage[][] = [];
     for (const owner of owners) {
       const base = this.agentDir(owner);
-      const folders: Array<{ dir: string; direction: 'inbox' | 'outbox'; archived: boolean }> = [
-        { dir: join(base, 'inbox'), direction: 'inbox', archived: false },
-        { dir: join(base, 'outbox'), direction: 'outbox', archived: false }
-      ];
-      if (includeArchived) {
-        folders.push({ dir: join(base, 'inbox', '.done'), direction: 'inbox', archived: true });
-        folders.push({ dir: join(base, 'outbox', '.sent'), direction: 'outbox', archived: true });
-      }
-      for (const f of folders) {
-        for (const m of this.listMessages(f.dir)) {
-          if (!m || typeof m.id !== 'string' || seen.has(m.id)) continue;
-          seen.add(m.id);
-          if (wantId && m.id !== wantId) continue;
-          out.push({
-            id: m.id,
-            conversation: m.conversation,
-            from: m.from,
-            to: m.to,
-            act: m.act,
-            subject: redactSecrets(m.subject),
-            body: redactSecrets(m.body),
-            requires_reply: !!m.requires_reply,
-            direction: f.direction,
-            owner,
-            archived: f.archived,
-            created_at: m.created_at
-          });
-        }
-      }
+      lists.push(this.voiceFolder(join(base, 'inbox'), owner, 'inbox', false), this.voiceFolder(join(base, 'outbox'), owner, 'outbox', false));
+      if (includeArchived) lists.push(this.voiceFolder(join(base, 'inbox', '.done'), owner, 'inbox', true), this.voiceFolder(join(base, 'outbox', '.sent'), owner, 'outbox', true));
     }
-
-    // Newest first by ISO created_at (lexicographic == chronological for ISO-8601).
-    out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
-    if (wantId) return out.slice(0, 1);
+    const memoKey = `${onlyAgent}\0${includeArchived}`;
+    const memo = this.voiceMerged;
+    let merged: VoiceMessage[];
+    if (!wantId && memo && memo.key === memoKey && memo.lists.length === lists.length && memo.lists.every((l, i) => l === lists[i])) {
+      merged = memo.out;
+    } else {
+      const seen = new Set<string>();
+      merged = [];
+      for (const list of lists) for (const v of list) {
+        if (seen.has(v.id)) continue;
+        seen.add(v.id);
+        if (wantId && v.id !== wantId) continue;
+        merged.push(v);
+      }
+      // Newest first by ISO created_at (lexicographic == chronological for ISO-8601).
+      merged.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+      if (!wantId) this.voiceMerged = { key: memoKey, lists, out: merged };
+    }
+    if (wantId) return merged.slice(0, 1).map((v) => ({ ...v }));
     const lim = typeof opts.limit === 'number' && isFinite(opts.limit)
       ? Math.max(1, Math.min(40, Math.round(opts.limit)))
       : 12;
-    return out.slice(0, lim);
+    return merged.slice(0, lim).map((v) => ({ ...v }));
   }
+  private voiceMerged: { key: string; lists: VoiceMessage[][]; out: VoiceMessage[] } | null = null;
   /** Count undrained inbox messages for an agent (cheap — for the fleet snapshot). */
   inboxBacklog(id: string): number {
     const dir = join(this.agentDir(id), 'inbox');
@@ -2682,8 +2700,43 @@ export class HiveManager {
   logTail(n = 200): unknown[] {
     const root = this.root();
     if (!root || !existsSync(join(root, 'log.jsonl'))) return [];
-    const lines = readFileSync(join(root, 'log.jsonl'), 'utf8').trim().split('\n').filter(Boolean);
-    return lines.slice(-n).map((l) => { try { return JSON.parse(l); } catch { return { raw: l }; } });
+    // Read from the end only (the floor log grows to many MB; the snapshot polls it every few seconds).
+    const lines = tailLines(join(root, 'log.jsonl'), n);
+    return lines.map((l) => { try { return JSON.parse(l); } catch { return { raw: l }; } });
+  }
+
+  /** One mail folder as voice messages, cached until the folder changes (owner use of 8f574966: the
+   *  Paramount snapshot re-read and re-parsed every message of every agent, archives included, on
+   *  each poll; 5k messages cost about 150 ms of main-thread time per poll). Messages are written by
+   *  rename and moved between folders, so the folder's mtime changes with every add, move or delete;
+   *  the cache is also refreshed every VOICE_CACHE_MS as a backstop. */
+  private readonly voiceCache = new Map<string, { mtimeMs: number; at: number; list: VoiceMessage[] }>();
+  private voiceFolder(dir: string, owner: string, direction: 'inbox' | 'outbox', archived: boolean): VoiceMessage[] {
+    let mtimeMs: number;
+    try { mtimeMs = statSync(dir).mtimeMs; } catch { this.voiceCache.delete(dir); return []; }
+    const now = Date.now();
+    const hit = this.voiceCache.get(dir);
+    if (hit && hit.mtimeMs === mtimeMs && now - hit.at < VOICE_CACHE_MS) return hit.list;
+    const list: VoiceMessage[] = [];
+    for (const m of this.listMessages(dir)) {
+      if (!m || typeof m.id !== 'string') continue;
+      list.push({
+        id: m.id,
+        conversation: m.conversation,
+        from: m.from,
+        to: m.to,
+        act: m.act,
+        subject: redactSecrets(m.subject),
+        body: redactSecrets(m.body),
+        requires_reply: !!m.requires_reply,
+        direction,
+        owner,
+        archived,
+        created_at: m.created_at
+      });
+    }
+    this.voiceCache.set(dir, { mtimeMs, at: now, list });
+    return list;
   }
 
   private listMessages(dir: string): HiveMessage[] {

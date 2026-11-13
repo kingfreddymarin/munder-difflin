@@ -11,6 +11,7 @@
  *
  * No Electron import: index.ts wires the sinks, tests drive this directly.
  */
+import { lagOp } from './lag-probe';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -137,6 +138,8 @@ export async function traced<T>(
   const now = opts.now ?? Date.now;
   const span = createSpan(op, sink, context);
   const started = now();
+  // For the main-thread lag probe: a stall names the operations running during it.
+  const doneLag = lagOp(typeof context.commandType === 'string' ? `${op}:${context.commandType}` : op);
   // quiet: a polled read (the 4-second snapshot) logs only when it fails, not two lines per poll
   // (owner run of ceeb4aaf: 377 lines in 40 minutes in the floor's shared log). Munder logs changes only.
   if (!opts.quiet) safeLog(sink, { kind: 'paramount-op', phase: 'start', cid: span.cid, op, context: redact(context) });
@@ -146,7 +149,7 @@ export async function traced<T>(
     safeLog(sink, { kind: 'paramount-op', phase: 'end', cid: span.cid, op, outcome, durationMs: now() - started, ...(opts.quiet ? { context: redact(context) } : {}), ...extra });
   };
   try {
-    const result = await fn(span);
+    const result = await Promise.resolve().then(() => fn(span)).finally(doneLag);
     const failed = isFailure(result);
     const partial = failed ? [] : warningIds(result);
     end(failed ? 'fail' : partial.length ? 'error' : 'ok', failed ? { errorId: result.errorId, code: result.code } : partial.length ? { errorIds: partial } : {});

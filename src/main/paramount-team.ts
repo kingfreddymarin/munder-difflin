@@ -35,7 +35,7 @@ export interface ParamountTeamDeps {
   /** The cached launcher discovery (never runs a shell after the first read). */
   launcherDiscovery?(): ReturnType<typeof discoverLaunchers>;
   /** Reruns discovery: only the setup screen and "Refresh launchers" ask for it. */
-  refreshLaunchers?(): void;
+  refreshLaunchers?(): void | Promise<void>;
   /** Takes or keeps the floor's runtime lock; false while another live process
    *  (a second Council or Munder) runs this floor, so it keeps the orchestrator. */
   claimFloor?(): boolean;
@@ -325,8 +325,8 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
       }
       case 'launchers.refresh': {
         if (!onlyKeys(command, ['type'])) return fail('INVALID_INPUT', 'launchers.refresh takes no fields');
-        team.refreshLaunchers?.();
-        return done({});
+        // The shell probe runs off the main thread; answer once it has finished.
+        return Promise.resolve(team.refreshLaunchers?.()).then(() => done({}));
       }
       case 'launchers.configure': {
         if (!onlyKeys(command, ['type', 'scope', 'agentId', 'provider', 'launcher'])) return fail('INVALID_INPUT', 'Invalid launcher settings');

@@ -10,7 +10,7 @@
  * A source that cannot be read becomes a warning with an errorId that is also
  * logged; it never fails the whole map.
  */
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { ParamountArtifact, ParamountArtifactMap, ParamountErrorCode, ParamountResult } from '../preload/paramount';
@@ -22,7 +22,7 @@ export interface ParamountTerminalDeps {
   /** Messages the hive holds for this agent (VoiceMessage shape; redacted). */
   messages(agentId: string): unknown[];
   /** Runs git without a shell; injectable for tests. */
-  git?(cwd: string, args: string[]): ParamountGitResult;
+  git?(cwd: string, args: string[]): ParamountGitResult | Promise<ParamountGitResult>;
   /** Existing-path check; injectable for tests. */
   stat?(path: string): 'file' | 'dir' | null;
   logStep?(step: Record<string, unknown>): void;
@@ -32,11 +32,17 @@ type Fail = (code: ParamountErrorCode, message: string, cause?: unknown) => Para
 
 export const ARTIFACT_LIMITS = { commits: 10, items: 300 } as const;
 
-export function gitRunner(cwd: string, args: string[]): ParamountGitResult {
-  const run = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 4000, maxBuffer: 4 * 1024 * 1024 });
-  if (run.error) return { ok: false, stdout: '', error: run.error.message };
-  if (run.status !== 0) return { ok: false, stdout: run.stdout ?? '', error: (run.stderr || `git exited ${run.status}`).trim().slice(0, 300) };
-  return { ok: true, stdout: run.stdout ?? '' };
+/** git as a child process, off the main thread (owner use of 8f574966: each artifact map ran up to
+ *  five blocking git calls of up to 4 s each). */
+export function gitRunner(cwd: string, args: string[]): Promise<ParamountGitResult> {
+  return new Promise((done) => {
+    execFile('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 4000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const code = (error as (NodeJS.ErrnoException & { code?: unknown }) | null)?.code;
+      if (error && typeof code !== 'number') return done({ ok: false, stdout: '', error: error.message });
+      if (error) return done({ ok: false, stdout: stdout ?? '', error: (stderr || `git exited ${code}`).trim().slice(0, 300) });
+      done({ ok: true, stdout: stdout ?? '' });
+    });
+  });
 }
 
 export function statPath(path: string): 'file' | 'dir' | null {
@@ -85,7 +91,7 @@ export function parseLog(out: string): Array<{ commit: string; subject: string; 
   });
 }
 
-export function buildArtifactMap(agentId: string, cwd: string, deps: ParamountTerminalDeps, cid: string): ParamountArtifactMap {
+export async function buildArtifactMap(agentId: string, cwd: string, deps: ParamountTerminalDeps, cid: string): Promise<ParamountArtifactMap> {
   const git = deps.git ?? gitRunner;
   const stat = deps.stat ?? statPath;
   const warnings: ParamountArtifactMap['warnings'] = [];
@@ -115,21 +121,21 @@ export function buildArtifactMap(agentId: string, cwd: string, deps: ParamountTe
   if (!cwd) warn('cwd', 'This agent has no working directory in the registry');
   else if (stat(cwd) !== 'dir') warn('cwd', `Working directory does not exist: ${cwd}`);
   else {
-    const top = git(cwd, ['rev-parse', '--show-toplevel']);
+    const top = await git(cwd, ['rev-parse', '--show-toplevel']);
     // Munder's panel treats a folder outside git as empty, not broken: no warning, no errorId.
     if (!top.ok) notRepo = true;
     else {
       const root = top.stdout.trim();
-      const branch = git(cwd, ['branch', '--show-current']);
-      const head = git(cwd, ['rev-parse', '--short', 'HEAD']);
+      const branch = await git(cwd, ['branch', '--show-current']);
+      const head = await git(cwd, ['rev-parse', '--short', 'HEAD']);
       repo = { root, branch: branch.ok ? branch.stdout.trim() : '', head: head.ok ? head.stdout.trim() : '' };
-      const status = git(cwd, ['status', '--porcelain=v1', '-z']);
+      const status = await git(cwd, ['status', '--porcelain=v1', '-z']);
       if (!status.ok) warn('git-status', status.error ?? 'git status failed');
       else for (const row of parsePorcelain(status.stdout)) {
         const path = join(root, row.path);
         add({ kind: 'changed', label: row.path, path, dir: dirFor(path), status: row.status });
       }
-      const log = git(cwd, ['log', `-n${ARTIFACT_LIMITS.commits}`, '--name-only', '--format=%x1e%h%x1f%s%x1f%cI']);
+      const log = await git(cwd, ['log', `-n${ARTIFACT_LIMITS.commits}`, '--name-only', '--format=%x1e%h%x1f%s%x1f%cI']);
       if (!log.ok) { if (repo.head) warn('git-log', log.error ?? 'git log failed'); }
       else for (const c of parseLog(log.stdout)) {
         add({ kind: 'commit', label: c.subject || c.commit, commit: c.commit, at: c.at, dir: root });
@@ -156,7 +162,7 @@ export function buildArtifactMap(agentId: string, cwd: string, deps: ParamountTe
 
 /** `terminal.artifacts` handler; `cwdOf` resolves the agent's registry cwd. */
 export function runTerminalCommand(command: Record<string, unknown>, deps: ParamountTerminalDeps | undefined,
-  agents: Record<string, unknown>, cid: string, fail: Fail): { artifacts: ParamountArtifactMap } | ParamountResult {
+  agents: Record<string, unknown>, cid: string, fail: Fail): Promise<{ artifacts: ParamountArtifactMap }> | ParamountResult {
   const agentId = command.agentId;
   if (Object.keys(command).some((k) => k !== 'type' && k !== 'agentId') || typeof agentId !== 'string' || !agentId || agentId.length > 200) {
     return fail('INVALID_INPUT', 'terminal.artifacts takes { agentId }');
@@ -165,5 +171,5 @@ export function runTerminalCommand(command: Record<string, unknown>, deps: Param
   const agent = agents[agentId];
   if (!agent) return fail('NOT_FOUND', `No agent "${agentId}"`);
   const cwd = str(rec(agent).cwd);
-  return { artifacts: buildArtifactMap(agentId, cwd && isAbsolute(cwd) ? cwd : '', deps, cid) };
+  return buildArtifactMap(agentId, cwd && isAbsolute(cwd) ? cwd : '', deps, cid).then((artifacts) => ({ artifacts }));
 }

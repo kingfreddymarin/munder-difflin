@@ -8,6 +8,7 @@
 // While another live process holds it (a second Council, or a Munder build that
 // honours it), this runtime neither restores nor records, so agents are never
 // started twice. Spawn requests and inbox wake already run in main (index.ts).
+import { lagOp } from './lag-probe';
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveAgentModel } from './paramount-models';
@@ -225,7 +226,7 @@ export function createParamountRuntime(deps: RuntimeDeps): ParamountRuntime {
 /** Arm the runtime: first beat after Munder's restore delay, then every BEAT_MS. */
 export function startParamountRuntime(deps: RuntimeDeps, onQuit: (fn: () => void) => void): ParamountRuntime {
   const runtime = createParamountRuntime(deps);
-  const tick = () => { runtime.beat().catch((e) => deps.log({ kind: 'paramount-runtime', step: 'beat', outcome: 'failed', cause: String(e).slice(0, 200) })); };
+  const tick = () => { const doneLag = lagOp('runtime.beat'); runtime.beat().catch((e) => deps.log({ kind: 'paramount-runtime', step: 'beat', outcome: 'failed', cause: String(e).slice(0, 200) })).finally(doneLag); };
   const first = setTimeout(tick, RESTORE_DELAY_MS);
   const timer = setInterval(tick, BEAT_MS);
   onQuit(() => { clearTimeout(first); clearInterval(timer); runtime.quit(); });

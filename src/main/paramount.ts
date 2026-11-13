@@ -147,6 +147,17 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
   if (isBoardCommand(command.type)) return dispatchBoard(command, deps, span);
   const setup = dispatchFloorSetup(command, deps.floorSetup, span); if (setup) return setup;
   const team = dispatchTeam(command, deps, span); if (team) return team;
+  if (command.type === 'terminal.artifacts') {
+    // git runs off the main thread; the answer follows when it is done.
+    const r = runTerminalCommand(command, deps.terminal, deps.agents(), span.cid, fail);
+    if (!('then' in r)) return r;
+    return r.then(({ artifacts: map }) => {
+      const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as ParamountCommand, correlationId: span.cid };
+      deps.appendEvent(event);
+      deps.publish(event);
+      return { ok: true, event, artifacts: map } as ParamountResult;
+    }, (error: unknown) => fail('INTERNAL', error instanceof Error ? error.message : 'Command failed', error));
+  }
   let writeAttempted = false;
   let diagnostics: ParamountDiagnostics | undefined;
   let prereq: ParamountPrereqReport | undefined;
@@ -436,7 +447,6 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
       }
       case 'ask.reply': case 'ask.dismiss': case 'home.layout': case 'chats.view': { const r = dispatchHomeChats(command as unknown as ParamountHomeChatsCommand, deps, fail, () => { writeAttempted = true; }); if (r) return r; break; }
       case 'shell.openExternal': case 'shell.openIn': return runShellCommand(command, deps.shell, span.cid, fail);
-      case 'terminal.artifacts': { const r = runTerminalCommand(command, deps.terminal, deps.agents(), span.cid, fail); if (!('artifacts' in r)) return r; artifacts = r.artifacts; break; }
       case 'layout.panels':
         return fail('UNSUPPORTED', 'Team panel layout is a renderer-local preference');
       default:

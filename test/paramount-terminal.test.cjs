@@ -34,7 +34,7 @@ test('parseLog splits commits and files', () => {
   assert.deepEqual(parseLog(out), [{ commit: 'abc123', subject: 'Fix it', at: '2026-10-15T00:00:00Z', files: ['src/a.ts', 'src/b.ts'] }]);
 });
 
-test('terminal.artifacts maps a real git tree and the agent\'s own messages', () => {
+test('terminal.artifacts maps a real git tree and the agent\'s own messages', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pm-term-'));
   const git = (...a) => execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a]);
   git('init', '-q'); writeFileSync(join(dir, 'done.ts'), 'x'); git('add', '.'); git('commit', '-qm', 'First');
@@ -43,7 +43,7 @@ test('terminal.artifacts maps a real git tree and the agent\'s own messages', ()
     { id: 'm1', from: 'jim', subject: 'done', body: `see ${join(dir, 'done.ts')} and https://github.com/o/r/pull/7`, created_at: '2026-10-15T01:00:00Z' },
     { id: 'm2', from: 'pam', body: '/Users/someone/else.ts' }];
   const { deps: d, events } = deps({ jim: { cwd: dir } }, { messages: () => messages });
-  const r = dispatchParamount({ type: 'terminal.artifacts', agentId: 'jim' }, d);
+  const r = await dispatchParamount({ type: 'terminal.artifacts', agentId: 'jim' }, d);
   assert.equal(r.ok, true);
   const a = r.artifacts;
   assert.ok(a.repo && a.repo.head);
@@ -59,9 +59,9 @@ test('terminal.artifacts maps a real git tree and the agent\'s own messages', ()
   assert.equal(events.length, 1);
 });
 
-test('a missing cwd and a failing message source become logged warnings, not failures', () => {
+test('a missing cwd and a failing message source become logged warnings, not failures', async () => {
   const steps = [];
-  const map = buildArtifactMap('jim', '/definitely/not/here', { messages: () => { throw new Error('boom'); }, logStep: (s) => steps.push(s) }, 'cid1');
+  const map = await buildArtifactMap('jim', '/definitely/not/here', { messages: () => { throw new Error('boom'); }, logStep: (s) => steps.push(s) }, 'cid1');
   assert.equal(map.repo, null);
   assert.deepEqual(map.warnings.map((w) => w.source), ['cwd', 'messages']);
   assert.ok(map.warnings.every((w) => w.errorId));
@@ -77,10 +77,10 @@ test('terminal.artifacts rejects bad input, unknown agents and builds without it
   assert.equal(dispatchParamount({ type: 'terminal.artifacts', agentId: 'jim' }, none).code, 'UNSUPPORTED');
 });
 
-test('a working directory outside git is an empty map, not an error (Munder parity)', () => {
+test('a working directory outside git is an empty map, not an error (Munder parity)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pm-not-git-'));
   const steps = [];
-  const map = buildArtifactMap('god', dir, { messages: () => [], logStep: (s) => steps.push(s), git: () => ({ ok: false, stdout: '', error: 'fatal: not a git repository (or any of the parent directories): .git' }) }, 'cid-not-git');
+  const map = await buildArtifactMap('god', dir, { messages: () => [], logStep: (s) => steps.push(s), git: () => ({ ok: false, stdout: '', error: 'fatal: not a git repository (or any of the parent directories): .git' }) }, 'cid-not-git');
   assert.equal(map.notRepo, true);
   assert.equal(map.repo, null);
   assert.deepEqual(map.warnings, []);

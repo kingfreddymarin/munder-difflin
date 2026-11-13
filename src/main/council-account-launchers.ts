@@ -1,6 +1,6 @@
 /** Council extension. Queries alias/function tables without invoking launchers.
  * Resolved definitions are data: only a bounded, declarative subset is accepted. */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync, mkdirSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -69,10 +69,43 @@ export function discoverLaunchers(): Discovery { return discoverShellLaunchers()
 
 /** Discovery runs the user's login shell, so main keeps ONE result and reruns it
  *  only on an explicit refresh (setup screen, "Refresh launchers"). Snapshots and
- *  screens read `current()`; the first read discovers once. */
-export function createLauncherDiscoveryCache(discover: () => Discovery = discoverLaunchers): { current(): Discovery; refresh(): Discovery } {
+ *  screens read `current()`; the first read discovers once.
+ *  With `discoverAsync` (owner use of 8f574966: beach ball), warm() and refresh() run the shell off
+ *  the main thread; current() blocks only when nothing has been discovered yet. */
+export function createLauncherDiscoveryCache(discover: () => Discovery = discoverLaunchers, discoverAsync?: () => Promise<Discovery>): { current(): Discovery; refresh(): Discovery | Promise<Discovery>; warm(): Promise<Discovery> | undefined } {
   let cached: Discovery | undefined;
-  return { current: () => (cached ??= discover()), refresh: () => (cached = discover()) };
+  let pending: Promise<Discovery> | undefined;
+  const runAsync = (): Promise<Discovery> => {
+    const run = (pending ??= (discoverAsync as () => Promise<Discovery>)().then((d) => { cached = d; return d; }).finally(() => { pending = undefined; }));
+    return run;
+  };
+  return {
+    current: () => (cached ??= discover()),
+    refresh: () => (discoverAsync ? runAsync() : (cached = discover())),
+    warm: () => (discoverAsync && !cached ? runAsync() : undefined),
+  };
+}
+
+/** discoverShellLaunchers with the login shell run as a child process, off the main thread. */
+export async function discoverLaunchersAsync(): Promise<Discovery> {
+  // Same probe, gathered asynchronously, then parsed by the synchronous code path.
+  const shell = process.env.SHELL || '/bin/zsh';
+  let captured: ProbeResult = { stdout: '', status: null, error: { code: 'ENOENT' } };
+  let script = '';
+  // Capture the script the sync path would run, without running it.
+  discoverShellLaunchers((_exe, text) => { script = text; return { stdout: '', status: 1 }; }, 2000, homedir(), shell);
+  if (script) {
+    captured = await new Promise<ProbeResult>((done) => {
+      let out = ''; let timedOut = false;
+      const child = spawn(shell, ['-lic', script], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+      const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 2000);
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (d: string) => { if (out.length <= 256_000) out += d; });
+      child.on('error', (e) => { clearTimeout(timer); done({ stdout: '', status: null, error: { code: (e as NodeJS.ErrnoException).code } }); });
+      child.on('close', (status) => { clearTimeout(timer); done(timedOut ? { stdout: '', status: null, error: { code: 'ETIMEDOUT' } } : { stdout: out, status }); });
+    });
+  }
+  return discoverShellLaunchers(() => captured, 2000, homedir(), shell);
 }
 const NOT_DISCOVERED: Discovery = { status: 'failed', choices: [], profiles: [], message: 'Launchers have not been discovered yet. Refresh launchers.' };
 

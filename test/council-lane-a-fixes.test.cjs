@@ -146,7 +146,7 @@ test('P2: a spawn discovers at most once, and not at all without a launcher', (t
   const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
   const core = code.slice(code.indexOf('async function spawnAgentCore'), code.indexOf("ipcMain.handle('paramount:dispatch'"));
   assert.equal(core.includes('validateLauncher('), false);
-  assert.equal(core.includes('discoverLaunchers'), false);
+  assert.doesNotMatch(core, /discoverLaunchers(Async)?\(/, 'no direct discovery call (the cache is built with the functions, not their results)');
   assert.match(core, /resolveLauncherForSpawn\([\s\S]*?\}, \(\) => launcherDiscovery\.current\(\)\);/);
 });
 
