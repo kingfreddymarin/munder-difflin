@@ -14,6 +14,7 @@ import {
 import { writeFile } from 'node:fs/promises';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
@@ -94,6 +95,7 @@ import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { agentActivity, type ActivityFacts } from './paramount-activity';
 import { lagOp, startLagProbe } from './lag-probe';
+import { createSnapshotStageTimer, type SnapshotStage } from './paramountSnapshotTiming';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { readHireManifestFiles } from './hire';
@@ -3866,44 +3868,68 @@ function paramountSetIntegrationConnected(connectionId: string, connected: boole
 /** Paramount calls log `paramount-op` start/end lines and `paramount-error`
  *  lines into the hive's log.jsonl; see paramountObservability.ts. */
 const paramountLog: LogSink = (event) => hive.appendLog(event);
-ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => { const cfg = readConfig(); return ({
-  floorSetup: floorSetupState(paramountFloorSetupDeps(evt.sender)),
-  hookSocket: hookServer.health(),
-  ...(orchestratorStart.failure() ? { orchestratorFailure: orchestratorStart.failure() } : {}),
-  ...(TEST_LABEL ? { testLabel: TEST_LABEL } : {}),
-  registry: hive.registry(), tasks: hive.tasks(), messages: hive.voiceMessages({ limit: 500 }),
-  organization: (() => { try { return readOrg(hive.root(), Object.keys(hive.registry().agents ?? {})); } catch (error) { paramountLog({ kind: 'paramount-organization', step: 'read-failed', errorId: newErrorId(), message: error instanceof Error ? error.message : 'Team settings are invalid' }); return { version: 1 as const, teams: [], reportsTo: {} }; } })(),
-  archivedAgents: Object.entries(hive.registry().agents ?? {}).filter(([, agent]) => agent.archived === true).map(([id, agent]) => ({ id, name: agent.name || id })),
-  log: hive.logTail(500), roster: roster.read(),
+const paramountSnapshotStageTimer = createSnapshotStageTimer({
+  now: () => performance.now(),
+  // stderr is available before floor selection; the helper bounds this sink and emits no payloads.
+  log: (event) => console.warn(`[snapshot-stage] ${JSON.stringify(event)}`)
+});
+ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => {
+  const time = <T>(stage: SnapshotStage, work: () => T): T =>
+    paramountSnapshotStageTimer.measure(span.cid, stage, work);
+  const cfg = time('config', () => readConfig());
+  const floorSetup = time('floorSetup', () => floorSetupState(paramountFloorSetupDeps(evt.sender)));
+  const hookSocket = time('hookHealth', () => hookServer.health());
+  const hasOrchestratorFailure = time('orchestratorFailure', () => orchestratorStart.failure());
+  const orchestratorFailure = hasOrchestratorFailure ? time('orchestratorFailure', () => orchestratorStart.failure()) : undefined;
+  const registry = time('registry', () => hive.registry());
+  const tasks = time('tasks', () => hive.tasks());
+  const messages = time('messages', () => hive.voiceMessages({ limit: 500 }));
+  const organization = time('organization', () => {
+    try { return readOrg(hive.root(), Object.keys(hive.registry().agents ?? {})); }
+    catch (error) { paramountLog({ kind: 'paramount-organization', step: 'read-failed', errorId: newErrorId(), message: error instanceof Error ? error.message : 'Team settings are invalid' }); return { version: 1 as const, teams: [], reportsTo: {} }; }
+  });
+  const archivedAgents = time('archivedAgents', () => Object.entries(hive.registry().agents ?? {}).filter(([, agent]) => agent.archived === true).map(([id, agent]) => ({ id, name: agent.name || id })));
+  const log = time('log', () => hive.logTail(500));
+  const rosterSnapshot = time('roster', () => roster.read());
   // Live busy/idle, last tool, tokens and context per agent: the Team graph's status and 'doing'.
-  activity: paramountActivity(),
-  config: { notifications: cfg.notifications, autoMode: cfg.autoMode, autoModeExpiresAt: cfg.autoModeExpiresAt, accessMatrix: cfg.accessMatrix ?? {},
+  const activity = time('activity', () => paramountActivity());
+  const snapshotConfig = time('snapshotConfig', () => ({ notifications: cfg.notifications, autoMode: cfg.autoMode, autoModeExpiresAt: cfg.autoModeExpiresAt, accessMatrix: cfg.accessMatrix ?? {},
     defaultModel: cfg.defaultModel, godProvider: cfg.godProvider, orchestratorMaySpawn: cfg.orchestratorMaySpawn,
     ticketKeyPrefix: cfg.ticketKeyPrefix ?? '',
     semanticMemory: cfg.semanticMemory, embeddingModel: cfg.embeddingModel, reflectEnabled: cfg.reflectEnabled,
     maxTurns: cfg.maxTurns, costCapTokens: cfg.costCapTokens, circuitBreaker: effectiveCircuitBreaker(cfg.circuitBreaker),
     providerBaseUrls: cfg.providerBaseUrls ?? {}, providerDefaultModels: cfg.providerDefaultModels ?? {},
-    responseStyleBrief: cfg.responseStyleBrief ?? '', claudeOutputStyle: cfg.claudeOutputStyle ?? 'off' },
-  missions: cfg.missions ?? [],
+    responseStyleBrief: cfg.responseStyleBrief ?? '', claudeOutputStyle: cfg.claudeOutputStyle ?? 'off' }));
+  const missions = time('missions', () => cfg.missions ?? []);
   // Main-process hires do not enter the legacy renderer-owned roster. Project
   // the live ownership map so Paramount can display their actual terminals.
-  ptys: ptyManager.list().map((pty) => ({ ...pty, agentId: ptyToAgent.get(pty.id) })),
-  preferences: paramountPreferences(),
-  integrations: integrations.listRecordsRedacted(),
-  // Service prerequisite state, including a daemon started outside the app.
-  prereqs: { skid: paramountStartPlan('skid', await paramountProbeService('skid', span.cid)),
-    // What the packaged app needs from outside itself (owner 2026-11-12: the .dmg is the only download),
-    // resolved on the login-shell PATH exactly as an agent spawn resolves it.
-    tools: { claude: { path: ptyManager.commandPath('claude') }, codex: { path: ptyManager.commandPath('codex'), required: cfg.godProvider === 'codex' || Object.values(hive.registry().agents ?? {}).some((agent) => agent.provider === 'codex' && agent.archived !== true) }, mempalace: { path: ptyManager.commandPath('mempalace') } },
-    // Installed engines that are not signed in (owner run of ceeb4aaf: a revoked Codex token went unnoticed).
-    signIn: Object.fromEntries([
-      ...(['claude', 'codex'] as const).filter((e) => ptyManager.commandPath(e)).map((e) => [e, engineSignIn.status(e)] as const),
-      ...(launcherDiscovery.peek()?.profiles ?? []).map((profile) => [
-        `${profile.provider}-${profile.id}`,
-        engineSignIn.status(profile.provider as 'claude' | 'codex', profile)
-      ] as const)
-    ]) }
-}); }, { rethrow: true, quiet: true }));
+  const ptys = time('ptys', () => ptyManager.list().map((pty) => ({ ...pty, agentId: ptyToAgent.get(pty.id) })));
+  const preferences = time('preferences', () => paramountPreferences());
+  const integrationRecords = time('integrations', () => integrations.listRecordsRedacted());
+  const skid = paramountStartPlan('skid', await time('skidProbe', () => paramountProbeService('skid', span.cid)));
+  // What the packaged app needs from outside itself, resolved on the login-shell PATH as spawn does.
+  const tools = time('enginePaths', () => ({
+    claude: { path: ptyManager.commandPath('claude') },
+    codex: { path: ptyManager.commandPath('codex'), required: cfg.godProvider === 'codex' || Object.values(hive.registry().agents ?? {}).some((agent) => agent.provider === 'codex' && agent.archived !== true) },
+    mempalace: { path: ptyManager.commandPath('mempalace') }
+  }));
+  // Installed engines that are not signed in.
+  const signIn = time('signIn', () => Object.fromEntries([
+    ...(['claude', 'codex'] as const).filter((e) => ptyManager.commandPath(e)).map((e) => [e, engineSignIn.status(e)] as const),
+    ...(launcherDiscovery.peek()?.profiles ?? []).map((profile) => [
+      `${profile.provider}-${profile.id}`,
+      engineSignIn.status(profile.provider as 'claude' | 'codex', profile)
+    ] as const)
+  ]));
+  return {
+    floorSetup, hookSocket,
+    ...(hasOrchestratorFailure ? { orchestratorFailure } : {}),
+    ...(TEST_LABEL ? { testLabel: TEST_LABEL } : {}),
+    registry, tasks, messages, organization, archivedAgents, log, roster: rosterSnapshot, activity,
+    config: snapshotConfig, missions, ptys, preferences, integrations: integrationRecords,
+    prereqs: { skid, tools, signIn }
+  };
+}, { rethrow: true, quiet: true }));
 /** Roots for agents.discover/import, resolved per call so a changed CODEX_HOME
  *  or Munder config is picked up. Read-only: agentSources.ts never writes. */
 function paramountAgentRoots(): AgentSourceRoots {
