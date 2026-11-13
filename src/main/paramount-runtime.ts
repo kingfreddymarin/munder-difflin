@@ -65,6 +65,31 @@ function writeRecord(root: string, agents: LiveAgent[], now: number): void {
   renameSync(tmp, file);
 }
 
+/** A floor last run by Munder has no Council record (Munder restores its team from its own renderer
+ *  record), or a record from an earlier Council run that lists only the god. Seed it from the
+ *  registry's live (non-archived), non-temp agents, the set Munder brings back, so the boot step that
+ *  archives orphans leaves them and the runtime restores them (owner use of 63ea664e on the Varium
+ *  floor: dwight, kevin, kelly and jim were archived at boot and only the god came back).
+ *  Returns the seeded ids; nothing is written when the record already lists a non-god agent. */
+export function seedRecordFromRegistry(root: string, registry: { godId?: string | null; agents?: Record<string, unknown> }, now: number): string[] {
+  const godId = registry.godId ?? undefined;
+  if (readRecord(root).some((a) => !a.isGod && a.id !== godId)) return [];
+  const seeded: LiveAgent[] = [];
+  for (const [id, raw] of Object.entries(registry.agents ?? {})) {
+    if (!raw || typeof raw !== 'object') continue;
+    const a = raw as { name?: unknown; provider?: unknown; cwd?: unknown; role?: unknown; isGod?: unknown; archived?: unknown };
+    if (a.archived === true || a.isGod === true || id === godId) continue;
+    // Temps (ephemeral workers) are never restored, in Munder or here.
+    if (id.startsWith('worker-') || a.role === 'worker') continue;
+    if (typeof a.cwd !== 'string' || !a.cwd) continue;
+    seeded.push({ id, name: typeof a.name === 'string' && a.name ? a.name : id, provider: typeof a.provider === 'string' && a.provider ? a.provider : 'claude', cwd: a.cwd,
+      ...(typeof a.role === 'string' && a.role ? { role: a.role } : {}) });
+  }
+  if (!seeded.length) return [];
+  writeRecord(root, [...readRecord(root), ...seeded], now);
+  return seeded.map((a) => a.id);
+}
+
 /** Take or keep the floor's runtime lock. False while another live process holds it. */
 export function acquireLock(root: string, deps: Pick<RuntimeDeps, 'pid' | 'processAlive' | 'now'>): boolean {
   const file = join(root, LOCK_FILE);

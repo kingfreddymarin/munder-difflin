@@ -85,7 +85,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { claimFloor, readRecord, registerParamountRuntime } from './paramount-runtime';
+import { claimFloor, readRecord, registerParamountRuntime, seedRecordFromRegistry } from './paramount-runtime';
 import { createFloorGate, FLOOR_LOCK_FILE, floorOwnerName, removeFloorContents, type FloorGateState } from './floor-lock';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
@@ -1000,6 +1000,11 @@ function archiveOrphanedAgents(): void {
     // (paramount-runtime.ts) and skips archived ones, so those stay as they are for it. Archiving
     // them here meant no hired agent ever came back (isolated check 2026-11-12, restored 0).
     const root = hive.root();
+    // A floor last run by Munder: its live team becomes the record first (seedRecordFromRegistry).
+    if (root) {
+      const seeded = seedRecordFromRegistry(root, reg, Date.now());
+      if (seeded.length) console.log('[migration] seeded the runtime record from the registry (floor last run elsewhere):', seeded.join(', '));
+    }
     const recorded = new Set(root ? readRecord(root).map((a) => a.id) : []);
     for (const [id, a] of Object.entries(reg.agents)) {
       if (a.archived) continue;

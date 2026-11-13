@@ -178,3 +178,54 @@ test('the 4-second snapshot logs only failures, and the service probe only state
   assert.match(code, /\}\), \{ rethrow: true, quiet: true \}\)\);\n\/\*\* Roots for agents\.discover\/import/);
   assert.match(code, /if \(lastProbeState\.get\(prereqId\) !== state\) \{/);
 });
+
+// Owner use of 63ea664e on the Varium floor (last run by Munder): boot archived dwight, kevin, kelly and
+// jim, and only the god came back (restore-summary restored 0). Munder restores its team from its own
+// renderer record, so a floor it ran has no Council record. The live team is seeded from the registry.
+function orphanBoot(root, registry) {
+  const ts = require('typescript'); const vm = require('node:vm');
+  const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  const src = code.slice(code.indexOf('function archiveOrphanedAgents('), code.indexOf('\n}\n', code.indexOf('function archiveOrphanedAgents(')) + 3);
+  const runtime = loadTs('src/main/paramount-runtime.ts');
+  const ctx = { console: { log() {}, error: console.error }, Date, readRecord: runtime.readRecord, seedRecordFromRegistry: runtime.seedRecordFromRegistry,
+    ptyForAgent: () => undefined,
+    hive: { enabled: () => true, root: () => root, registry: () => registry, setArchived: (id, v) => { registry.agents[id].archived = v; } } };
+  vm.runInNewContext(ts.transpileModule(src + '\narchiveOrphanedAgents();', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, ctx);
+  return runtime;
+}
+const munderFloor = (cwd) => ({ godId: 'god', agents: {
+  god: { name: 'Michael', provider: 'claude', isGod: true, cwd },
+  'dwight-mvqtyx2n': { name: 'Dwight', provider: 'claude', cwd }, 'kevin-mvqxdggy': { name: 'Kevin', provider: 'codex', cwd },
+  'kelly-mvqxdx82': { name: 'Kelly', provider: 'claude', cwd }, 'jim-mw9iivm1': { name: 'Jim', provider: 'claude', cwd },
+  'worker-abc': { name: 'Temp', provider: 'claude', role: 'worker', cwd }, old: { name: 'Old', provider: 'claude', cwd, archived: true } } });
+
+for (const [label, prior] of [['no record', null], ['a record with only the god', [{ id: 'god', name: 'Michael', provider: 'claude', cwd: '.', isGod: true }]]]) {
+  test(`a floor last run by Munder (${label}): its 4 agents stay unarchived and are restored at boot`, async (t) => {
+    const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-munder-floor-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const { restoreAgents, RUNTIME_FILE } = loadTs('src/main/paramount-runtime.ts');
+    if (prior) fs.writeFileSync(path.join(root, RUNTIME_FILE), JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: '', agents: prior.map((a) => ({ ...a, cwd: root })) }));
+    const registry = munderFloor(root);
+    orphanBoot(root, registry);
+    const team = ['dwight-mvqtyx2n', 'kevin-mvqxdggy', 'kelly-mvqxdx82', 'jim-mw9iivm1'];
+    for (const id of team) assert.notEqual(registry.agents[id].archived, true, `${id} not archived at boot`);
+    assert.equal(registry.agents['worker-abc'].archived, true, 'a temp is still archived');
+    const spawned = [];
+    const r = await restoreAgents(root, { isLive: () => false, isArchived: (id) => registry.agents[id]?.archived === true, isDirectory: () => true,
+      respawn: async (a) => { spawned.push(a.id); return { ok: true }; }, log() {} });
+    assert.deepEqual(spawned.sort(), [...team].sort());
+    assert.equal(r.restored.length, 4);
+    assert.ok(!spawned.includes('old') && !spawned.includes('worker-abc'));
+  });
+}
+
+test('a Council record that already lists agents is left as it is (an agent the human stopped stays archived)', (t) => {
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-own-floor-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { RUNTIME_FILE, readRecord } = loadTs('src/main/paramount-runtime.ts');
+  fs.writeFileSync(path.join(root, RUNTIME_FILE), JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: '', agents: [{ id: 'dwight-mvqtyx2n', name: 'Dwight', provider: 'claude', cwd: root }] }));
+  const registry = munderFloor(root);
+  orphanBoot(root, registry);
+  assert.deepEqual(readRecord(root).map((a) => a.id), ['dwight-mvqtyx2n']);
+  assert.equal(registry.agents['kevin-mvqxdggy'].archived, true, 'not in the record: archived as before');
+});
