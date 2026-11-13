@@ -181,6 +181,54 @@ test('a temporarily unavailable working folder is retained for a later restore',
   assert.equal(events[0].code, 'CWD_UNAVAILABLE');
 });
 
+test('volume cwd checks retain missing and residual mountpoints but archive a deleted cwd on an available volume', async () => {
+  const { directoryStateForPath, restoreAgents } = loadTs('src/main/paramount-runtime.ts');
+  const fixtures = new Map([
+    ['/Volumes', { isDirectory: () => true, dev: 1 }],
+    ['/Volumes/Attached', { isDirectory: () => true, dev: 2 }],
+    ['/Volumes/Residual', { isDirectory: () => true, dev: 1 }],
+  ]);
+  const stat = (p) => {
+    if (fixtures.has(p)) return fixtures.get(p);
+    throw Object.assign(new Error(`missing fixture: ${p}`), { code: 'ENOENT' });
+  };
+  const volumeState = (p) => directoryStateForPath(p, { platform: 'darwin', stat });
+  assert.equal(volumeState('/Volumes/DetachedFixture'), 'unavailable');
+  assert.equal(volumeState('/Volumes/Residual/project'), 'unavailable');
+  assert.equal(volumeState('/Volumes/Attached/deleted/project'), 'missing');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paramount-runtime-volume-'));
+  try {
+    fs.writeFileSync(path.join(root, RUNTIME_FILE), JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: '', agents: [
+      { id: 'detached', name: 'Detached', provider: 'codex', cwd: '/Volumes/DetachedFixture/project' },
+      { id: 'residual', name: 'Residual', provider: 'codex', cwd: '/Volumes/Residual/project' },
+      { id: 'deleted', name: 'Deleted', provider: 'codex', cwd: '/Volumes/Attached/deleted/project' },
+    ] }));
+    const archived = [];
+    const result = await restoreAgents(root, {
+      isLive: () => false, isArchived: () => false, isDirectory: () => false, directoryState: volumeState,
+      respawn: async () => ({ ok: true }), archive: (id) => archived.push(id), log() {}
+    });
+    assert.deepEqual(archived, ['deleted']);
+    assert.deepEqual(result.archived, ['deleted']);
+    assert.deepEqual(result.failed.sort(), ['detached', 'residual']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('moving a floor rebases only cwd paths inside that floor', () => {
+  const { remapMovedCwds } = loadTs('src/main/paramount-runtime.ts');
+  const oldHome = path.join(os.tmpdir(), 'paramount-old-floor');
+  const newHome = path.join(os.tmpdir(), 'paramount-new-floor');
+  const copiedRoots = [oldHome];
+  assert.deepEqual(remapMovedCwds({ id: 'inside', cwd: path.join(oldHome, 'project') }, oldHome, newHome, copiedRoots),
+    { id: 'inside', cwd: path.join(newHome, 'project') });
+  assert.deepEqual(remapMovedCwds({ id: 'root', cwd: oldHome }, oldHome, newHome, copiedRoots), { id: 'root', cwd: newHome });
+  assert.deepEqual(remapMovedCwds({ id: 'external', cwd: '/tmp/client-project' }, oldHome, newHome, copiedRoots),
+    { id: 'external', cwd: '/tmp/client-project' });
+  assert.deepEqual(remapMovedCwds({ id: 'sibling', cwd: `${oldHome}-backup/project` }, oldHome, newHome, copiedRoots),
+    { id: 'sibling', cwd: `${oldHome}-backup/project` });
+});
+
 test('no floor yet (setup not finished): nothing is read or written', async () => {
   const { root } = floor();
   const h = host(root, { noFloor: true });

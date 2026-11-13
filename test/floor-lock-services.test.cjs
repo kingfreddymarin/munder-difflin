@@ -61,7 +61,9 @@ function changeHomeWith(oldHome, gate, refusal, proc = {}) {
   const noop = () => {};
   const floorsTs = loadTs('src/main/floors.ts');
   const cfg = { harnessHome: oldHome };
+  const runtimeTs = loadTs('src/main/paramount-runtime.ts');
   const ctx = { ...fs, ...path, console, process: proc.argv ? { ...process, argv: proc.argv } : process, FLOOR_LOCK_FILE, floorGate: gate,
+    remapMovedCwds: runtimeTs.remapMovedCwds,
     floorDataDirFor: floorsTs.floorDataDirFor, moveRelaunchArgs: floorsTs.moveRelaunchArgs,
     isFloorProcess: () => !!proc.argv, sharedDataDir: () => proc.shared ?? '/S',
     dataFolderRefusal: (home) => refusal(home), appDataDirs: () => [],
@@ -78,11 +80,39 @@ function changeHomeWith(oldHome, gate, refusal, proc = {}) {
   return { run: (payload) => handler({}, payload), calls };
 }
 
+test('a move rebases only cwd paths in copied metadata across registry, runtime record and roster', async (t) => {
+  const { old, dest } = homes(t);
+  const project = path.join(old, 'project');
+  const copiedProject = path.join(old, 'hive', 'agents', 'a');
+  fs.mkdirSync(project); fs.mkdirSync(copiedProject, { recursive: true });
+  fs.mkdirSync(path.join(old, 'palace'));
+  fs.writeFileSync(path.join(old, 'hive', 'registry.json'), JSON.stringify({ agents: {
+    external: { id: 'external', cwd: project }, copied: { id: 'copied', cwd: copiedProject }, outside: { id: 'outside', cwd: '/tmp/external-project' }
+  } }));
+  fs.writeFileSync(path.join(old, 'hive', 'paramount-runtime.json'), JSON.stringify({ schema: 'paramount-runtime-v1', agents: [
+    { id: 'external', cwd: project }, { id: 'copied', cwd: copiedProject }
+  ] }));
+  fs.writeFileSync(path.join(old, 'roster.json'), JSON.stringify({ agents: [
+    { id: 'external', cwd: project }, { id: 'copied', cwd: copiedProject }
+  ] }));
+  const gate = createFloorGate(council, () => true); gate.claim(old);
+  assert.equal((await changeHome(old, gate).run({ newHome: dest, mode: 'move' })).ok, true);
+  const registry = JSON.parse(fs.readFileSync(path.join(dest, 'hive', 'registry.json'), 'utf8'));
+  const runtime = JSON.parse(fs.readFileSync(path.join(dest, 'hive', 'paramount-runtime.json'), 'utf8'));
+  const roster = JSON.parse(fs.readFileSync(path.join(dest, 'roster.json'), 'utf8'));
+  for (const state of [registry.agents, Object.fromEntries(runtime.agents.map((a) => [a.id, a])), Object.fromEntries(roster.agents.map((a) => [a.id, a]))]) {
+    assert.equal(state.external.cwd, project, 'uncopied project path remains available');
+    assert.equal(state.copied.cwd, path.join(dest, 'hive', 'agents', 'a'));
+  }
+  assert.equal(registry.agents.outside.cwd, '/tmp/external-project');
+  gate.release();
+});
+
 function homes(t) {
   const root = tmp(t, 'council-move-');
   const old = path.join(root, 'old'), dest = path.join(root, 'dest');
   for (const d of [old, dest]) fs.mkdirSync(path.join(d, 'hive'), { recursive: true });
-  fs.writeFileSync(path.join(old, 'hive', 'registry.json'), 'OLD REGISTRY');
+  fs.writeFileSync(path.join(old, 'hive', 'registry.json'), '{"floor":"OLD REGISTRY"}');
   return { old, dest };
 }
 
@@ -110,8 +140,8 @@ test('F3: a move claims the destination first, never copies lock files, then rel
   fs.writeFileSync(path.join(old, 'hive', '.floor-lock.999.deadbeef.tmp'), '{}'); // a claim temp file at copy time
   const h = changeHome(old, gate);
   const r = await h.run({ newHome: dest, mode: 'move' });
-  assert.equal(r.ok, true);
-  assert.equal(fs.readFileSync(path.join(dest, 'hive', 'registry.json'), 'utf8'), 'OLD REGISTRY');
+  assert.equal(r.ok, true, r.error);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dest, 'hive', 'registry.json'), 'utf8')).floor, 'OLD REGISTRY');
   assert.equal(fs.existsSync(path.join(dest, 'hive', '.floor-lock.999.deadbeef.tmp')), false, 'claim files are not copied');
   const destLock = JSON.parse(fs.readFileSync(path.join(dest, 'hive', FLOOR_LOCK_FILE), 'utf8'));
   assert.equal(destLock.pid, process.pid);

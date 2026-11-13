@@ -7,7 +7,7 @@
 // Electron-free on purpose: paramountShell.ts parses the flags before `app` is ready and the tests
 // load this file directly.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { checkFloorLock, pidAlive, type FloorLock, type FloorMe } from './floor-lock';
@@ -73,6 +73,125 @@ export function moveRelaunchArgs(args: readonly string[], move: { home: string; 
 /** A floor's own data folder: one per home folder, under the shared (main) data folder. */
 export function floorDataDirFor(sharedDir: string, home: string): string {
   return join(sharedDir, FLOORS_DIR, createHash('sha1').update(resolve(home)).digest('hex').slice(0, 12));
+}
+
+/** SQLite's durable per-floor state. WAL files must travel with the database. */
+export const FLOOR_PERSISTED_STATE_FILES = ['harness.db', 'harness.db-wal', 'harness.db-shm'] as const;
+
+export type FloorStateRecoveryState = 'destination-unchanged' | 'previous-target-restored' | 'recovery-backup-retained' | 'new-target-installed';
+
+export class FloorPersistedStateCopyError extends Error {
+  constructor(
+    message: string,
+    readonly recoveryState: FloorStateRecoveryState,
+    readonly recoveryPath?: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'FloorPersistedStateCopyError';
+  }
+}
+
+/** Hash in fixed-size chunks so large floor databases do not need to fit in memory. */
+function floorFileDigest(path: string): string {
+  const fd = openSync(path, 'r');
+  const hash = createHash('sha256');
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  try {
+    let bytes: number;
+    while ((bytes = readSync(fd, chunk, 0, chunk.length, null)) > 0) hash.update(chunk.subarray(0, bytes));
+  } finally { closeSync(fd); }
+  return `${statSync(path).size}:${hash.digest('hex')}`;
+}
+
+function floorFilesMatch(directory: string, expected: Map<string, string>): boolean {
+  try {
+    for (const file of FLOOR_PERSISTED_STATE_FILES) {
+      const path = join(directory, file);
+      const exists = existsSync(path);
+      if (exists !== expected.has(file)) return false;
+      if (exists && floorFileDigest(path) !== expected.get(file)) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+
+function hasFloorFiles(directory: string): boolean {
+  return FLOOR_PERSISTED_STATE_FILES.some((file) => existsSync(join(directory, file)));
+}
+
+/** Carry durable command history and app state when a floor is re-keyed by a home move. */
+export function copyFloorPersistedState(sourceDir: string, targetDir: string, ops: {
+  cpSync?: typeof cpSync; renameSync?: typeof renameSync; rmSync?: typeof rmSync;
+} = {}): void {
+  const copy = ops.cpSync ?? cpSync;
+  const rename = ops.renameSync ?? renameSync;
+  const remove = ops.rmSync ?? rmSync;
+  mkdirSync(targetDir, { recursive: true });
+  if (!existsSync(join(sourceDir, 'harness.db'))) return;
+  const sourceFiles = new Map(FLOOR_PERSISTED_STATE_FILES.filter((file) => existsSync(join(sourceDir, file)))
+    .map((file) => [file, floorFileDigest(join(sourceDir, file))]));
+  const previousFiles = new Map(FLOOR_PERSISTED_STATE_FILES.filter((file) => existsSync(join(targetDir, file)))
+    .map((file) => [file, floorFileDigest(join(targetDir, file))]));
+  const staging = mkdtempSync(join(targetDir, '.floor-state-copy-'));
+  const staged = join(staging, 'staged');
+  const backup = join(staging, 'backup');
+  mkdirSync(staged); mkdirSync(backup);
+  const present = FLOOR_PERSISTED_STATE_FILES.filter((file) => existsSync(join(sourceDir, file)));
+  const movedOld: string[] = [];
+  const installed: string[] = [];
+  try {
+    // Stage every source file first. A source read/copy failure leaves the target untouched.
+    for (const file of present) copy(join(sourceDir, file), join(staged, file));
+    // Move all old database members aside, including stale sidecars absent at source.
+    for (const file of FLOOR_PERSISTED_STATE_FILES) {
+      const target = join(targetDir, file);
+      if (existsSync(target)) { rename(target, join(backup, file)); movedOld.push(file); }
+    }
+    for (const file of present) {
+      rename(join(staged, file), join(targetDir, file));
+      installed.push(file);
+    }
+    if (!floorFilesMatch(targetDir, sourceFiles)) throw new Error('Installed floor database files did not match the staged source.');
+  } catch (operationError) {
+    const restoreErrors: string[] = [];
+    for (const file of installed) {
+      try { remove(join(targetDir, file), { force: true }); }
+      catch (error) { restoreErrors.push(`remove installed ${file}: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    for (const file of movedOld) {
+      try { rename(join(backup, file), join(targetDir, file)); }
+      catch (error) { restoreErrors.push(`restore ${file}: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    const originalError = operationError instanceof Error ? operationError.message : String(operationError);
+    if (!floorFilesMatch(targetDir, previousFiles)) {
+      const retainedPath = hasFloorFiles(backup) ? backup : (hasFloorFiles(staged) ? staged : undefined);
+      throw new FloorPersistedStateCopyError(
+        `Floor state copy failed (${originalError}); prior destination state could not be fully restored.${retainedPath ? ` Recovery data retained at ${retainedPath}.` : ''}${restoreErrors.length ? ` Restore errors: ${restoreErrors.join('; ')}.` : ''}`,
+        'recovery-backup-retained', retainedPath, { cause: operationError },
+      );
+    }
+    try { remove(staging, { recursive: true, force: true }); }
+    catch (cleanupError) {
+      const retainedPath = hasFloorFiles(backup) ? backup : undefined;
+      throw new FloorPersistedStateCopyError(
+        `Floor state copy failed (${originalError}); prior destination state was restored and verified, but staging cleanup failed${retainedPath ? `; residual data remains at ${retainedPath}` : ''}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        'previous-target-restored', retainedPath, { cause: operationError },
+      );
+    }
+    throw new FloorPersistedStateCopyError(
+      `Floor state copy failed (${originalError}); prior destination state was restored and verified.`,
+      'previous-target-restored', undefined, { cause: operationError },
+    );
+  }
+  try { remove(staging, { recursive: true, force: true }); }
+  catch (cleanupError) {
+    const retainedPath = hasFloorFiles(backup) ? backup : undefined;
+    throw new FloorPersistedStateCopyError(
+      `New floor state was copied and verified, but staging cleanup failed${retainedPath ? `; prior data remains at ${retainedPath}` : ''}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+      'new-target-installed', retainedPath, { cause: cleanupError },
+    );
+  }
 }
 
 /** How to start a floor process: the packaged app takes the flags directly; a dev run needs its app path. */

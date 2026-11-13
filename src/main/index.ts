@@ -1,7 +1,7 @@
 // Paramount identity (name, userData, UI scheme) — must evaluate before any
 // other module reads userData, so it is the first import.
 import { councilBuild, councilVersion, floorProcessHome, isFloorProcess, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
-import { bootFloorPlan, dataFolderRefusal, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
+import { bootFloorPlan, copyFloorPersistedState, dataFolderRefusal, FloorPersistedStateCopyError, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
 import { resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
@@ -88,7 +88,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { claimFloor, readRecord, registerParamountRuntime, seedRecordFromRegistry } from './paramount-runtime';
+import { claimFloor, directoryStateForPath, readRecord, registerParamountRuntime, remapMovedCwds, seedRecordFromRegistry } from './paramount-runtime';
 import { createFloorGate, FLOOR_LOCK_FILE, floorOwnerName, removeFloorContents, type FloorGateState } from './floor-lock';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
@@ -3470,15 +3470,48 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
         // Never copy floor ownership: the destination's lock is the one reserved above.
         cpSync(src, join(newHome, sub), { recursive: true, force: true, dereference: false, filter: isNotFloorLockPath });
       }
+      if (isFloorProcess()) {
+        // Flush the floor's SQLite state before copying its database and WAL.
+        persist.close();
+        copyFloorPersistedState(app.getPath('userData'), floorDataDirFor(sharedDataDir(), newHome));
+      }
+      // Only cwd paths under copied floor metadata are rebased. Arbitrary project
+      // folders beside the metadata remain at their original, still-valid paths.
+      const copiedCwdRoots = ['hive', 'palace', 'roster-backups']
+        .map((sub) => join(oldHome!, sub))
+        .filter((root) => existsSync(root) && existsSync(join(newHome, root.slice(oldHome!.length + 1))));
+      for (const file of [join(newHome, 'hive', 'registry.json'), join(newHome, 'roster.json')]) {
+        try {
+          const state = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+          const remap = (value: unknown): unknown => {
+            if (Array.isArray(value)) return value.map(remap);
+            if (!value || typeof value !== 'object') return value;
+            const record = value as Record<string, unknown>;
+            const next = Object.fromEntries(Object.entries(record).map(([key, item]) => [key, remap(item)]));
+            return typeof next.cwd === 'string' ? remapMovedCwds(next as { cwd: string }, oldHome!, newHome, copiedCwdRoots) : next;
+          };
+          writeFileSync(file, JSON.stringify(remap(state), null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+        } catch (e) { if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e; }
+      }
+      const runtimePath = join(newHome, 'hive', 'paramount-runtime.json');
+      try {
+        const runtime = JSON.parse(readFileSync(runtimePath, 'utf8')) as { agents?: Array<{ cwd?: unknown; [key: string]: unknown }> };
+        if (Array.isArray(runtime.agents)) {
+          runtime.agents = runtime.agents.map((agent) => remapMovedCwds(agent, oldHome!, newHome, copiedCwdRoots));
+          writeFileSync(runtimePath, JSON.stringify(runtime, null, 1) + '\n', { encoding: 'utf8', mode: 0o600 });
+        }
+      } catch (e) { if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e; }
     } catch (e) {
       // Copy failed: recover IN PLACE against the unchanged old home (config never
       // repointed) so the user loses nothing, and surface the error — no relaunch.
       floorGate.unreserve();
+      if (isFloorProcess()) { try { persist.open(); } catch (openError) { console.error('[changeHome] reopen persistence:', openError); } }
       bootstrapHiveServices();
       const cfg = readConfig();
       if (cfg.slackEnabled && cfg.slackSigningSecret) void startSlackServer();
       reconcileWebhookServer();
-      return { ok: false, error: `Could not copy data: ${e instanceof Error ? e.message : String(e)}` };
+      const message = e instanceof FloorPersistedStateCopyError ? e.message : `Could not copy data: ${e instanceof Error ? e.message : String(e)}`;
+      return { ok: false, error: message };
     }
   }
 
@@ -4818,7 +4851,9 @@ ipcMain.handle('app:resetAll', () => {
   // re-bootstrap from scratch and the renderer lands on onboarding.
   floorGate.release();
   resetConfig();
-  app.relaunch();
+  // Electron inherits the current argv unless explicit args are supplied. A
+  // floor process must return to the picker instead of reopening its wiped home.
+  app.relaunch({ args: switchRelaunchArgs(process.argv.slice(1)) });
   app.exit(0);
 });
 
@@ -6409,13 +6444,7 @@ app.whenReady().then(() => {
       if (opened && ack && /^[a-f0-9]{36}$/.test(ack)) process.stdout.write(`PARAMOUNT_FLOOR_OPENED:${ack}\n`);
     }
     else if (boot.open) openChosenFloor(boot.open); }
-  registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, directoryState: (p) => {
-    try { return statSync(p).isDirectory() ? 'directory' : 'unavailable'; }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') return 'unavailable';
-      try { return statSync(dirname(p)).isDirectory() ? 'missing' : 'unavailable'; } catch { return 'unavailable'; }
-    }
-  }, log: (step) => paramountLog(step), onQuit: (fn) => { beforeTeardown.push(fn); app.on('will-quit', fn); keepFloorReleaseLast(); } }); // Munder useRestoreTeam parity (paramount-runtime.ts)
+  registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, directoryState: (p) => directoryStateForPath(p), log: (step) => paramountLog(step), onQuit: (fn) => { beforeTeardown.push(fn); app.on('will-quit', fn); keepFloorReleaseLast(); } }); // Munder useRestoreTeam parity (paramount-runtime.ts)
   // A timed YOLO window that ended while the app was closed turns autoMode off now.
   armAutoModeExpiry();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a

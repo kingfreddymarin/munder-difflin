@@ -13,6 +13,7 @@ const vm = require('node:vm');
 const { spawn } = require('node:child_process');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const floors = loadTs('src/main/floors.ts');
 
 const floorLock = loadTs('src/main/floor-lock.ts');
 const { createFloorGate, acquireFloorLock, removeFloorContents, FLOOR_LOCK_FILE } = floorLock;
@@ -36,13 +37,14 @@ test('R2: reset keeps the floor until its last write; a successor cannot claim i
   const roster = new RosterStore(floorHome);
   assert.equal(roster.write(rosterSnap('ours')).ok, true);
   const order = [];
+  let relaunched;
   let successorClaim;
   // The real reset handler from index.ts; teardown stubbed.
   const handlerSrc = INDEX.slice(INDEX.indexOf("ipcMain.handle('app:resetAll'"), INDEX.indexOf('// ─── IPC: token telemetry'));
   let handler;
   const noop = () => {};
   const stub = { stop: noop };
-  const ctx = { console, rmSync: fs.rmSync,
+  const ctx = { console, rmSync: fs.rmSync, process: { argv: ['Paramount', '--floor-data=/shared/floors/old', '--floor-shared=/shared', '--floor-home=/old/home'] }, switchRelaunchArgs: floors.switchRelaunchArgs,
     ipcMain: { handle: (_, fn) => { handler = fn; } }, allowQuit: false,
     clearMissionTimers: noop, clearContextTimers: noop, stopWebhookDoneObserver: noop, stopEphemeralWorkerWatcher: noop,
     integrationBroker: stub, hookServer: stub, telemetry: stub, stopSlackServer: noop, reflector: stub, persist: { close: noop },
@@ -56,10 +58,11 @@ test('R2: reset keeps the floor until its last write; a successor cannot claim i
       successorClaim = acquireFloorLock(path.join(home, 'hive'), successor, () => true, { waitMs: 100 });
     },
     floorGate: { release: () => { order.push('release'); floorGate.release(); } },
-    resetConfig: () => order.push('resetConfig'), app: { relaunch: noop, exit: () => order.push('exit') } };
+    resetConfig: () => order.push('resetConfig'), app: { relaunch: (opts) => { relaunched = opts; }, exit: () => order.push('exit') } };
   vm.runInNewContext(ts.transpileModule(handlerSrc, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, ctx);
   await handler();
   assert.deepEqual(order, ['roster.archive', 'remove hive contents', 'release', 'resetConfig', 'exit']);
+  assert.deepEqual(relaunched.args, ['--floor-data=/shared/floors/old', '--floor-shared=/shared', '--floor-home=/old/home', '--council-floor-picker']);
   assert.equal(successorClaim.ok, false, 'the floor was still held when the hive was emptied');
   assert.equal(successorClaim.error, 'held');
   assert.equal(fs.existsSync(path.join(home, 'roster.json')), false, 'our roster was archived');

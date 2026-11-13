@@ -9,8 +9,8 @@
 // honours it), this runtime neither restores nor records, so agents are never
 // started twice. Spawn requests and inbox wake already run in main (index.ts).
 import { lagOp } from './lag-probe';
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { resolveAgentModel } from './paramount-models';
 
 export const RUNTIME_FILE = 'paramount-runtime.json';
@@ -61,6 +61,67 @@ export function readRecord(root: string): LiveAgent[] {
     return raw.agents.filter((a): a is LiveAgent => !!a && typeof a.id === 'string' && typeof a.name === 'string'
       && typeof a.provider === 'string' && typeof a.cwd === 'string');
   } catch { return []; }
+}
+
+/** Rebase only paths contained in copied roots. External and uncopied paths remain
+ *  unchanged; path boundaries prevent `/old-floorish` matches. */
+export function remapMovedCwds<T extends { cwd?: unknown }>(value: T, oldHome: string, newHome: string, copiedRoots: readonly string[]): T {
+  const oldRoot = oldHome.replace(/[\\/]+$/, '');
+  const cwd = value.cwd;
+  if (typeof cwd !== 'string') return value;
+  const resolved = resolve(cwd);
+  const root = resolve(oldRoot);
+  const copied = copiedRoots.some((copiedRoot) => {
+    const subtree = resolve(copiedRoot);
+    return resolved === subtree || resolved.startsWith(subtree + sep);
+  });
+  if (!copied) return value;
+  return { ...value, cwd: join(resolve(newHome), relative(root, resolved)) };
+}
+
+/** Distinguish deleted workdirs from missing or unmounted macOS volume roots. */
+export function directoryStateForPath(path: string, options: {
+  platform?: string;
+  stat?: (path: string) => { isDirectory(): boolean; dev?: number };
+} = {}): 'directory' | 'missing' | 'unavailable' {
+  const stat = options.stat ?? statSync;
+  const platform = options.platform ?? process.platform;
+  const resolved = resolve(path);
+  let volumeRoot: string | null = null;
+  let volumeDevice: number | undefined;
+  let volumesDevice: number | undefined;
+  if (platform === 'darwin' && (resolved === '/Volumes' || resolved.startsWith('/Volumes/'))) {
+    const first = relative('/Volumes', resolved).split(sep)[0];
+    if (first) {
+      volumeRoot = join('/Volumes', first);
+      try {
+        volumesDevice = stat('/Volumes').dev;
+        const mounted = stat(volumeRoot);
+        // A leftover mountpoint directory on the root disk is not an available volume.
+        if (mounted.dev === undefined || volumesDevice === undefined || mounted.dev === volumesDevice) return 'unavailable';
+        volumeDevice = mounted.dev;
+      } catch { return 'unavailable'; }
+    }
+  }
+  try { return stat(resolved).isDirectory() ? 'directory' : 'unavailable'; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') return 'unavailable';
+    let parent = dirname(resolved);
+    while (parent !== dirname(parent)) {
+      try {
+        const existing = stat(parent);
+        if (!existing.isDirectory()) return 'unavailable';
+        if (volumeRoot && (parent === volumeRoot || parent.startsWith(volumeRoot + sep))
+          && (existing.dev === undefined || existing.dev !== volumeDevice)) return 'unavailable';
+        if (volumeRoot && parent === '/Volumes' && existing.dev !== volumesDevice) return 'unavailable';
+        return 'missing';
+      } catch (parentError) {
+        if ((parentError as NodeJS.ErrnoException)?.code !== 'ENOENT') return 'unavailable';
+        parent = dirname(parent);
+      }
+    }
+    return 'unavailable';
+  }
 }
 
 function writeRecord(root: string, agents: LiveAgent[], now: number): void {

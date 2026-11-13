@@ -68,6 +68,97 @@ test('each floor has its own data folder <shared>/floors/<sha1(home)[:12]>, and 
   assert.deepEqual(plain(floors.floorSpawnPlan({ ...o, packaged: false })), { command: '/App/Paramount', args: ['/App/app.asar', ...flags] });
 });
 
+test('moving a floor carries its closed SQLite database and WAL into the new keyed data folder', (t) => {
+  const root = tmp(t, 'council-floor-state-');
+  const source = path.join(root, 'old');
+  const target = path.join(root, 'new');
+  fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, 'harness.db'), 'database fixture');
+  fs.writeFileSync(path.join(source, 'harness.db-wal'), 'wal fixture');
+  fs.writeFileSync(path.join(source, 'unrelated-cache'), 'not floor state');
+  floors.copyFloorPersistedState(source, target);
+  assert.equal(fs.readFileSync(path.join(target, 'harness.db'), 'utf8'), 'database fixture');
+  assert.equal(fs.readFileSync(path.join(target, 'harness.db-wal'), 'utf8'), 'wal fixture');
+  assert.equal(fs.existsSync(path.join(target, 'unrelated-cache')), false);
+});
+
+test('moving a closed database removes stale destination sidecars when source has none', (t) => {
+  const root = tmp(t, 'council-floor-state-stale-');
+  const source = path.join(root, 'old'); const target = path.join(root, 'new');
+  fs.mkdirSync(source); fs.mkdirSync(target);
+  fs.writeFileSync(path.join(source, 'harness.db'), 'closed source database');
+  fs.writeFileSync(path.join(target, 'harness.db'), 'old target database');
+  fs.writeFileSync(path.join(target, 'harness.db-wal'), 'old target WAL');
+  fs.writeFileSync(path.join(target, 'harness.db-shm'), 'old target shared memory');
+  floors.copyFloorPersistedState(source, target);
+  assert.equal(fs.readFileSync(path.join(target, 'harness.db'), 'utf8'), 'closed source database');
+  assert.equal(fs.existsSync(path.join(target, 'harness.db-wal')), false);
+  assert.equal(fs.existsSync(path.join(target, 'harness.db-shm')), false);
+});
+
+test('database copy failures preserve the complete prior destination state', (t) => {
+  const root = tmp(t, 'council-floor-state-failure-');
+  const source = path.join(root, 'old'); const target = path.join(root, 'new');
+  fs.mkdirSync(source); fs.mkdirSync(target);
+  fs.writeFileSync(path.join(source, 'harness.db'), 'new source database');
+  fs.writeFileSync(path.join(source, 'harness.db-wal'), 'new source WAL');
+  fs.writeFileSync(path.join(target, 'harness.db'), 'old target database');
+  fs.writeFileSync(path.join(target, 'harness.db-wal'), 'old target WAL');
+  fs.writeFileSync(path.join(target, 'harness.db-shm'), 'old target shared memory');
+  const before = Object.fromEntries(['harness.db', 'harness.db-wal', 'harness.db-shm'].map((f) => [f, fs.readFileSync(path.join(target, f), 'utf8')]));
+  assert.throws(() => floors.copyFloorPersistedState(source, target, { cpSync: () => { throw new Error('injected source copy failure'); } }), /injected source copy failure/);
+  assert.deepEqual(Object.fromEntries(fs.readdirSync(target).filter((f) => f.startsWith('harness.db')).map((f) => [f, fs.readFileSync(path.join(target, f), 'utf8')])), before);
+
+  let failed = false;
+  assert.throws(() => floors.copyFloorPersistedState(source, target, { renameSync: (from, to) => {
+    if (!failed && from.endsWith(`${path.sep}harness.db` ) && to === path.join(target, 'harness.db')) { failed = true; throw new Error('injected install failure'); }
+    fs.renameSync(from, to);
+  } }), /injected install failure/);
+  assert.deepEqual(Object.fromEntries(fs.readdirSync(target).filter((f) => f.startsWith('harness.db')).map((f) => [f, fs.readFileSync(path.join(target, f), 'utf8')])), before);
+});
+
+test('a failed replacement and failed restore retain the exact old database backup and report its path', (t) => {
+  const root = tmp(t, 'council-floor-retained-backup-');
+  const source = path.join(root, 'source'), target = path.join(root, 'target');
+  fs.mkdirSync(source); fs.mkdirSync(target);
+  fs.writeFileSync(path.join(source, 'harness.db'), 'new database bytes');
+  fs.writeFileSync(path.join(target, 'harness.db'), 'old database bytes');
+  fs.writeFileSync(path.join(target, 'harness.db-wal'), 'old wal bytes');
+  let error;
+  try {
+    floors.copyFloorPersistedState(source, target, { renameSync(from, to) {
+      if (from.includes(`${path.sep}staged${path.sep}`) || from.includes(`${path.sep}backup${path.sep}`)) throw Object.assign(new Error('synthetic EIO'), { code: 'EIO' });
+      fs.renameSync(from, to);
+    } });
+  } catch (caught) { error = caught; }
+  assert.ok(error instanceof floors.FloorPersistedStateCopyError);
+  assert.equal(error.recoveryState, 'recovery-backup-retained');
+  assert.ok(error.message.includes(error.recoveryPath));
+  assert.equal(fs.readFileSync(path.join(error.recoveryPath, 'harness.db'), 'utf8'), 'old database bytes');
+  assert.equal(fs.readFileSync(path.join(error.recoveryPath, 'harness.db-wal'), 'utf8'), 'old wal bytes');
+  assert.equal(fs.existsSync(path.join(target, 'harness.db')), false);
+});
+
+test('cleanup failure reports that replacement is installed and keeps the old target backup', (t) => {
+  const root = tmp(t, 'council-floor-cleanup-failure-');
+  const source = path.join(root, 'source'), target = path.join(root, 'target');
+  fs.mkdirSync(source); fs.mkdirSync(target);
+  fs.writeFileSync(path.join(source, 'harness.db'), 'new database bytes');
+  fs.writeFileSync(path.join(target, 'harness.db'), 'old database bytes');
+  let error;
+  try {
+    floors.copyFloorPersistedState(source, target, { rmSync(pathname, options) {
+      if (options?.recursive) throw new Error('synthetic cleanup EIO');
+      fs.rmSync(pathname, options);
+    } });
+  } catch (caught) { error = caught; }
+  assert.ok(error instanceof floors.FloorPersistedStateCopyError);
+  assert.equal(error.recoveryState, 'new-target-installed');
+  assert.match(error.message, /copied and verified.*cleanup failed/);
+  assert.equal(fs.readFileSync(path.join(target, 'harness.db'), 'utf8'), 'new database bytes');
+  assert.equal(fs.readFileSync(path.join(error.recoveryPath, 'harness.db'), 'utf8'), 'old database bytes');
+});
+
 test("a new floor's config: the shared one without per-floor settings, Slack and webhooks off", () => {
   const main = { harnessHome: '/w/A', recentHives: ['/w/A'], registeredRepos: ['/r'], missions: [1], slackEnabled: true, slackPort: 3999, slackBotToken: 'x', webhookEnabled: true, webhookPort: 4000,
     tokenLimits: {}, avatars: {}, agentMcp: {}, onboardingComplete: true, godProvider: 'claude', godModel: 'claude-opus-5-5', autoMode: true };
