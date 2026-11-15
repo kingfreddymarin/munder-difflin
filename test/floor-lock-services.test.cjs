@@ -65,6 +65,9 @@ function changeHomeWith(oldHome, gate, refusal, proc = {}) {
   const ctx = { ...fs, ...path, console, process: proc.argv ? { ...process, argv: proc.argv } : process, FLOOR_LOCK_FILE, floorGate: gate,
     remapMovedCwds: runtimeTs.remapMovedCwds,
     floorDataDirFor: floorsTs.floorDataDirFor, moveRelaunchArgs: floorsTs.moveRelaunchArgs,
+    copyFloorPersistedState: floorsTs.copyFloorPersistedState, copyFloorMovedState: floorsTs.copyFloorMovedState,
+    FloorPersistedStateCopyError: floorsTs.FloorPersistedStateCopyError,
+    persist: { close: () => calls.push(['persist.close']), open: () => calls.push(['persist.open']) },
     isFloorProcess: () => !!proc.argv, sharedDataDir: () => proc.shared ?? '/S',
     dataFolderRefusal: (home) => refusal(home), appDataDirs: () => [],
     ipcMain: { handle: (_, fn) => { handler = fn; } },
@@ -75,7 +78,7 @@ function changeHomeWith(oldHome, gate, refusal, proc = {}) {
     stopWebhookServer: noop, memory: { stop: noop, drain: async () => {} }, reflector: { stop: noop, drain: async () => {} }, bootstrapHiveServices: noop,
     startSlackServer: noop, reconcileWebhookServer: noop,
     writeConfig: (c) => { calls.push(['writeConfig', c]); Object.assign(cfg, c); }, ptyManager: { killAll: () => calls.push(['killAll']) },
-    app: { relaunch: (o) => calls.push(['relaunch', o]), exit: () => calls.push(['exit']) }, allowQuit: false };
+    app: { relaunch: (o) => calls.push(['relaunch', o]), exit: () => calls.push(['exit']), getPath: () => proc.userData }, allowQuit: false };
   vm.runInNewContext(ts.transpileModule(filterSrc + handlerSrc, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, ctx);
   return { run: (payload) => handler({}, payload), calls };
 }
@@ -204,5 +207,31 @@ test('review F2: a location change in a floor process restarts it as the new hom
   assert.equal(written.harnessHome, dest);
   assert.equal(fs.statSync(path.join(newData, 'config.json')).mode & 0o777, 0o600);
   assert.equal(floorsTs.bootFloorPlan(['/App/Paramount', ...relaunch[1].args], written.harnessHome).open, dest);
+  gate.release();
+});
+
+// NSC-222 / review N5, driven through the real handler (NSC-212: replaces a source regex in floors.test.cjs).
+test('a Move in a floor process carries config, database and the floor\'s state files to the new data folder', async (t) => {
+  const { old, dest } = homes(t);
+  const shared = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-shared-'));
+  t.after(() => fs.rmSync(shared, { recursive: true, force: true }));
+  const floorsTs = loadTs('src/main/floors.ts');
+  const userData = floorsTs.floorDataDirFor(shared, old);
+  fs.mkdirSync(path.join(userData, 'knowledge'), { recursive: true });
+  fs.writeFileSync(path.join(userData, 'harness.db'), 'history');
+  fs.writeFileSync(path.join(userData, 'integration-secrets.json'), '{"sealed":"x"}', { mode: 0o600 });
+  fs.writeFileSync(path.join(userData, 'trigger-history.json'), '[1]');
+  fs.writeFileSync(path.join(userData, 'knowledge', 'store.json'), '{}');
+  const gate = createFloorGate(council, () => true);
+  gate.claim(old);
+  const argv = ['/App/Paramount', `--floor-data=${userData}`, `--floor-shared=${shared}`, `--floor-home=${old}`];
+  const h = changeHomeWith(old, gate, () => null, { argv, shared, userData });
+  assert.equal((await h.run({ newHome: dest, mode: 'move' })).ok, true);
+  const newData = floorsTs.floorDataDirFor(shared, dest);
+  assert.deepEqual(fs.readdirSync(newData).sort(), ['config.json', 'harness.db', 'integration-secrets.json', 'knowledge', 'trigger-history.json']);
+  assert.equal(fs.readFileSync(path.join(newData, 'integration-secrets.json'), 'utf8'), '{"sealed":"x"}');
+  assert.equal(fs.readFileSync(path.join(newData, 'harness.db'), 'utf8'), 'history');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(newData, 'config.json'), 'utf8')).harnessHome, dest);
+  assert.ok(h.calls.some((c) => c[0] === 'persist.close'), 'the database is flushed before it is copied');
   gate.release();
 });

@@ -120,6 +120,19 @@ function hasFloorFiles(directory: string): boolean {
   return FLOOR_PERSISTED_STATE_FILES.some((file) => existsSync(join(directory, file)));
 }
 
+/** A floor's own state in its data folder, besides config.json and the database (review N5).
+ *  Caches (model and skill catalogs) are rebuilt and Chromium profile data is not copied. */
+export const FLOOR_MOVED_STATE = ['integration-secrets.json', 'trigger-history.json', 'slack-reply.json', 'slack-done-notified.json', 'slack-files', 'knowledge'] as const;
+
+/** Copy FLOOR_MOVED_STATE to the new home's data folder on a Floor location move. The old data
+ *  folder is kept. Returns the names copied; a copy error is thrown for the move to recover. */
+export function copyFloorMovedState(sourceDir: string, targetDir: string): string[] {
+  const present = FLOOR_MOVED_STATE.filter((name) => existsSync(join(sourceDir, name)));
+  if (present.length) mkdirSync(targetDir, { recursive: true });
+  for (const name of present) cpSync(join(sourceDir, name), join(targetDir, name), { recursive: true, force: true, dereference: false });
+  return present;
+}
+
 /** Carry durable command history and app state when a floor is re-keyed by a home move. */
 export function copyFloorPersistedState(sourceDir: string, targetDir: string, ops: {
   cpSync?: typeof cpSync; renameSync?: typeof renameSync; rmSync?: typeof rmSync;

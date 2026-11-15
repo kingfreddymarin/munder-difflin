@@ -463,7 +463,7 @@ test('Floor location in a floor process restarts it as the new home\'s floor, on
   assert.deepEqual(moved, ['--floor-data=/S/floors/c', '--floor-shared=/S', '--floor-home=/w/C']);
   assert.deepEqual(plain(floors.bootFloorPlan(['/App/Paramount', ...moved], '/w/C')), { open: '/w/C', rewriteConfig: false });
   assert.deepEqual(floors.moveRelaunchArgs(['--user-data-dir=/P', floors.OPEN_LAST_FLOOR_FLAG], { home: '/w/C', dataDir: 'x' }), ['--user-data-dir=/P', floors.OPEN_LAST_FLOOR_FLAG], 'main: reopen the configured floor once');
-  assert.match(INDEX, /if \(isFloorProcess\(\)\) \{\s*try \{\s*mkdirSync\(moveTo\.dataDir, \{ recursive: true \}\);\s*writeFileSync\(join\(moveTo\.dataDir, 'config\.json'\), JSON\.stringify\(readConfig\(\), null, 2\), \{ encoding: 'utf8', mode: 0o600 \}\);/);
+  // The config write and state copy run through the real handler in floor-lock-services.test.cjs.
 });
 
 test('a floor process at its picker opens another floor as that floor\'s own process, then closes', async (t) => {
@@ -539,4 +539,31 @@ test("setup refuses the app's own data folder before any lock or write", () => {
   assert.equal(r.error.code, 'INVALID_INPUT');
   assert.equal(r.error.message, "A floor cannot use this floor's own data folder.");
   assert.deepEqual(calls, []);
+});
+
+// NSC-222 / review N5 (2f745936): Floor location in a floor process gave the new data folder only
+// config.json (and, since, harness.db). Integration secrets, trigger history, Slack state and the
+// knowledge store stayed in the old data folder, so integrations lost their saved secret after a Move.
+test('Floor location in a floor process carries the floor\'s own state files to the new data folder', (t) => {
+  const root = tmp(t, 'council-move-state-');
+  const from = path.join(root, 'floors', 'b'), to = path.join(root, 'floors', 'c');
+  fs.mkdirSync(path.join(from, 'knowledge'), { recursive: true });
+  fs.mkdirSync(path.join(from, 'slack-files'), { recursive: true });
+  fs.writeFileSync(path.join(from, 'integration-secrets.json'), '{"sealed":"x"}', { mode: 0o600 });
+  fs.writeFileSync(path.join(from, 'trigger-history.json'), '[1]');
+  fs.writeFileSync(path.join(from, 'slack-reply.json'), '{}');
+  fs.writeFileSync(path.join(from, 'knowledge', 'store.json'), '{"docs":1}');
+  fs.writeFileSync(path.join(from, 'slack-files', 'a.bin'), 'file');
+  fs.writeFileSync(path.join(from, 'model-catalog.json'), 'cache');
+  fs.mkdirSync(path.join(from, 'Cache'));
+  const copied = floors.copyFloorMovedState(from, to);
+  assert.deepEqual([...copied].sort(), ['integration-secrets.json', 'knowledge', 'slack-files', 'slack-reply.json', 'trigger-history.json']);
+  assert.equal(fs.readFileSync(path.join(to, 'integration-secrets.json'), 'utf8'), '{"sealed":"x"}');
+  assert.equal(fs.statSync(path.join(to, 'integration-secrets.json')).mode & 0o777, 0o600, 'secrets keep owner-only mode');
+  assert.equal(fs.readFileSync(path.join(to, 'knowledge', 'store.json'), 'utf8'), '{"docs":1}');
+  assert.equal(fs.readFileSync(path.join(to, 'slack-files', 'a.bin'), 'utf8'), 'file');
+  assert.equal(fs.existsSync(path.join(to, 'model-catalog.json')), false, 'caches are rebuilt, not copied');
+  assert.equal(fs.existsSync(path.join(to, 'Cache')), false, 'Chromium profile data is not copied');
+  assert.equal(fs.readFileSync(path.join(from, 'integration-secrets.json'), 'utf8'), '{"sealed":"x"}', 'the old data folder is kept');
+  assert.deepEqual(floors.copyFloorMovedState(path.join(root, 'none'), path.join(root, 'none-to')), [], 'nothing to carry');
 });

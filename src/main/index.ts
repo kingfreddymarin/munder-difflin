@@ -3,7 +3,7 @@ import { observeAccountOperation } from './account-observability';
 // other module reads userData, so it is the first import.
 import { councilBuild, councilVersion, floorProcessHome, isFloorProcess, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
 import { codexExecutionArgs, useCodexRemoteControl } from '../shared/executionPolicy';
-import { bootFloorPlan, copyFloorPersistedState, dataFolderRefusal, FloorPersistedStateCopyError, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
+import { bootFloorPlan, copyFloorMovedState, copyFloorPersistedState, dataFolderRefusal, FloorPersistedStateCopyError, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
 import { mergeAccountProfiles, resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
@@ -3509,6 +3509,7 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
         // Flush the floor's SQLite state before copying its database and WAL.
         persist.close();
         copyFloorPersistedState(app.getPath('userData'), floorDataDirFor(sharedDataDir(), newHome));
+        copyFloorMovedState(app.getPath('userData'), floorDataDirFor(sharedDataDir(), newHome));
       }
       // Only cwd paths under copied floor metadata are rebased. Arbitrary project
       // folders beside the metadata remain at their original, still-valid paths.
