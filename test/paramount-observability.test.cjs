@@ -400,3 +400,65 @@ test('an op whose answer carries core errors ends with outcome error and their e
   await obs.traced('paramount.dispatch', (l) => clean.push(l), {}, () => ({ ok: true, artifacts: { warnings: [] } }));
   assert.equal(clean.find((l) => l.phase === 'end').outcome, 'ok');
 });
+
+// ─── (4c) pre-floor diagnostics (NSC-193 repro 2026-11-15, E-mwi8f3qa-979fabff) ─
+// A fresh profile in Setup has no harnessHome, so the floor log cannot be written.
+// The bundle must still return app, OS and redacted config; floor evidence is listed
+// as absent, never borrowed from another floor.
+function noFloorDeps(extra = {}) {
+  const published = [];
+  return { published, deps: deps({
+    floorLogAvailable: () => false,
+    appendEvent: () => { throw new Error('hive disabled (no harnessHome)'); },
+    publish: (e) => published.push(e),
+    diagnostics: ({ logLines, cid }) => obs.buildDiagnostics({
+      root: null, app: { version: '0.4.6', packaged: true }, os: { platform: 'darwin', arch: 'arm64' },
+      config: { harnessHome: null, slackBotToken: SECRETS.slack, notifications: true }, logLines
+    }, cid),
+    ...extra
+  }) };
+}
+
+test('diagnostics.bundle works before a floor is chosen', () => {
+  const { deps: d, published } = noFloorDeps();
+  const result = dispatchParamount({ type: 'diagnostics.bundle' }, d);
+  assert.equal(result.ok, true, `pre-floor bundle failed: ${result.code} ${result.message ?? result.error ?? ''}`);
+  const b = result.diagnostics;
+  assert.equal(b.correlationId, result.event.correlationId);
+  assert.equal(b.app.version, '0.4.6');
+  assert.equal(b.os.arch, 'arm64');
+  assert.equal(b.config.harnessHome, null);
+  assert.equal(b.config.slackBotToken, obs.REDACTED);
+  assert.deepEqual(b.logTail, []);
+  assert.deepEqual(b.crashes, []);
+  assert.ok(b.errors.some((e) => /no log or crash reports/.test(e)), 'floor evidence is explicitly absent');
+  assertNoSecret(result, 'pre-floor bundle');
+  assert.equal(published.length, 1, 'still published to open windows');
+});
+
+test('diagnostics.save works before a floor is chosen', async () => {
+  const writes = [];
+  const { deps: d } = noFloorDeps({ saveDiagnostics: async (file) => { writes.push(file); return { canceled: false, path: `/picked/${file.name}` }; } });
+  const result = await dispatchParamount({ type: 'diagnostics.save', name: 'paramount-diagnostics-20261115-193257.json' }, d);
+  assert.equal(result.ok, true, `pre-floor save failed: ${result.code} ${result.message ?? ''}`);
+  assert.equal(writes.length, 1);
+  assertNoSecret(writes, 'pre-floor saved file');
+});
+
+test('with a floor, diagnostics are still audited on the floor log', () => {
+  const audited = [];
+  const result = dispatchParamount({ type: 'diagnostics.bundle' }, deps({
+    floorLogAvailable: () => true,
+    appendEvent: (e) => audited.push(e),
+    diagnostics: ({ logLines, cid }) => obs.buildDiagnostics({ root: tmpRoot(), app: {}, os: {}, config: {}, logLines }, cid)
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(audited.length, 1);
+});
+
+test('other commands still fail closed when no floor log exists', () => {
+  const { deps: d } = noFloorDeps();
+  const result = dispatchParamount({ type: 'account.notify', id: 'desktop', on: true }, d);
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.errorId, 'string');
+});

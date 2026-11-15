@@ -35,6 +35,8 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   /** First-run floor setup (`setup.complete`); absent means unsupported. */
   floorSetup?: FloorSetupDeps;
   appendEvent(event: ParamountEvent): void;
+  /** False while no floor is chosen (fresh profile in Setup): read-only diagnostics then skip the floor audit line. */
+  floorLogAvailable?(): boolean;
   publish(event: ParamountEvent): void;
   /** Redacted support bundle for `diagnostics.bundle`; absent means unsupported. */
   diagnostics?(options: { logLines?: number; cid: string }): ParamountDiagnostics;
@@ -302,7 +304,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         return deps.saveDiagnostics({ name: command.name, text }).then((saved): ParamountResult => {
           const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as ParamountCommand, correlationId: span.cid };
           // A cancel writes nothing, so only a real save is recorded on the floor.
-          if (!saved.canceled) { deps.appendEvent(event); deps.publish(event); }
+          if (!saved.canceled) { if (deps.floorLogAvailable?.() !== false) deps.appendEvent(event); deps.publish(event); }
           return { ok: true, event, saved };
         }, (error: unknown) => fail('UNCERTAIN_STATE', `The file may be partly written: ${error instanceof Error ? error.message : 'save failed'}`, error));
       }
@@ -463,7 +465,8 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         return fail('INVALID_COMMAND', `${command.type} uses an existing preload call or is unknown`);
     }
     const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as ParamountCommand, correlationId: span.cid };
-    deps.appendEvent(event);
+    // Diagnostics must work in Setup before any floor exists; every other command still needs the floor log.
+    if (!(command.type === 'diagnostics.bundle' && deps.floorLogAvailable?.() === false)) deps.appendEvent(event);
     deps.publish(event);
     return { ok: true, event, ...(diagnostics ? { diagnostics } : {}), ...(prereq ? { prereq } : {}),
       ...(discovery ? { discovery } : {}), ...(imported ? { imported } : {}), ...(artifacts ? { artifacts } : {}) };

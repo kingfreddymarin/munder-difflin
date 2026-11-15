@@ -4548,6 +4548,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
     onOpenError: (url, error) => paramountLog({ kind: 'paramount-error', errorId: newErrorId(), cid: span.cid, op: 'board.open', code: 'INTERNAL', scheme: url.split(':')[0], message: error instanceof Error ? error.message : String(error) })
   }),
   appendEvent: paramountAppendEvent,
+  floorLogAvailable: () => hive.root() !== null,
   publish: paramountPublish,
   floorSetup: paramountFloorSetupDeps(evt.sender),
   diagnostics: ({ logLines, cid }) => buildDiagnostics({
