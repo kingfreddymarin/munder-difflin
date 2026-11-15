@@ -10,6 +10,9 @@ import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { UnsupportedReason } from './error-notice';
 import { EngineSignInActions, SignInReminderReset } from './engine-sign-in-actions';
 
+// One shared empty list: a fresh [] per read makes useSyncExternalStore re-render forever (Settings › Setup crash).
+const NO_MUTED_REMINDERS: string[] = [];
+
 const stateLook = {
   ready: ['Ready', 'success'],
   'installed-not-running': ['Installed · not running', 'warning'],
@@ -115,7 +118,7 @@ function ClaudeTelegramChannelAction() {
  *  Omit/false for Settings › Setup — shows all items including muted-reminder reset rows. */
 export function PrereqList({ compact }: { compact?: boolean }) {
   const prereqs = useFloor((s) => s.prerequisites);
-  const mutedProviders = new Set(useFloor((s) => s.mutedSignInReminders ?? []));
+  const mutedProviders = new Set(useFloor((s) => s.mutedSignInReminders ?? NO_MUTED_REMINDERS));
   const featured = prereqs.find((p) => p.level === 'required' && p.state !== 'ready') ?? prereqs.find((p) => p.level === 'required');
   const rest = prereqs.filter((p) => p !== featured && (!compact || p.state !== 'ready' || p.level === 'required'));
   return (
