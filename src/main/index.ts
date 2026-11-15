@@ -93,7 +93,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { claimFloor, directoryStateForPath, readRecord, registerParamountRuntime, remapMovedCwds, seedRecordFromRegistry } from './paramount-runtime';
+import { claimFloor, directoryStateForPath, readRecord, registerParamountRuntime, remapMovedCwds, seedRecordFromRegistry, settleFailedStart } from './paramount-runtime';
 import { createFloorGate, FLOOR_LOCK_FILE, floorOwnerName, removeFloorContents, type FloorGateState } from './floor-lock';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
@@ -2921,6 +2921,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // seedDelivery:'type-into-tui') rather than passed on argv. Surfaced in the spawn
   // result so the renderer types it through the per-pty write-chain. (ondev-b)
   let seedPrompt: string | undefined;
+  // A new hire is registered by ensureAgent below; a failed first start must not leave it behind (N6).
+  const registeredBefore = !!opts.hive && hive.enabled() && !!hive.registry().agents[opts.hive.id];
   if (opts.hive && hive.enabled()) {
     try {
       const inj = await hive.ensureAgent(
@@ -3190,6 +3192,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     if (!sameHome) return accountFailure('The expected account environment changed; no replacement process was started.');
   }
   const res = ptyManager.spawn(opts, owner);
+  if (!res.ok && opts.hive?.id && settleFailedStart(hive, opts.hive.id, { registeredBefore, started: false })) ptyToAgent.delete(opts.id);
   if (res.ok && account) ptySignInAccount.set(opts.id, { id: account.id, label: account.label, home: account.home, bin: account.bin, fingerprint: account.fingerprint });
   if (res.ok) {
     const modelIndex = (opts.args ?? []).findIndex(arg => arg === '--model' || arg === '-m');

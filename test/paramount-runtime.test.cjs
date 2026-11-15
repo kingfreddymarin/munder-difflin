@@ -392,3 +392,35 @@ test('a record that already lists every live agent is not rewritten', (t) => {
   assert.deepEqual(seedRecordFromRegistry(root, munderFloor(root), 1), []);
   assert.equal(fs.readFileSync(path.join(root, RUNTIME_FILE), 'utf8'), body);
 });
+
+// NSC-222 / review N6 (2f745936): hive.ensureAgent registers a hire before its terminal starts. When the
+// start fails, the unarchived entry has no record and no terminal, so the next boot seeds it (it looks
+// like a Munder hire) and the restore brings back an agent the user saw fail.
+test('a hire whose first start failed is archived and not restored at the next open', async (t) => {
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'council-failed-hire-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { restoreAgents, settleFailedStart, RUNTIME_FILE } = loadTs('src/main/paramount-runtime.ts');
+  fs.writeFileSync(path.join(root, RUNTIME_FILE), JSON.stringify({ schema: 'paramount-runtime-v1', savedAt: '', agents: [{ id: 'dwight-mvqtyx2n', name: 'Dwight', provider: 'claude', cwd: root }] }));
+  const registry = { godId: 'god', agents: { god: { name: 'Michael', provider: 'claude', isGod: true, cwd: root },
+    'dwight-mvqtyx2n': { name: 'Dwight', provider: 'claude', cwd: root }, 'oscar-failed': { name: 'Oscar', provider: 'claude', cwd: root } } };
+  const hive = { setArchived: (id, v) => { registry.agents[id].archived = v; } };
+  // The hire path: Oscar was not registered before this start, and the terminal failed.
+  assert.equal(settleFailedStart(hive, 'oscar-failed', { registeredBefore: false, started: false }), true);
+  // A restore or restart of a known agent keeps its entry (NSC-219: never archive on a transient error).
+  assert.equal(settleFailedStart(hive, 'dwight-mvqtyx2n', { registeredBefore: true, started: false }), false);
+  assert.equal(settleFailedStart(hive, 'dwight-mvqtyx2n', { registeredBefore: false, started: true }), false);
+  orphanBoot(root, registry);
+  const spawned = [];
+  await restoreAgents(root, { isLive: () => false, isArchived: (id) => registry.agents[id]?.archived === true, isDirectory: () => true,
+    respawn: async (a) => { spawned.push(a.id); return { ok: true }; }, log() {} });
+  assert.deepEqual(spawned, ['dwight-mvqtyx2n']);
+  assert.equal(registry.agents['oscar-failed'].archived, true);
+  assert.notEqual(registry.agents['dwight-mvqtyx2n'].archived, true);
+});
+
+test('index.ts settles a failed start with whether the agent was registered before ensureAgent', () => {
+  const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  const before = code.indexOf('const registeredBefore = ');
+  assert.ok(before > 0 && before < code.indexOf('const inj = await hive.ensureAgent('), 'measured before ensureAgent registers the hire');
+  assert.match(code, /const res = ptyManager\.spawn\(opts, owner\);\s*if \(!res\.ok && opts\.hive\?\.id && settleFailedStart\(hive, opts\.hive\.id, \{ registeredBefore, started: false \}\)\) ptyToAgent\.delete\(opts\.id\);/);
+});

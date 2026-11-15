@@ -63,6 +63,16 @@ export function readRecord(root: string): LiveAgent[] {
   } catch { return []; }
 }
 
+/** A hire whose first start failed is archived, so the next boot does not seed and restore an agent
+ *  the user saw fail (review N6). An agent registered before this start keeps its entry: a failed
+ *  restore or restart is not a reason to archive (NSC-219). True when the entry was archived. */
+export function settleFailedStart(hive: { setArchived(id: string, archived: boolean): void }, agentId: string,
+  start: { registeredBefore: boolean; started: boolean }): boolean {
+  if (start.started || start.registeredBefore) return false;
+  hive.setArchived(agentId, true);
+  return true;
+}
+
 /** Rebase only paths contained in copied roots. External and uncopied paths remain
  *  unchanged; path boundaries prevent `/old-floorish` matches. */
 export function remapMovedCwds<T extends { cwd?: unknown }>(value: T, oldHome: string, newHome: string, copiedRoots: readonly string[]): T {
