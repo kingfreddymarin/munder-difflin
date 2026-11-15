@@ -1,4 +1,5 @@
 import { resolveAgentModel } from './paramount-models';
+import { auditOnFloor, type FloorAudit } from './paramount-pre-floor';
 import { discoverLaunchers, publicDiscovery, launcherDisplayCommand, validateLauncher, readLauncherState, displayLauncherState, runtimeLauncher, saveLauncherPick, type LauncherPick, launcherForProvider, launcherProvider } from './council-account-launchers';
 // Paramount Team screen commands (lane d-team): new cards, per-agent models and
 // the Add-Agent hire form. dispatchParamount hands these over in one line; every
@@ -82,10 +83,9 @@ export interface ParamountTeamDeps {
 }
 
 /** The slice of ParamountDeps the team module uses. */
-interface Deps {
+interface Deps extends FloorAudit {
   tasks(): { tasks?: Array<{ id: string }> };
   agents(): Record<string, unknown>;
-  appendEvent(event: ParamountEvent): void;
   publish(event: ParamountEvent): void;
   logStep?(step: Record<string, unknown>): void;
   team?: ParamountTeamDeps;
@@ -257,7 +257,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
   if (!team) return fail('UNSUPPORTED', `${commandType} is not available in this build`);
   const done = (payload: Omit<ParamountTeamResult, 'ok' | 'event'>): ParamountResult => {
     const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as unknown as ParamountCommand, correlationId: span.cid };
-    deps.appendEvent(event);
+    auditOnFloor(deps, event, commandType);
     deps.publish(event);
     return { ok: true, event, ...payload } as ParamountResult;
   };

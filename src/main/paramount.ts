@@ -1,4 +1,5 @@
 import { validExecutionPolicy } from '../shared/executionPolicy';
+import { auditOnFloor } from './paramount-pre-floor';
 import { randomUUID } from 'node:crypto';
 import { dispatchFloorSetup, type FloorSetupDeps } from './paramount-floor-setup';
 import { isAbsolute } from 'node:path';
@@ -35,7 +36,7 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   /** First-run floor setup (`setup.complete`); absent means unsupported. */
   floorSetup?: FloorSetupDeps;
   appendEvent(event: ParamountEvent): void;
-  /** False while no floor is chosen (fresh profile in Setup): read-only diagnostics then skip the floor audit line. */
+  /** False while no floor is chosen (fresh profile in Setup); see paramount-pre-floor.ts. */
   floorLogAvailable?(): boolean;
   publish(event: ParamountEvent): void;
   /** Redacted support bundle for `diagnostics.bundle`; absent means unsupported. */
@@ -304,7 +305,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         return deps.saveDiagnostics({ name: command.name, text }).then((saved): ParamountResult => {
           const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as ParamountCommand, correlationId: span.cid };
           // A cancel writes nothing, so only a real save is recorded on the floor.
-          if (!saved.canceled) { if (deps.floorLogAvailable?.() !== false) deps.appendEvent(event); deps.publish(event); }
+          if (!saved.canceled) { auditOnFloor(deps, event, 'diagnostics.save'); deps.publish(event); }
           return { ok: true, event, saved };
         }, (error: unknown) => fail('UNCERTAIN_STATE', `The file may be partly written: ${error instanceof Error ? error.message : 'save failed'}`, error));
       }
@@ -465,8 +466,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         return fail('INVALID_COMMAND', `${command.type} uses an existing preload call or is unknown`);
     }
     const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as ParamountCommand, correlationId: span.cid };
-    // Diagnostics must work in Setup before any floor exists; every other command still needs the floor log.
-    if (!(command.type === 'diagnostics.bundle' && deps.floorLogAvailable?.() === false)) deps.appendEvent(event);
+    auditOnFloor(deps, event, command.type);
     deps.publish(event);
     return { ok: true, event, ...(diagnostics ? { diagnostics } : {}), ...(prereq ? { prereq } : {}),
       ...(discovery ? { discovery } : {}), ...(imported ? { imported } : {}), ...(artifacts ? { artifacts } : {}) };
