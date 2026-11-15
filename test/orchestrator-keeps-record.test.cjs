@@ -157,7 +157,14 @@ test('index.ts: a failed orchestrator start is logged and its entry is not archi
   assert.match(exit, /if \(failedStart\?\.priorArchived !== undefined\) restoreArchived\(failedStart\.agentId, failedStart\.priorArchived\);/);
   // Found in the isolated real-app check of 2c450de6: without this the banner never appeared.
   assert.match(exit, /if \(failedStart\) broadcastParamountInvalidation\('orchestrator-start-failed'\);/);
-  assert.match(code, /orchestratorFailure: orchestratorStart\.failure\(\)/);
+  const project = require('./snapshot-failure-fixture.cjs');
+  const failure = { message: 'synthetic startup failure', agentId: 'god' };
+  const present = project(failure);
+  assert.equal(present.result.orchestratorFailure, failure);
+  assert.equal(present.reads, 1);
+  const absent = project(null);
+  assert.equal(Object.hasOwn(absent.result, 'orchestratorFailure'), false);
+  assert.equal(absent.reads, 1);
   assert.match(code, /orchestratorStartFailure: \(\) => orchestratorStart\.failure\(\)/);
 });
 
@@ -175,7 +182,7 @@ function indexPieces(hive, spawnCore) {
   const js = ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const ptyToAgent = new Map();
   const noop = () => {};
-  const ctx = { module: { exports: {} }, console, hive, ptyToAgent, ptySignInAccount: new Map(), liveWorkers: new Map(), worktreePaths: new Map(), worktreeOrigins: new Map(),
+  const ctx = { module: { exports: {} }, console, hive, ptyToAgent, ptySignInAccount: new Map(), ptyLaunchIdentity: new Map(), liveWorkers: new Map(), worktreePaths: new Map(), worktreeOrigins: new Map(),
     paramountOrchestrators: new Set(), integrationBroker: { revoke: noop }, workerWake: { forget: noop }, breaker: { forget: noop },
     telemetry: { forgetAgent: noop }, grokLedgerGate: { forget: noop }, orchestratorStart: createOrchestratorStartWatch(),
     saveLauncherPick: noop, paramountLog: noop, broadcastParamountInvalidation: noop, syncKeepAwake: noop, liveWebContents: () => null, finalizeWorkerWorktree: noop, removeWorktree: async () => ({}), newErrorId: () => 'E-test', setAgentTokenCap: noop, sender: null,

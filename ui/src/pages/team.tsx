@@ -14,13 +14,13 @@ import { AgentSheet } from '@/features/team/agent-sheet';
 import { ImportAgentsSheet } from '@/features/team/import-agents-sheet';
 import { HireSheet } from '@/features/team/hire-sheet';
 import { NewCardDialog } from '@/features/team/new-card-dialog';
-import { LIVE_REFRESH_MS, useAgentImport, useDispatch, useFloor, useLiveRefresh, useTeamApi } from '@/data/store';
+import { LIVE_REFRESH_MS, useAgentImport, useFloor, useLiveRefresh, useTeamApi } from '@/data/store';
 import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import { Screen } from '@/components/app/screen';
-import { TeamsEditor } from '@/features/team/teams-editor';
 import { isTeamPanelId, revealTeamPanel, type TeamPanelId } from './team-panel-route';
+import { persistTeamPanels, TEAM_PANEL_LAYOUT_KEY } from './team-panel-layout';
 
 type PanelId = TeamPanelId;
 const PANELS: Record<PanelId, { title: string; hint: string }> = {
@@ -30,13 +30,12 @@ const PANELS: Record<PanelId, { title: string; hint: string }> = {
   sources: { title: 'Data sources', hint: 'tap a cell to change access' },
   automations: { title: 'Automations', hint: 'hover for the rule' },
 };
-const KEY = 'paramount.team.panels.v2';
 const DEFAULT: PanelId[] = ['graph', 'agents', 'activity', 'sources', 'automations'];
 
 function load(): PanelId[] {
   try {
-    const v = JSON.parse(localStorage.getItem(KEY) ?? 'null');
-    return Array.isArray(v) ? v : DEFAULT;
+    const v = JSON.parse(localStorage.getItem(TEAM_PANEL_LAYOUT_KEY) ?? 'null');
+    return Array.isArray(v) ? v.filter(isTeamPanelId) : DEFAULT;
   } catch {
     return DEFAULT;
   }
@@ -52,7 +51,6 @@ const gridFor: Record<number, string> = {
 
 export function TeamPage() {
   useLiveRefresh(LIVE_REFRESH_MS);
-  const dispatch = useDispatch();
   const { route, go } = useRouter();
   const [panels, setPanels] = React.useState<PanelId[]>(load);
   const [panelToFocus, setPanelToFocus] = React.useState<PanelId | null>(null);
@@ -72,10 +70,8 @@ export function TeamPage() {
   const [creating, setCreating] = React.useState(false);
 
   const apply = React.useCallback((next: PanelId[]) => {
-    setPanels(next);
-    try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* per-viewer preference only */ }
-    dispatch({ type: 'layout.panels', panels: next });
-  }, [dispatch]);
+    setPanels(persistTeamPanels(next));
+  }, []);
   React.useEffect(() => {
     if (!requestedPanel) { handledPanelRoute.current = null; return; }
     const routeKey = `${route.id}:${requestedPanel}`;
@@ -156,7 +152,7 @@ export function TeamPage() {
         <Button disabled={!teamApi} onClick={() => setHiring({ bundle: false })}
           title={teamApi ? 'Add an agent: review the exact command, then start it in a terminal' : 'Hiring needs the desktop core.'}>Hire</Button>
       </div>
-      <TeamsEditor />
+      <Button variant="link" className="self-start" onClick={() => go('settings', { tab: 'team' })}>Team settings</Button>
       <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3', gridFor[panels.length] ?? gridFor[5])}>
         {panels.map((id) => (
           <div key={id} id={`team-panel-${id}`} className="min-w-0">

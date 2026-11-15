@@ -752,6 +752,7 @@ export class HiveManager {
       preserveAccountHome?: boolean;
       /** Explicit session id verified by the caller for a restore/rollback on this provider. */
       sessionId?: string;
+      clearSession?: boolean;
       semanticMemory?: boolean;
       responseStyleBrief?: string;
       claudeOutputStyle?: 'off' | 'concise' | 'explanatory' | 'learning';
@@ -825,7 +826,7 @@ export class HiveManager {
     reg.agents[meta.id] = {
       ...prev,
       ...meta,
-      sessionId: opts.sessionId ?? (prev && (prev.provider ?? 'claude') !== (meta.provider ?? 'claude') ? undefined : prev?.sessionId),
+      sessionId: opts.clearSession ? undefined : opts.sessionId ?? (prev && (prev.provider ?? 'claude') !== (meta.provider ?? 'claude') ? undefined : prev?.sessionId),
       capabilities: meta.capabilities ?? prev?.capabilities ?? [],
       role,
       status: 'idle',
@@ -2673,8 +2674,12 @@ export class HiveManager {
           onHold?: boolean;
         }>;
       };
-      const agents = Array.isArray(snap.agents) ? snap.agents : [];
-      if (!agents.length) return null;
+      // A terminal can close between the eight-second fleet snapshots.
+      // Registry archival is immediate and overrides those stale rows.
+      const registry = this.registry();
+      const agents = (Array.isArray(snap.agents) ? snap.agents : [])
+        .filter((agent) => !registry.agents[agent.id]?.archived);
+      if (!agents.length) return '[LIVE ROSTER] 0 ACTIVE agents. This supersedes earlier rosters; closed agents are unavailable.';
 
       const ago = (s: number | null | undefined): string =>
         typeof s !== 'number' ? 'unknown'

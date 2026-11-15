@@ -1,3 +1,5 @@
+import { ManagedAccounts } from '@/features/settings/managed-accounts';
+import { TeamsEditor } from '@/features/team/teams-editor';
 import { LauncherSettings } from '@/features/team/launcher-select';
 import * as React from 'react';
 import { Tabs, TabsContent, TabsContents, TabsList, TabsTrigger } from '@/components/animate-ui/components/radix/tabs';
@@ -20,6 +22,7 @@ import { MemorySettings } from '@/features/settings/memory-settings';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 
 export function SettingsPage() {
+  const [accountsRevision, setAccountsRevision] = React.useState(0);
   const me = useFloor((s) => s.me);
   const audit = useFloor((s) => s.audit);
   const agents = useFloor((s) => s.agents);
@@ -62,11 +65,15 @@ export function SettingsPage() {
         </TabsList>
         <TabsContents className="min-h-0 flex-1">
           <TabsContent value="setup">
+            <Tile title="Managed accounts"><ManagedAccounts onChanged={() => setAccountsRevision(value => value + 1)} /></Tile>
+            <Tile title="Existing Paramount" hint="switch its provider or account with an explicit fresh session">
+              {agents.find(agent => agent.role === 'paramount') ? <Button variant="outline" onClick={() => go('team', { agent: agents.find(agent => agent.role === 'paramount')!.id, tab: 'profile' })}>Switch Paramount provider or account</Button> : <p className="text-sm">No existing Paramount is registered on this floor.</p>}
+            </Tile>
             <Tile title="Account launchers" hint="refresh device discovery and reconfigure saved defaults">
-              <LauncherSettings scope="default" provider="claude" />
-              <LauncherSettings scope="default" provider="codex" />
-              <LauncherSettings scope="temps" />
-              <LauncherSettings scope="orchestrator" />
+              <LauncherSettings refreshToken={accountsRevision} scope="default" provider="claude" />
+              <LauncherSettings refreshToken={accountsRevision} scope="default" provider="codex" />
+              <LauncherSettings refreshToken={accountsRevision} scope="temps" />
+              <LauncherSettings refreshToken={accountsRevision} scope="orchestrator" />
             </Tile>
             <Tile title="Runtime checks" hint="checked at every start · optional services are labeled">
               <PrereqList />
@@ -103,7 +110,7 @@ export function SettingsPage() {
               </DialogContent>
             </Dialog>
           </TabsContent>
-          <TabsContent value="team"><CoreSettings /></TabsContent>
+          <TabsContent value="team"><CoreSettings /><TeamsEditor /></TabsContent>
           <TabsContent value="providers"><ProviderSettings /></TabsContent>
           <TabsContent value="memory"><MemorySettings /></TabsContent>
           <TabsContent value="autonomy">

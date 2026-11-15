@@ -151,7 +151,36 @@ test('P2: a spawn discovers at most once, and not at all without a launcher', (t
   const core = declaration.getText(tree);
   assert.equal(core.includes('validateLauncher('), false);
   assert.doesNotMatch(core, /discoverLaunchers(Async)?\(/, 'no direct discovery call (the cache is built with the functions, not their results)');
-  assert.match(core, /resolveLauncherForSpawn\([\s\S]*?\}, \(\) => launcherDiscovery\.current\(\)\);/);
+  const composed = tree.statements.find(node => syntax.isFunctionDeclaration(node) && node.name?.text === 'currentAccountDiscovery');
+  assert.ok(composed, 'production composed account resolver exists');
+  let resolverCall;
+  function visit(node) {
+    if (syntax.isCallExpression(node) && node.expression.getText(tree) === 'resolveLauncherForSpawn') resolverCall = node;
+    syntax.forEachChild(node, visit);
+  }
+  visit(declaration);
+  assert.ok(resolverCall?.arguments[1], 'production spawn passes a lazy discovery callback');
+  // Execute the production callback AND its composed resolver, rather than
+  // requiring a particular helper spelling. Ordinary spawns must not read
+  // either catalog; selected spawns compose fresh profiles from one cached read.
+  const vm = require('node:vm');
+  let cacheReads = 0, catalogReads = 0;
+  const executable = syntax.transpileModule(`${composed.getText(tree)}; (${resolverCall.arguments[1].getText(tree)})`, {
+    compilerOptions: { target: syntax.ScriptTarget.ES2022, module: syntax.ModuleKind.CommonJS }
+  }).outputText;
+  const callback = vm.runInNewContext(executable, {
+    launcherDiscovery: { current: () => { cacheReads++; return cache.current(); } },
+    deviceAccountProfiles: () => ({ list: () => { catalogReads++; return []; } }),
+    mergeAccountProfiles: account.mergeAccountProfiles
+  });
+  const request = { ...ordinary, root: g.root };
+  assert.equal(account.resolveLauncherForSpawn(request, callback), undefined);
+  assert.deepEqual([cacheReads, catalogReads], [0, 0]);
+  for (let i = 1; i <= 2; i++) {
+    assert.equal(account.resolveLauncherForSpawn({ ...request, explicit: g.dcm() }, callback).id, 'dcm');
+    assert.deepEqual([cacheReads, catalogReads], [i, i], 'exactly one composed read per selected spawn');
+  }
+  assert.equal(g.discoveries(), 1, 'composed catalog resolution never reruns the shell probe');
 });
 
 test('P3: a bad launcher entry stops only the spawns that use it', async (t) => {

@@ -26,13 +26,17 @@ export type Command =
   | { type: 'prereq.install'; id: string; confirm?: boolean }
   | { type: 'prereq.start'; id: string; confirm?: boolean }
   | { type: 'setup.dismiss'; degraded: string[] }
+  | { type: 'signIn.muteReminder'; provider: 'claude' | 'codex'; muted: boolean }
   | { type: 'orchestrator.ensure' }
   | { type: 'floor.retry' }
   | { type: 'floor.choose-another' }
   | { type: 'floor.open'; home: string }
   | { type: 'floor.picker'; open: boolean }
   | { type: 'floor.switch' }
-  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
+  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; codexExecutionPolicy?: 'inherit' | 'workspace-ask' | 'workspace-auto' | 'full-ask' | 'full-auto'; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
+  | { type: 'accounts.list' }
+  | { type: 'accounts.create'; provider: 'claude' | 'codex'; label: string }
+  | { type: 'accounts.rename'; id: string; label: string }
   | { type: 'launchers.refresh' }
   | { type: 'launchers.configure'; scope: 'agent' | 'temps' | 'orchestrator' | 'default'; agentId?: string; provider?: string; launcher: CouncilLauncherPick | null }
   | { type: 'ask.reply'; messageId: string; mode: AskMode; text: string }

@@ -5,9 +5,10 @@ import { Button } from '@/components/animate-ui/components/buttons/button';
 import { CopyButton } from '@/components/animate-ui/components/buttons/copy';
 import { cn } from '@/lib/utils';
 import type { Prerequisite } from '@/data/types';
+import { setupBlockers } from '@/data/external-tools';
 import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { UnsupportedReason } from './error-notice';
-import { EngineSignInActions } from './engine-sign-in-actions';
+import { EngineSignInActions, SignInReminderReset } from './engine-sign-in-actions';
 
 const stateLook = {
   ready: ['Ready', 'success'],
@@ -18,7 +19,7 @@ const stateLook = {
 } as const;
 const levelLook = { required: 'danger', recommended: 'info', optional: 'secondary' } as const;
 
-function Row({ p, featured }: { p: Prerequisite; featured?: boolean }) {
+function Row({ p, featured, showMuteControl }: { p: Prerequisite; featured?: boolean; showMuteControl?: boolean }) {
   const dispatch = useDispatch();
   const unsupported = useUnsupported();
   const [label, variant] = stateLook[p.state];
@@ -43,11 +44,24 @@ function Row({ p, featured }: { p: Prerequisite; featured?: boolean }) {
           </Button>
         </div>
       )}
-      {p.signInProvider && <EngineSignInActions provider={p.signInProvider} state={p.state} accountSelection={p.signInAccountId ? 'selected' : 'default'} accountId={p.signInAccountId} accountFingerprint={p.signInAccountFingerprint} accountLabel={p.signInAccountLabel ?? (p.signInAccountId ? undefined : `${p.name} provider default`)} />}
+      {p.signInProvider && <EngineSignInActions provider={p.signInProvider} state={p.state} accountSelection={p.signInAccountId ? 'selected' : 'default'} accountId={p.signInAccountId} accountFingerprint={p.signInAccountFingerprint} accountLabel={p.signInAccountLabel ?? (p.signInAccountId ? undefined : `${p.name} provider default`)} showMuteControl={showMuteControl} />}
       {p.id === 'claude-cli' && p.state === 'ready' && <ClaudeTelegramChannelAction />}
       <UnsupportedReason reason={!p.signInProvider && p.state !== 'ready' ? reason : null} />
     </div>
   );
+}
+
+/** Rows for muted sign-in providers in Settings › Setup, allowing the user to re-enable reminders. */
+function MutedSignInRows({ providers }: { providers: Set<string> }) {
+  const dispatch = useDispatch();
+  const reset = async (provider: 'claude' | 'codex') => { await dispatch({ type: 'signIn.muteReminder', provider, muted: false }); };
+  return <>
+    {(['claude', 'codex'] as const).filter((p) => providers.has(p)).map((provider) => (
+      <div key={provider} className="rounded-lg border p-3">
+        <SignInReminderReset provider={provider} onReset={() => void reset(provider)} />
+      </div>
+    ))}
+  </>;
 }
 
 function ClaudeTelegramChannelAction() {
@@ -97,20 +111,25 @@ function ClaudeTelegramChannelAction() {
   </div>;
 }
 
+/** `compact`: used in the first-run setup dialog — hides ready items and shows the "Don't ask again" mute button.
+ *  Omit/false for Settings › Setup — shows all items including muted-reminder reset rows. */
 export function PrereqList({ compact }: { compact?: boolean }) {
   const prereqs = useFloor((s) => s.prerequisites);
+  const mutedProviders = new Set(useFloor((s) => s.mutedSignInReminders ?? []));
   const featured = prereqs.find((p) => p.level === 'required' && p.state !== 'ready') ?? prereqs.find((p) => p.level === 'required');
   const rest = prereqs.filter((p) => p !== featured && (!compact || p.state !== 'ready' || p.level === 'required'));
   return (
     <div className="flex flex-col gap-2">
-      {featured && <Row p={featured} featured />}
-      <div className={cn('grid gap-2', !compact && 'md:grid-cols-2')}>{rest.map((p) => <Row key={p.id} p={p} />)}</div>
-      {!prereqs.length && <p className="text-muted-foreground text-sm">No prerequisite checks were reported by the core.</p>}
+      {featured && <Row p={featured} featured showMuteControl={compact} />}
+      <div className={cn('grid gap-2', !compact && 'md:grid-cols-2')}>{rest.map((p) => <Row key={p.id} p={p} showMuteControl={compact} />)}</div>
+      {/* Settings › Setup shows muted-reminder reset rows so the user can re-enable them. */}
+      {!compact && mutedProviders.size > 0 && <MutedSignInRows providers={mutedProviders} />}
+      {!prereqs.length && !mutedProviders.size && <p className="text-muted-foreground text-sm">No prerequisite checks were reported by the core.</p>}
     </div>
   );
 }
 
 export function useSetupBlockers() {
   const prereqs = useFloor((s) => s.prerequisites);
-  return prereqs.filter((p) => p.level === 'required' && p.state !== 'ready');
+  return setupBlockers(prereqs);
 }

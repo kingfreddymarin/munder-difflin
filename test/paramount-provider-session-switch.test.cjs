@@ -48,3 +48,12 @@ test('stopped-agent switch rollback restores the session pointer through HiveMan
   assert.equal(hive.registry().agents.stopped.provider, 'claude');
   assert.equal(hive.lastSession('stopped'), 'claude-session-id');
 });
+test('same-provider fresh account switch clears old session explicitly and rollback restores role and absent pointer', async t => {
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'account-switch-session-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+ const hive=new HiveManager(()=>home);const meta={id:'god',name:'Paramount',provider:'claude',isGod:true,cwd:home};
+ await hive.ensureAgent(meta);hive.recordSession('god','old-session');
+ await hive.ensureAgent(meta,{clearSession:true,preserveAccountHome:true});
+ assert.equal(hive.lastSession('god'),undefined);assert.equal(hive.registry().godId,'god');assert.equal(hive.registry().agents.god.isGod,true);
+ await hive.ensureAgent(meta,{sessionId:'old-session',preserveAccountHome:true});assert.equal(hive.lastSession('god'),'old-session');
+ await hive.ensureAgent(meta,{clearSession:true,preserveAccountHome:true});assert.equal(hive.lastSession('god'),undefined);
+});

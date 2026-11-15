@@ -98,3 +98,13 @@ test('other commands and a build without setup support', () => {
   assert.equal(dispatchFloorSetup({ type: 'setup.dismiss', degraded: [] }, f.deps, f.span), null);
   assert.equal(dispatchFloorSetup({ type: 'setup.complete', ...good }, undefined, f.span).error.code, 'UNSUPPORTED');
 });
+
+ test('setup persists explicit execution choice and rejects unknown choices before writes', () => {
+ const f = fixture();
+ assert.equal(f.run({ ...good, codexExecutionPolicy: 'full-ask' }).ok, true);
+ assert.equal(f.calls.complete[0].codexExecutionPolicy, 'full-ask');
+ const bad = fixture();
+ assert.equal(bad.run({ ...good, codexExecutionPolicy: 'anything' }).ok, false);
+ assert.equal(bad.calls.complete.length, 0);
+ assert.equal(bad.calls.ensure.length, 0);
+ });

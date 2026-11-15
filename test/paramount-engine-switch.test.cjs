@@ -24,7 +24,7 @@ test('failed target start rolls back after the old session stopped and never ove
     stopTarget: async () => { order.push('stop-target'); return { ok: true }; },
     rollback: async () => { order.push('restore-old'); return { ok: true }; },
   });
-  assert.deepEqual(order, ['stop-old', 'start-target', 'restore-old']);
+  assert.deepEqual(order, ['stop-old', 'start-target', 'stop-target', 'restore-old']);
   assert.deepEqual(result, { ok: false, error: 'target login failed' });
 });
 
@@ -84,4 +84,76 @@ test('per-agent lifecycle lock rejects contenders and releases after success or 
   assert.equal(await active, 'first');
   await assert.rejects(withAgentLifecycleLock('agent-race', async () => { throw new Error('rollback failed'); }), /rollback failed/);
   assert.equal(await withAgentLifecycleLock('agent-race', async () => 'retry'), 'retry');
+});
+
+test('same-provider history keeps distinct account fingerprints and orchestrator identity', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paramount-account-history-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const previous = { provider: 'claude', at: '2026-11-15T00:00:00Z', sessionId: 'work-session', model: 'sonnet', launcherId: 'profile-work', launcherFingerprint: 'a'.repeat(64), isGod: true };
+  const next = { ...previous, sessionId: 'personal-session', launcherId: 'profile-personal', launcherFingerprint: 'b'.repeat(64) };
+  preserveEngineSession(root, 'god', previous);
+  preserveEngineSession(root, 'god', next);
+  const saved = JSON.parse(fs.readFileSync(path.join(root, 'paramount-agent-engine-history.json'), 'utf8'));
+  assert.deepEqual(saved.agents.god, [previous, next]);
+  assert.equal(fs.statSync(path.join(root, 'paramount-agent-engine-history.json')).mode & 0o777, 0o600);
+});
+
+test('throwing target cleanup reports rollbackError and never starts the old process', async () => {
+  let rollbackCalls = 0;
+  const result = await switchEngineTransaction({
+    stopCurrent: async () => ({ ok: true }), startTarget: async () => ({ ok: true }),
+    targetViable: async () => ({ ok: false, error: 'target readiness failed' }),
+    persistTarget: async () => { assert.fail('not ready'); },
+    stopTarget: async () => { throw new Error('target kill failed'); },
+    rollback: async () => { rollbackCalls++; return { ok: true }; },
+  });
+  assert.deepEqual(result, { ok: false, error: 'target readiness failed', rollbackError: 'target kill failed' });
+  assert.equal(rollbackCalls, 0);
+});
+
+test('throwing rollback reports both target and restoration failures', async () => {
+  const result = await switchEngineTransaction({
+    stopCurrent: async () => ({ ok: true }), startTarget: async () => ({ ok: false, error: 'target login failed' }),
+    persistTarget: async () => { assert.fail('target did not start'); }, stopTarget: async () => ({ ok: true }),
+    rollback: async () => { throw new Error('old metadata restore failed'); },
+  });
+  assert.deepEqual(result, { ok: false, error: 'target login failed', rollbackError: 'old metadata restore failed' });
+});
+test('a target that throws after partial start must be cleaned before rollback', async () => {
+ let rolled=false;
+ const result=await switchEngineTransaction({stopCurrent:async()=>({ok:true}),startTarget:async()=>{throw new Error('partial spawn');},persistTarget:async()=>{},stopTarget:async()=>({ok:false,error:'cleanup uncertain'}),rollback:async()=>{rolled=true;return {ok:true};}});
+ assert.equal(rolled,false);assert.equal(result.rollbackError,'cleanup uncertain');
+});
+
+test('switch diagnostics correlate ordered rollback phases without forwarding sensitive errors', async () => {
+  const events = [];
+  const result = await switchEngineTransaction({
+    observe: event => events.push(event),
+    stopCurrent: async () => ({ ok: true }),
+    startTarget: async () => ({ ok: false, error: 'secret@example.com /private/account token=secret' }),
+    persistTarget: async () => assert.fail('failed target cannot persist'),
+    stopTarget: async () => ({ ok: true }),
+    rollback: async () => ({ ok: true }),
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(events.map(({phase, outcome}) => [phase, outcome]), [
+    ['stop-current', 'start'], ['stop-current', 'ok'], ['start-target', 'start'], ['start-target', 'fail'],
+    ['stop-target', 'start'], ['stop-target', 'ok'], ['rollback', 'start'], ['rollback', 'ok'],
+  ]);
+  assert.equal(new Set(events.map(e => e.cid)).size, 1);
+  assert.match(events[0].cid, /^[a-f0-9-]{36}$/);
+  assert.ok(events.every(e => Object.keys(e).sort().join(',') === 'cid,outcome,phase'));
+  assert.doesNotMatch(JSON.stringify(events), /secret|private|token/);
+});
+
+test('broken diagnostic sink cannot prevent a successful switch', async () => {
+  const phases = [];
+  const result = await switchEngineTransaction({
+    observe: event => { phases.push(event.phase); throw new Error('disk unavailable'); },
+    stopCurrent: async () => ({ ok: true }), startTarget: async () => ({ ok: true }),
+    targetViable: async () => ({ ok: true }), persistTarget: async () => {},
+    stopTarget: async () => assert.fail('no cleanup expected'), rollback: async () => assert.fail('no rollback expected'),
+  });
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual([...new Set(phases)], ['stop-current', 'start-target', 'check-viability', 'persist-target']);
 });

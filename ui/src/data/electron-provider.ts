@@ -1,6 +1,6 @@
 // The real core through the Electron preload. Server-authoritative: the snapshot is projected from the
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
-import { engineSignIns, externalTools, setupDismissedFor } from './external-tools';
+import { engineSignIns, externalTools, mutedSignInProviders, selectedSignInProviders, setupDismissedFor } from './external-tools';
 import { floorChoiceOf } from './floor-choice';
 import { findBridge, requireBridge } from './bridge';
 import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
@@ -53,6 +53,17 @@ function orchestratorFailureOf(value: unknown): Snapshot['orchestratorFailure'] 
   const v = object(value);
   if (typeof v.message !== 'string' || !v.message || typeof v.agentId !== 'string') return undefined;
   return { agentId: v.agentId, provider: string(v.provider), resumed: v.resumed === true, ...(typeof v.exitCode === 'number' ? { exitCode: v.exitCode } : {}), message: v.message, at: string(v.at) };
+}
+/** A responsive core and a registered agent do not establish a running orchestrator. */
+function orchestratorService(godId: string, registered: Record<string, unknown>, local: Record<string, unknown>, live: boolean, failure: Snapshot['orchestratorFailure']): Snapshot['services'][number] {
+  const service = { id: 'orchestrator', group: 'command-center' as const, name: 'Orchestrator' };
+  if (failure && (!godId || failure.agentId === godId)) return { ...service, state: 'fail', detail: failure.message, fix: 'Open setup' };
+  if (!godId || !Object.keys(registered).length) return { ...service, state: 'warn', detail: 'Readiness unknown — no orchestrator registered', fix: 'Open setup' };
+  if (registered.archived === true) return { ...service, state: 'warn', detail: 'Stopped — orchestrator is archived', fix: 'Open setup' };
+  if (live) return { ...service, state: 'ok', detail: 'Running — live terminal reported' };
+  if (registered.status === 'starting' || local.status === 'starting') return { ...service, state: 'warn', detail: 'Starting — waiting for a live terminal' };
+  if (registered.status === 'crashed') return { ...service, state: 'fail', detail: 'Reported crashed — no live terminal', fix: 'Open setup' };
+  return { ...service, state: 'warn', detail: 'Not running — no live terminal reported', fix: 'Open setup' };
 }
 /** The core's first-run setup state. Absent (an older core) means the floor is already set up. */
 function floorSetupOf(value: unknown): FloorSetup | undefined {
@@ -228,6 +239,8 @@ export function createElectronProvider(): ElectronProvider {
       const agentIds = new Set(agents.map((agent) => agent.id));
       const chats = agents.map((agent) => ({ id: `agent:${agent.id}`, kind: 'agent' as const, title: agent.name, agentIds: [agent.id], pinned: agent.role === 'paramount' }));
       const godId = string(registry.godId);
+      const godPty = ptyByAgent.get(godId);
+      const orchestratorLive = !!string(godPty?.id) && (!string(godPty?.agentId) || godPty?.agentId === godId);
       const nameOf = (id: string) => agents.find((agent) => agent.id === id)?.name ?? id;
       const mail = array(rawMessages).filter((item) => agentIds.has(string(item.owner)));
       // A direct question is mail an agent sent to the human that needs a reply. It counts as answered
@@ -273,8 +286,10 @@ export function createElectronProvider(): ElectronProvider {
       }] : [];
       // Outside the app (owner 2026-11-12: the .dmg is the only download): the claude CLI runs every
       // agent; MemPalace only adds semantic memory search. Resolved on the login PATH by main.
-      prerequisites.push(...externalTools(object(object(native.prereqs).tools)));
-      prerequisites.push(...engineSignIns(object(object(native.prereqs).signIn)));
+      const selectedProviders = selectedSignInProviders(object(config), object(native.registry));
+      const mutedProviders = mutedSignInProviders(preferences);
+      prerequisites.push(...externalTools(object(object(native.prereqs).tools), selectedProviders));
+      prerequisites.push(...engineSignIns(object(object(native.prereqs).signIn), selectedProviders, mutedProviders));
       const log: Snapshot['log'] = array(native.log).map((entry, index) => {
         const kind = string(entry.kind, 'event');
         const code = string(entry.code);
@@ -291,8 +306,8 @@ export function createElectronProvider(): ElectronProvider {
       const snapshot: Snapshot = {
         usageReported: false,
         archivedAgents: array(native.archivedAgents).map((agent) => ({ id: string(agent.id), name: string(agent.name, string(agent.id)) })),
-        settings: Object.fromEntries(['defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'costCapUsd', 'agentTokenCaps', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
-        floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(orchestratorFailureOf(native.orchestratorFailure) ? { orchestratorFailure: orchestratorFailureOf(native.orchestratorFailure) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: setupDismissedFor(object(preferences.setup), prerequisites), objectives: [], wins: [],
+        settings: Object.fromEntries(['codexRemoteControl', 'codexExecutionPolicy', 'defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'costCapUsd', 'agentTokenCaps', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
+        floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(orchestratorFailureOf(native.orchestratorFailure) ? { orchestratorFailure: orchestratorFailureOf(native.orchestratorFailure) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: setupDismissedFor(object(preferences.setup), prerequisites), ...(mutedProviders.size ? { mutedSignInReminders: [...mutedProviders] } : {}), objectives: [], wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
           connections: array(native.integrations).map((item) => ({ id: string(item.id), name: string(item.label, string(item.id)), detail: string(item.kind), connected: item.enabled === true,
             kind: string(item.kind), baseUrl: string(item.baseUrl), authType: string(item.authType), hasSecret: item.hasSecret === true })),
@@ -311,6 +326,7 @@ export function createElectronProvider(): ElectronProvider {
           onlyIf: '', then: string(mission.body), onFailure: '', enabled: mission.enabled === true, runs: [], last: '', file: '' })),
         services: [
           { id: 'core', group: 'command-center', name: 'Local core', state: 'ok', detail: 'Snapshot received' },
+          orchestratorService(godId, object(registryAgents[godId]), rosterById.get(godId) ?? {}, orchestratorLive, orchestratorFailureOf(native.orchestratorFailure)),
           ...(skidKnown ? [{ id: string(skid.id), group: 'studio' as const, name: string(skid.label, 'Skidbladnir'), state: skidReady ? 'ok' as const : 'warn' as const, detail: skidReady ? 'Running' : skid.installed === true ? 'Installed, not running' : 'Not installed', fix: skidReady ? undefined : 'Open setup' }] : []),
         ], log,
         terminals: agents.filter((agent) => ptyByAgent.has(agent.id)).map((agent) => ({ agentId: agent.id, ptyId: string(ptyByAgent.get(agent.id)?.id), cwd: string(ptyByAgent.get(agent.id)?.cwd), lines: [] })),

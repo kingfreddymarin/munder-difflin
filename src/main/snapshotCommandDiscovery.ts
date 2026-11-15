@@ -93,9 +93,10 @@ export function installedSnapshotEngines(cache: SnapshotCommandCache): Array<'cl
 }
 
 /** Run the same fenced login-shell `which` query without blocking the Electron main thread. */
-export function probeLoginShellCommand(command: string): Promise<{ path: string | null; reliable: boolean }> {
+export function probeLoginShellCommand(command: string, signal?: AbortSignal): Promise<{ path: string | null; reliable: boolean }> {
   if (!isSafeCommandName(command)) return Promise.resolve({ path: null, reliable: true });
-  if (process.platform === 'win32') return probeWindowsCommand(command);
+  if (signal?.aborted) return Promise.resolve({ path: null, reliable: false });
+  if (process.platform === 'win32') return probeWindowsCommand(command, signal);
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
@@ -109,9 +110,13 @@ export function probeLoginShellCommand(command: string): Promise<{ path: string 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
       resolve(value);
     };
+    const abort = () => { child.kill(); finish({ path: null, reliable: false }); };
     const timer = setTimeout(() => { child.kill(); finish({ path: null, reliable: false }); }, PROBE_TIMEOUT_MS);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     child.stdout?.on('data', (chunk: Buffer | string) => {
       output += chunk.toString();
       if (Buffer.byteLength(output) > MAX_OUTPUT_BYTES) { child.kill(); finish({ path: null, reliable: false }); }
@@ -127,15 +132,24 @@ export function probeLoginShellCommand(command: string): Promise<{ path: string 
   });
 }
 
-function probeWindowsCommand(command: string): Promise<{ path: string | null; reliable: boolean }> {
+function probeWindowsCommand(command: string, signal?: AbortSignal): Promise<{ path: string | null; reliable: boolean }> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try { child = spawn('where', [command], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }); }
     catch { resolve({ path: null, reliable: false }); return; }
     let output = '';
     let settled = false;
-    const finish = (value: { path: string | null; reliable: boolean }) => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); };
+    const finish = (value: { path: string | null; reliable: boolean }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      resolve(value);
+    };
+    const abort = () => { child.kill(); finish({ path: null, reliable: false }); };
     const timer = setTimeout(() => { child.kill(); finish({ path: null, reliable: false }); }, PROBE_TIMEOUT_MS);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     child.stdout?.on('data', (chunk: Buffer | string) => {
       output += chunk.toString();
       if (Buffer.byteLength(output) > MAX_OUTPUT_BYTES) { child.kill(); finish({ path: null, reliable: false }); }

@@ -1,3 +1,4 @@
+import { validExecutionPolicy } from '../shared/executionPolicy';
 import { randomUUID } from 'node:crypto';
 import { dispatchFloorSetup, type FloorSetupDeps } from './paramount-floor-setup';
 import { isAbsolute } from 'node:path';
@@ -30,7 +31,7 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   setAgentTokenCap(id: string, cap: number): void;
   setNotifications(on: boolean): void;
   saveSettings?(patch: Partial<HarnessConfig>): void;
-  savePreference(key: 'profile' | 'setup' | 'home' | 'chats', value: Record<string, unknown>): void;
+  savePreference(key: 'profile' | 'setup' | 'home' | 'chats' | 'signInReminders', value: Record<string, unknown>): void;
   /** First-run floor setup (`setup.complete`); absent means unsupported. */
   floorSetup?: FloorSetupDeps;
   appendEvent(event: ParamountEvent): void;
@@ -239,7 +240,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         if (keys.length !== 1) return fail('INVALID_INPUT', 'Change one setting at a time');
         const key = keys[0];
         const value = patch[key];
-        const bool = ['orchestratorMaySpawn', 'semanticMemory', 'reflectEnabled'];
+        const bool = ['codexRemoteControl', 'orchestratorMaySpawn', 'semanticMemory', 'reflectEnabled'];
         const textFields = ['defaultModel', 'godModel'];
         const nonnegative = ['costCapTokens'];
         const providerField = (key === 'providerBaseUrls' || key === 'providerDefaultModels') && object(value) && Object.keys(value).length === 1 && Object.entries(value).every(([provider, entry]) => {
@@ -254,6 +255,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
           : textFields.includes(key) ? typeof value !== 'string' || value.length > 200 || /[\r\n\0]/.test(value)
           : nonnegative.includes(key) ? typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0
           : key === 'maxTurns' ? value !== null && (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 1000)
+          : key === 'codexExecutionPolicy' ? !validExecutionPolicy(value)
           : key === 'embeddingModel' ? value !== 'minilm' && value !== 'embeddinggemma'
           : key === 'responseStyleBrief' ? typeof value !== 'string' || value.length > 1200 || value.includes('\0')
           : key === 'claudeOutputStyle' ? !['off', 'concise', 'explanatory', 'learning'].includes(value as string)
@@ -273,6 +275,14 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         writeAttempted = true;
         deps.savePreference('setup', { dismissed: true, degraded: command.degraded });
         break;
+      case 'signIn.muteReminder': {
+        if (!onlyKeys(command, ['type', 'provider', 'muted'])) return fail('INVALID_INPUT', 'signIn.muteReminder accepts provider and muted only');
+        if (command.provider !== 'claude' && command.provider !== 'codex') return fail('INVALID_INPUT', 'provider must be claude or codex');
+        if (typeof command.muted !== 'boolean') return fail('INVALID_INPUT', 'muted must be a boolean');
+        writeAttempted = true;
+        deps.savePreference('signInReminders', { [command.provider as string]: command.muted });
+        break;
+      }
       case 'diagnostics.bundle': {
         if (command.logLines !== undefined && (typeof command.logLines !== 'number' || !Number.isInteger(command.logLines) ||
           command.logLines < 1 || command.logLines > 2000)) return fail('INVALID_INPUT', 'logLines must be an integer from 1 to 2000');

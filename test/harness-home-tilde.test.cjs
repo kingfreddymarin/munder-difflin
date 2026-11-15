@@ -48,14 +48,17 @@ test('readConfig serves a pre-fix config with every ~ expanded (the upgrade path
   assert.ok(!JSON.stringify(cfg.recentHives).includes('~'), 'no consumer ever sees a ~ path');
 });
 
-test('ensureHarnessHome expands ~ before mkdir (issue #140)', () => {
+test('ensureHarnessHome expands ~ before mkdir (issue #140)', (t) => {
+  const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'md-tilde-home-'));
+  t.mock.method(os, 'homedir', () => fixtureHome);
+  t.after(() => fs.rmSync(fixtureHome, { recursive: true, force: true }));
   const rel = `.md-issue140-test-${process.pid}`;
   const target = path.join(os.homedir(), rel);
   const literalTilde = path.join(process.cwd(), '~');
   try {
     const res = ensureHarnessHome(`~/${rel}`);
     assert.equal(res.ok, true, res.error);
-    assert.ok(fs.existsSync(target), 'created under the real home directory');
+    assert.ok(fs.existsSync(target), 'created under the isolated home directory');
     assert.ok(!fs.existsSync(literalTilde), 'no literal "~" directory appeared in cwd');
   } finally {
     fs.rmSync(target, { recursive: true, force: true });

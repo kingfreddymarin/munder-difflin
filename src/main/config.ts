@@ -190,6 +190,8 @@ export interface HarnessConfig {
   registeredRepos: string[];
   /** When true, new agents are spawned with --permission-mode bypassPermissions. */
   autoMode: boolean;
+  codexRemoteControl?: boolean;
+  codexExecutionPolicy?: import("../shared/executionPolicy").ExecutionPolicy;
   /** ISO time at which a timed YOLO window ends and `autoMode` turns off. Checked at
    *  boot and by a timer, so it survives restart. Unset = no expiry. */
   autoModeExpiresAt?: string;

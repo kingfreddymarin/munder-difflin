@@ -199,6 +199,27 @@ test('production login-shell probe times out and kills the child without a synch
   } finally { cp.spawn = originalSpawn; cp.spawnSync = originalSpawnSync; }
 });
 
+test('production login-shell probe abort kills its child during memory shutdown', async (t) => {
+  if (process.platform === 'win32') return t.skip('login-shell probe is the non-Windows path');
+  const { discovery: api } = loadProduction();
+  const originalSpawn = cp.spawn;
+  let killed = false;
+  let child;
+  cp.spawn = () => {
+    child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.kill = () => { killed = true; return true; };
+    return child;
+  };
+  const controller = new AbortController();
+  try {
+    const resultPromise = api.probeLoginShellCommand('mempalace', controller.signal);
+    controller.abort();
+    assert.deepEqual(await resultPromise, { path: null, reliable: false });
+    assert.equal(killed, true);
+  } finally { cp.spawn = originalSpawn; }
+});
+
 test('snapshot tools preserve unknown separately from confirmed missing', () => {
   const { discovery: api } = loadProduction();
   const ts = require('typescript');

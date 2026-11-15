@@ -1,14 +1,15 @@
+import { isManagedAccountId, type AccountProfile } from './account-profiles';
 /** Council extension. Queries alias/function tables without invoking launchers.
  * Resolved definitions are data: only a bounded, declarative subset is accepted. */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, statSync, mkdirSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, lstatSync, statSync, mkdirSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 
 const KNOWN = { dc: true, dcm: true, dcx: true, dcxm: true } as const;
 export const LAUNCHER_AUTH_ENV = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'] as const;
-export interface LauncherChoice { id: string; provider: string; label: string; fingerprint: string; unrestricted: boolean }
+export interface LauncherChoice { id: string; provider: string; label: string; fingerprint: string; unrestricted: boolean; source?: 'managed' }
 export interface LauncherPick { id: string; fingerprint: string; allowUnrestricted?: boolean }
 export interface LauncherDiscovery { status: 'ok' | 'failed' | 'timeout'; choices: LauncherChoice[]; message?: string }
 interface Profile extends LauncherChoice { bin: string; args: string[]; home: string }
@@ -81,19 +82,48 @@ export function discoverLaunchers(): Discovery { return discoverShellLaunchers()
  *  only on an explicit refresh (setup screen, "Refresh launchers"). Snapshots and
  *  screens read `current()`; the first read discovers once.
  *  With `discoverAsync` (owner use of 8f574966: beach ball), warm() and refresh() run the shell off
- *  the main thread; current() blocks only when nothing has been discovered yet. */
-export function createLauncherDiscoveryCache(discover: () => Discovery = discoverLaunchers, discoverAsync?: () => Promise<Discovery>): { current(): Discovery; peek(): Discovery | undefined; refresh(): Discovery | Promise<Discovery>; warm(): Promise<Discovery> | undefined } {
+ *  the main thread; current() never blocks when asynchronous discovery is configured.
+ *  Transient failures (timeout or failed status) are retried by warm() after a bounded
+ *  exponential backoff (default 5 s → 10 s → … → 30 s cap). Explicit refresh() always
+ *  probes immediately regardless of backoff state. */
+export function createLauncherDiscoveryCache(
+  discover: () => Discovery = discoverLaunchers,
+  discoverAsync?: () => Promise<Discovery>,
+  opts: { retryMs?: number; maxRetryMs?: number; now?: () => number } = {},
+): { current(): Discovery; peek(): Discovery | undefined; refresh(): Discovery | Promise<Discovery>; warm(): Promise<Discovery> | undefined } {
+  const { retryMs = 5_000, maxRetryMs = 30_000, now = Date.now } = opts;
   let cached: Discovery | undefined;
   let pending: Promise<Discovery> | undefined;
+  let failedAt = 0;
+  let retryInterval = retryMs;
   const runAsync = (): Promise<Discovery> => {
-    const run = (pending ??= (discoverAsync as () => Promise<Discovery>)().then((d) => { cached = d; return d; }).finally(() => { pending = undefined; }));
+    const run = (pending ??= (discoverAsync as () => Promise<Discovery>)().catch((): Discovery => ({
+      status: 'failed', choices: [], profiles: [], message: errorText,
+    })).then((d) => {
+      cached = d;
+      if (d.status === 'ok') { failedAt = 0; retryInterval = retryMs; }
+      else { failedAt = now(); retryInterval = Math.min(retryInterval * 2, maxRetryMs); }
+      return d;
+    }).finally(() => { pending = undefined; }));
     return run;
   };
   return {
-    current: () => (cached ??= discover()),
+    current: () => {
+      if (cached) return cached;
+      if (!discoverAsync) return (cached = discover());
+      void runAsync().catch(() => { /* refresh exposes the failure; reads remain nonblocking */ });
+      return NOT_DISCOVERED;
+    },
     peek: () => cached,
     refresh: () => (discoverAsync ? runAsync() : (cached = discover())),
-    warm: () => (discoverAsync && !cached ? runAsync() : undefined),
+    warm: () => {
+      if (!discoverAsync) return undefined;
+      if (pending) return pending;
+      if (!cached) return runAsync();
+      if (cached.status === 'ok') return undefined;
+      // Transient failure: retry only after the backoff window has elapsed.
+      return now() >= failedAt + retryInterval ? runAsync() : undefined;
+    },
   };
 }
 
@@ -192,15 +222,21 @@ fi
 export function launcherDisplayCommand(command: string): string {
   return command.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]');
 }
+/** Managed accounts remain available independently of shell discovery health. */
+export function mergeAccountProfiles(discovery: Discovery, managed: AccountProfile[]): Discovery {
+  const profiles = [...discovery.profiles, ...managed];
+  if (new Set(profiles.map(p => p.id)).size !== profiles.length) throw new Error('Duplicate account profile identity.');
+  return { ...discovery, profiles, choices: profiles.map(({ id, provider, label, fingerprint, unrestricted, source }) => ({ id, provider, label, fingerprint, unrestricted, ...(source ? { source } : {}) })) };
+}
 export function publicDiscovery(discovery: Discovery = NOT_DISCOVERED): LauncherDiscovery {
-  return { status: discovery.status, choices: discovery.choices, ...(discovery.message ? { message: discovery.message } : {}) };
+  return { status: discovery.status, choices: discovery.choices.map(({ id, provider, label, fingerprint, unrestricted, source }) => ({ id, provider, label, fingerprint, unrestricted, ...(source ? { source } : {}) })), ...(discovery.message ? { message: discovery.message } : {}) };
 }
 export function validateLauncher(pick: unknown, provider: string, discovery: Discovery = NOT_DISCOVERED): Profile {
   if (!pick || typeof pick !== 'object' || Array.isArray(pick)) throw new Error('Choose an account launcher again.');
   const p = pick as LauncherPick;
   if (Object.keys(p).some((k) => !['id', 'fingerprint', 'allowUnrestricted'].includes(k)) || (p.allowUnrestricted !== undefined && typeof p.allowUnrestricted !== 'boolean')) throw new Error('Invalid launcher selection.');
-  if (discovery.status !== 'ok') throw new Error(discovery.message);
   const found = discovery.profiles.find((f) => f.id === p.id);
+  if (discovery.status !== 'ok' && found?.source !== 'managed') throw new Error(discovery.message);
   if (!found) throw new Error('Selected launcher is no longer available. Refresh and choose an account launcher.');
   if (found.fingerprint !== p.fingerprint) throw new Error('Selected launcher changed. Refresh and explicitly select it again.');
   if (found.provider !== provider) throw new Error('Selected launcher does not match this provider.');
@@ -212,7 +248,7 @@ function statePath(root: string): string { return join(root, 'council', 'extensi
 const UNREADABLE = 'Council launcher settings are unreadable or unsupported; repair council/extensions/account-launchers.json before starting a selected account.';
 const validPick = (pick: unknown): pick is LauncherPick => !!pick && typeof pick === 'object' && !Array.isArray(pick)
   && !Object.keys(pick).some((k) => !['id', 'fingerprint', 'allowUnrestricted'].includes(k))
-  && typeof (pick as LauncherPick).id === 'string' && Object.hasOwn(KNOWN, (pick as LauncherPick).id) && /^[a-f0-9]{64}$/.test(String((pick as LauncherPick).fingerprint))
+  && typeof (pick as LauncherPick).id === 'string' && (Object.hasOwn(KNOWN, (pick as LauncherPick).id) || isManagedAccountId((pick as LauncherPick).id)) && /^[a-f0-9]{64}$/.test(String((pick as LauncherPick).fingerprint))
   && ((pick as LauncherPick).allowUnrestricted === undefined || typeof (pick as LauncherPick).allowUnrestricted === 'boolean');
 /** Keys of saved picks that fail validation: 'orchestrator', 'temps', 'agent:<id>', 'default:<provider>'. */
 const brokenPicks = new WeakMap<LauncherState, Set<string>>();
@@ -316,7 +352,8 @@ export function resolveLauncherForSpawn(input: { root: string | null; agentId?: 
   if (pick === null) return undefined;
   const result = validateLauncher(pick, input.provider, found);
   let available = false;
-  try { available = existsSync(result.home) && statSync(result.home).isDirectory(); } catch { /* paths are never included in errors */ }
+  try { available = existsSync(result.home) && statSync(result.home).isDirectory();
+    if (result.source === 'managed') available = available && [result.home, dirname(result.home), dirname(dirname(result.home))].every(p => !lstatSync(p).isSymbolicLink() && lstatSync(p).isDirectory()); } catch { /* paths are never included in errors */ }
   if (!available) throw new Error('Selected account home is unavailable. Authenticate that launcher outside Council, then retry.');
   return result;
 }

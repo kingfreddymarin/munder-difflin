@@ -463,11 +463,21 @@ test('probePort sees a real local listener and reports a closed port as false', 
   assert.deepEqual(await probePort(port), { ok: false, code: 'CLOSED' }, 'closed after the listener stops');
 });
 
-test('probePort times out on a black hole instead of blocking (known bad)', async () => {
+test('probePort bounds a silent connection and destroys it on timeout', async (t) => {
   const { probePort } = loadTs('src/main/portProbe.ts');
+  const { EventEmitter } = require('node:events');
+  const net = require('node:net');
+  const socket = new EventEmitter();
+  let destroyed = 0;
+  socket.destroy = () => { destroyed++; };
+  t.mock.method(net, 'connect', () => socket);
   const started = Date.now();
-  assert.deepEqual(await probePort(9, '10.255.255.1', 150), { ok: false, code: 'TIMEOUT' });
+  assert.deepEqual(await probePort(9, 'fixture.invalid', 20), { ok: false, code: 'TIMEOUT' });
   assert.ok(Date.now() - started < 2000);
+  assert.equal(destroyed, 1, 'timeout releases the socket');
+  socket.emit('connect');
+  socket.emit('error', new Error('late connection error'));
+  assert.equal(destroyed, 1, 'late completion cannot finish twice');
 });
 
 test('an open service port makes prereq.start CONFLICT, and a closed one allows the dry run', async () => {

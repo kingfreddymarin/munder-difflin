@@ -24,5 +24,6 @@ test('a terminal that printed inside the idle window is busy; a quiet or missing
 
 test('the Paramount snapshot carries the live activity', () => {
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src/main/index.ts'), 'utf8');
-  assert.match(src, /activity: paramountActivity\(\)/);
+  assert.match(src, /const activity = time\('activity', \(\) => paramountActivity\(\)\)/);
+  assert.match(src, /roster: rosterSnapshot, activity,/);
 });

@@ -34,7 +34,7 @@ test('the hire sheet and Settings take the orchestrator engine from team.models 
   assert.match(sheet, /plan\.notes\?\.map/, 'fallback notes are shown in the review');
   assert.match(sheet, /orchestrator-launcher-note/);
   const settings = readFileSync(new URL('../src/features/team/launcher-select.tsx', import.meta.url), 'utf8');
-  assert.match(settings, /scope === 'orchestrator' \? fitLauncher\(m\.launcherState\?\.orchestrator, m\.orchestratorProvider, m\.launchers\)/);
+  assert.match(settings, /fitLauncher\(m\.launcherState\?\.orchestrator, m\.orchestratorProvider, m\.launchers\)/);
   assert.match(settings, /settings-orchestrator-launcher-note/);
 });
 

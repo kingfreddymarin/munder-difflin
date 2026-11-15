@@ -1,3 +1,4 @@
+import { ExecutionPolicySelect, type ExecutionPolicy } from '@/features/settings/execution-policy';
 import { LauncherSelect } from '@/features/team/launcher-select';
 import type { CouncilLauncherPick } from '@/data/paramount-api';
 // First-run setup (Munder parity). Shown instead of the app while the core reports
@@ -30,6 +31,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
   const [tempLauncher, setTempLauncher] = React.useState<CouncilLauncherPick | null>(null);
   const [model, setModel] = React.useState('');
   const [autoMode, setAutoMode] = React.useState(autoModeDefault);
+  const [codexExecutionPolicy, setExecutionPolicy] = React.useState<ExecutionPolicy>('inherit');
   const [busy, setBusy] = React.useState(false);
   const [pickError, setPickError] = React.useState<string | null>(null);
   // The folder Finish was refused for (another app holds its .floor-lock): show the refusal screen.
@@ -41,7 +43,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
   const finish = async () => {
     if (!engine) return;
     setBusy(true);
-    const ok = await dispatch({ type: 'setup.complete', home: home.trim(), engine: engine.id, ...(model ? { model } : {}), launcher, launcherDefaults, tempLauncher, autoMode });
+    const ok = await dispatch({ type: 'setup.complete', home: home.trim(), engine: engine.id, ...(model ? { model } : {}), launcher, launcherDefaults, tempLauncher, autoMode, codexExecutionPolicy });
     setBusy(false);
     refresh();
     setRefusedAt(ok ? null : home.trim());
@@ -127,6 +129,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
                 </select>
               </div>
             )}
+            <ExecutionPolicySelect value={codexExecutionPolicy} onChange={setExecutionPolicy} />
             <div className="flex items-center gap-3">
               <span className="flex-1 text-sm">YOLO mode: agents act without asking for approval</span>
               <Switch checked={autoMode} onCheckedChange={setAutoMode} aria-label="YOLO mode" />

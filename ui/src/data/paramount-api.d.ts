@@ -1,3 +1,4 @@
+export interface CouncilAccountProfile { id: string; provider: 'claude' | 'codex'; label: string; source: 'managed'; fingerprint: string; unrestricted: false; available: boolean }
 export interface CouncilLauncherPick { id: string; fingerprint: string; allowUnrestricted?: boolean }
 export interface CouncilLauncherDiscovery { status: 'ok' | 'failed' | 'timeout'; choices: Array<{ id: string; provider: string; label: string; fingerprint: string; unrestricted: boolean }>; message?: string }
 export interface CouncilLauncherState { version: 1; orchestrator?: CouncilLauncherPick; temps?: CouncilLauncherPick; agents: Record<string, CouncilLauncherPick>; defaults?: Record<string, CouncilLauncherPick> }
@@ -58,7 +59,12 @@ export type ParamountCommand =
   /** Opens an existing absolute directory in Warp or VS Code (macOS). */
   | { type: 'shell.openIn'; app: ParamountOpenInApp; path: string }
   /** Read-only: what one agent touched. */
-  | { type: 'terminal.artifacts'; agentId: string };
+  | { type: 'terminal.artifacts'; agentId: string }
+  /** Persist a per-provider "Don't ask again" login-reminder preference.
+   *  `muted: true` silences automatic sign-in prompts for `provider` across
+   *  restarts; `muted: false` re-enables them. Manual sign-in and status
+   *  checks in Settings › Setup are unaffected. */
+  | { type: 'signIn.muteReminder'; provider: 'claude' | 'codex'; muted: boolean };
 
 export type ParamountOpenInApp = 'warp' | 'vscode';
 export interface ParamountEvent {
@@ -283,6 +289,9 @@ export type ParamountTeamCommand =
   | { type: 'agent.hire'; manifest: Record<string, unknown>; cwd?: string; confirm?: boolean; orchestrator?: boolean; launcher?: CouncilLauncherPick | null }
   | { type: 'agent.restart'; agentId: string; mode: 'resume' | 'fresh' }
   | { type: 'agent.switch'; agentId: string; provider: string; model: string; launcher: CouncilLauncherPick | null }
+  | { type: 'accounts.list' }
+  | { type: 'accounts.create'; provider: 'claude' | 'codex'; label: string }
+  | { type: 'accounts.rename'; id: string; label: string }
   | { type: 'launchers.refresh' }
   | { type: 'launchers.configure'; scope: 'agent' | 'temps' | 'orchestrator' | 'default'; agentId?: string; provider?: string; launcher: CouncilLauncherPick | null };
 /** `agent.update` with `{ model }` (and optionally the agent's own `engine`) is
@@ -307,10 +316,11 @@ export interface ParamountTeamModels {
   orchestratorLauncherNote?: string;
   orchestratorId?: string;
   orchestratorModel?: string;
+  accounts?: CouncilAccountProfile[];
   launchers?: CouncilLauncherDiscovery;
   launcherState?: CouncilLauncherState;
   /** Model chosen per agent in Paramount; an agent missing here runs the default. */
-  agents: Record<string, { engine: string; model?: string; installed: boolean; accountSelection: 'default' | 'selected' | 'stale' | 'unavailable'; launcher?: { id: string; fingerprint: string; label: string } }>;
+  agents: Record<string, { running?: { provider: string; model?: string; accountSelection: 'default' | 'selected' | 'unknown'; launcher?: { id: string; fingerprint: string; label: string } }; engine: string; model?: string; installed: boolean; accountSelection: 'default' | 'selected' | 'stale' | 'unavailable'; launcher?: { id: string; fingerprint: string; label: string } }>;
 }
 export interface ParamountOrganization { version: 1; teams: Array<{ id: string; name: string; leadId: string; memberIds: string[] }>; reportsTo: Record<string, string> }
 export interface ParamountHirePlan {
@@ -336,6 +346,7 @@ export interface ParamountHirePlan {
 }
 /** The ok-result of a team command carries one of these payloads. */
 export type ParamountTeamResult = Extract<ParamountResult, { ok: true }> & {
+  accounts?: CouncilAccountProfile[];
   card?: { key: string };
   models?: ParamountTeamModels;
   organization?: ParamountOrganization;

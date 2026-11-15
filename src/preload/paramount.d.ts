@@ -1,3 +1,4 @@
+export interface CouncilAccountProfile { id: string; provider: 'claude' | 'codex'; label: string; source: 'managed'; fingerprint: string; unrestricted: false; available: boolean }
 export interface CouncilLauncherPick { id: string; fingerprint: string; allowUnrestricted?: boolean }
 export interface CouncilLauncherDiscovery { status: 'ok' | 'failed' | 'timeout'; choices: Array<{ id: string; provider: string; label: string; fingerprint: string; unrestricted: boolean }>; message?: string }
 export interface CouncilLauncherState { version: 1; orchestrator?: CouncilLauncherPick; temps?: CouncilLauncherPick; agents: Record<string, CouncilLauncherPick>; defaults?: Record<string, CouncilLauncherPick> }
@@ -34,11 +35,12 @@ export type ParamountCommand =
   /** Read-only unless `confirm: true`; then runs the vetted start command in a visible terminal. */
   | { type: 'prereq.start'; id: string; confirm?: boolean }
   | { type: 'setup.dismiss'; degraded: string[] }
+  | { type: 'signIn.muteReminder'; provider: 'claude' | 'codex'; muted: boolean }
   | { type: 'orchestrator.ensure' }
   /** The floor another app held: try to claim it again, or go back to setup to pick another. */
   | { type: 'floor.retry' }
   | { type: 'floor.choose-another' }
-  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
+  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; codexExecutionPolicy?: 'inherit' | 'workspace-ask' | 'workspace-auto' | 'full-ask' | 'full-auto'; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
   /** Read-only: returns a redacted diagnostics bundle on the result. */
   | { type: 'diagnostics.bundle'; logLines?: number }
   /** Saves the same redacted bundle as a JSON file through the core's save dialog.
@@ -320,6 +322,9 @@ export type ParamountTeamCommand =
   | { type: 'agent.restart'; agentId: string; mode: 'resume' | 'fresh' }
   /** Switch an existing agent to a chosen provider/account/model in a fresh session. */
   | { type: 'agent.switch'; agentId: string; provider: string; model: string; launcher: CouncilLauncherPick | null }
+  | { type: 'accounts.list' }
+  | { type: 'accounts.create'; provider: 'claude' | 'codex'; label: string }
+  | { type: 'accounts.rename'; id: string; label: string }
   | { type: 'launchers.refresh' }
   | { type: 'launchers.configure'; scope: 'agent' | 'temps' | 'orchestrator' | 'default'; agentId?: string; provider?: string; launcher: CouncilLauncherPick | null };
 /** `agent.update` with `{ model }` (and optionally the agent's own `engine`) is
@@ -344,10 +349,11 @@ export interface ParamountTeamModels {
   orchestratorLauncherNote?: string;
   orchestratorId?: string;
   orchestratorModel?: string;
+  accounts?: CouncilAccountProfile[];
   launchers?: CouncilLauncherDiscovery;
   launcherState?: CouncilLauncherState;
   /** Model chosen per agent in Paramount; an agent missing here runs the default. */
-  agents: Record<string, { engine: string; model?: string; installed: boolean; accountSelection: 'default' | 'selected' | 'stale' | 'unavailable'; launcher?: { id: string; fingerprint: string; label: string } }>;
+  agents: Record<string, { running?: { provider: string; model?: string; accountSelection: 'default' | 'selected' | 'unknown'; launcher?: { id: string; fingerprint: string; label: string } }; engine: string; model?: string; installed: boolean; accountSelection: 'default' | 'selected' | 'stale' | 'unavailable'; launcher?: { id: string; fingerprint: string; label: string } }>;
 }
 export interface ParamountOrganization { version: 1; teams: Array<{ id: string; name: string; leadId: string; memberIds: string[] }>; reportsTo: Record<string, string> }
 export interface ParamountHirePlan {
@@ -373,6 +379,7 @@ export interface ParamountHirePlan {
 }
 /** The ok-result of a team command carries one of these payloads. */
 export type ParamountTeamResult = Extract<ParamountResult, { ok: true }> & {
+  accounts?: CouncilAccountProfile[];
   card?: { key: string };
   models?: ParamountTeamModels;
   organization?: ParamountOrganization;

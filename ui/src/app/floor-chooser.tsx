@@ -1,3 +1,4 @@
+import { ExecutionPolicySelect, type ExecutionPolicy } from '@/features/settings/execution-policy';
 // The floor picker (owner requests 2026-11-12, Munder 0.5.7 parity). At launch nothing is open:
 // recent floors are listed with their state (free, held by another app, missing), the last one is
 // preselected and Enter opens it in this window. With a floor open, New Floor… (Cmd+Shift+N) shows
@@ -6,7 +7,7 @@
 // holds shows the refusal screen at launch; nothing on it is touched.
 import * as React from 'react';
 import { Button } from '@/components/animate-ui/components/buttons/button';
-import { useActionError, useDispatch, useSnapshotRefresh } from '@/data/store';
+import { useActionError, useDispatch, useSnapshotRefresh, useFloor } from '@/data/store';
 import type { FloorChoice, FloorLockState } from '@/data/types';
 import { chooseFolder } from './folder-pick';
 import { FloorRefused } from './floor-refused';
@@ -38,6 +39,8 @@ export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: Flo
   const dispatch = useDispatch();
   const { refresh } = useSnapshotRefresh();
   const { error, clear } = useActionError();
+  const savedPolicy = useFloor(s => String(s.settings?.codexExecutionPolicy ?? 'inherit'));
+  const [policy, setPolicy] = React.useState<ExecutionPolicy | null>(null);
   const launch = choice.pending;
   const [selected, setSelected] = React.useState<string | null>(initialFloor(choice));
   const [busy, setBusy] = React.useState(false);
@@ -48,6 +51,7 @@ export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: Flo
 
   const open = async (home: string) => {
     setBusy(true); clear(); setPickError(null);
+    if (policy !== null && !await dispatch({ type: 'settings.update', patch: { codexExecutionPolicy: policy } })) { setBusy(false); return; }
     const ok = await dispatch({ type: 'floor.open', home });
     setBusy(false);
     refresh();
@@ -105,6 +109,8 @@ export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: Flo
             })}
           </div>
         )}
+        <ExecutionPolicySelect value={policy ?? savedPolicy} onChange={setPolicy} />
+        {error && error.operation === 'settings.update' && <p role="alert" className="text-destructive text-sm">{error.message}</p>}
         {pickError && <p className="text-destructive text-sm">{pickError}</p>}
         {error && error.operation === 'floor.open' && <p className="text-destructive text-sm">{error.message}{error.errorId ? ` (error ${error.errorId})` : ''}</p>}
         <div className="flex gap-2">

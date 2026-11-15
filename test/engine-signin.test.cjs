@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const loadTs = require('./load-ts.cjs');
-const { createSignInMonitor, signInFailure, STATUS_TTL_MS } = loadTs('src/main/engine-signin.ts');
+const { createSignInMonitor, signInFailure, STATUS_TTL_MS, resolveSignInAccountHome } = loadTs('src/main/engine-signin.ts');
 const tick = () => new Promise(setImmediate);
 
 test('a revoked Codex token in a dying agent\'s output flags Codex with "codex login"', () => {
@@ -59,7 +59,7 @@ test('Codex status and expired-token findings stay scoped to the selected accoun
   await tick(); await tick();
   assert.equal(m.status('codex', dcx).state, 'signed-out');
   assert.equal(m.status('codex', dcxm).state, 'signed-in');
-  assert.equal(m.status('codex', dcx).accountHome, '/fixture/dcx');
+  assert.equal(m.status('codex', dcx).accountHome, undefined);
   assert.equal(m.status('codex', dcxm).accountLabel, 'dcxm · Alternate');
   m.agentExited('codex', 'refresh token was revoked', dcx);
   assert.equal(m.status('codex', dcx).state, 'expired');
@@ -82,7 +82,7 @@ test('Check again clears stale account expiry without restarting and keeps provi
   assert.equal(refreshed.accountId, 'dcx');
   await m.refresh('codex');
   assert.equal(runs[0].home, '/fixture/dcx');
-  assert.equal(runs.at(-1).home, path.join(os.homedir(), '.codex'));
+  assert.equal(runs.at(-1).home, resolveSignInAccountHome('codex'));
   assert.ok(runs.every((run) => run.key === undefined));
 });
 
@@ -102,7 +102,7 @@ test('Check again asynchronously refreshes a cold default command path and prese
   assert.equal(checkedDefault.state, 'signed-in');
   assert.equal(resolves, 1, 'default Check again awaits current async discovery');
   assert.deepEqual(runs.map(({ bin, home }) => [bin, home]), [
-    ['/fixture/alternate/claude', '/fixture/alternate'], ['/fixture/claude', path.join(os.homedir(), '.claude')]
+    ['/fixture/alternate/claude', '/fixture/alternate'], ['/fixture/claude', resolveSignInAccountHome('claude')]
   ]);
 });
 
@@ -111,4 +111,56 @@ test('index.ts wires exits and the snapshot to the monitor', () => {
   assert.match(code, /engineSignIn\.agentExited\(String\(hive\.registry\(\)\.agents\[dyingAgent\]\?\.provider \?\? 'claude'\), info\?\.tail, ptySignInAccount\.get\(id\)\)/);
   assert.match(code, /engineSignIn\.status\(profile\.provider as 'claude' \| 'codex', profile\)/);
   assert.match(code, /ipcMain\.handle\('engine-signin:refresh'[\s\S]+engineSignIn\.refresh\(provider, account \?\? undefined\)/);
+});
+
+test('same profile ID with changed fingerprint or home never inherits cached auth or expiry', async () => {
+  const calls = [];
+  const m = createSignInMonitor({ path: () => '/bin/codex', run: async (_bin, _args, _timeout, env) => {
+    calls.push(env.CODEX_HOME); return { code: env.CODEX_HOME.endsWith('/old') ? 0 : 1 };
+  } });
+  const old = { id: 'dcx', label: 'Work', home: '/fixture/old', fingerprint: 'a'.repeat(64) };
+  const changed = { ...old, home: '/fixture/new', fingerprint: 'b'.repeat(64) };
+  await m.refresh('codex', old);
+  m.agentExited('codex', 'refresh token was revoked', old);
+  assert.equal(m.status('codex', changed).state, 'unknown');
+  await tick();
+  assert.equal(m.status('codex', changed).state, 'signed-out');
+  assert.deepEqual(calls, ['/fixture/old', '/fixture/new']);
+  const renamed = { ...changed, label: 'Renamed' };
+  assert.equal(m.status('codex', renamed).state, 'signed-out', 'label changes do not change auth identity');
+});
+
+test('default status honors the same explicit account home as login and invalidates on home change', async () => {
+  const saved = process.env.CODEX_HOME;
+  try {
+    process.env.CODEX_HOME = '/fixture/default-a';
+    const calls = [];
+    const m = createSignInMonitor({ path: () => '/bin/codex', run: async (_bin, _args, _timeout, env) => {
+      calls.push(env.CODEX_HOME); return { code: 0 };
+    } });
+    await m.refresh('codex');
+    process.env.CODEX_HOME = '/fixture/default-b';
+    assert.equal(m.status('codex').state, 'unknown');
+    await tick();
+    assert.deepEqual(calls, ['/fixture/default-a', '/fixture/default-b']);
+  } finally { if (saved === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved; }
+});
+
+test('account status DTO does not disclose private account home or credential fields', async () => {
+  const m = createSignInMonitor({ path: () => '/bin/claude', run: async () => ({ code: 0 }) });
+  const state = await m.refresh('claude', { id: 'dc', label: 'Work', home: '/fixture/private-account', fingerprint: 'a'.repeat(64) });
+  assert.equal(state.accountId, 'dc');
+  assert.equal(state.accountHome, undefined);
+  assert.doesNotMatch(JSON.stringify(state), /private-account|password|credential|token/i);
+});
+test('main login uses exact identity helper and fresh composed account catalog', () => {
+ const source=fs.readFileSync(path.join(__dirname,'../src/main/index.ts'),'utf8');
+ const login=source.slice(source.indexOf("ipcMain.handle('engine-signin:start'"),source.indexOf("ipcMain.handle('engine-signin:refresh'"));
+ assert.match(login,/resolveSignInAccountHome\(provider, account \?\? undefined\)/);
+ assert.match(login,/signInAccountKey\(provider, account \?\? undefined\)/);
+ assert.match(login,/if \(account === null\)/);
+ const resolution=source.slice(source.indexOf('function signInAccount('),source.indexOf("ipcMain.handle('engine-signin:start'"));
+ assert.match(resolution,/currentAccountDiscovery\(\)/);
+ assert.match(source,/if \(!gotInstanceLock\) throw new Error\('Another Paramount instance owns the account catalog/);
+ assert.match(source,/createAccountProfileStore\(join\(sharedDataDir\(\), 'account-profiles'\)\)/);
 });

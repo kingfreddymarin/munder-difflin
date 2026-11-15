@@ -501,3 +501,92 @@ test('the floor log shows an archived restore as a warning with its note (review
   assert.equal(log[0].level, 'warn');
   assert.equal(log[0].text, "paramount-runtime · CWD_MISSING · W2's folder /w/gone is gone, so W2 was archived instead of restored.");
 });
+
+test('Health distinguishes responsive core from absent or stopped orchestrator', async () => {
+  const native = nativeSnapshot();
+  native.registry.agents = {};
+  native.roster.agents = [];
+  native.ptys = [];
+  globalThis.window = { cth: bridge(native) };
+  let snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'core').state, 'ok');
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'warn');
+  assert.match(snapshot.services.find(s => s.id === 'orchestrator').detail, /unknown/);
+  assert.equal(snapshot.services.filter(s => s.group === 'command-center').every(s => s.state === 'ok'), false);
+  native.registry.agents.god = { name: 'Ada', status: 'working' };
+  snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'warn', 'registry working is not process evidence');
+  assert.match(snapshot.services.find(s => s.id === 'orchestrator').detail, /Not running/);
+});
+
+test('Health reports explicit startup failure and preserves the separate failure banner data', async () => {
+  const native = nativeSnapshot();
+  native.ptys = [];
+  native.orchestratorFailure = { agentId: 'god', provider: 'codex', message: 'Session unavailable in selected account', at: '2026-11-15T13:00:00Z' };
+  globalThis.window = { cth: bridge(native) };
+  let snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'core').state, 'ok');
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'fail');
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').detail, native.orchestratorFailure.message);
+  assert.equal(snapshot.orchestratorFailure.message, native.orchestratorFailure.message);
+  native.ptys = [{ id: 'session-42', agentId: 'god' }];
+  snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'fail', 'live PTY does not erase an explicitly reported startup failure');
+  delete native.orchestratorFailure;
+  snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'ok');
+  assert.equal(snapshot.orchestratorFailure, undefined);
+  native.ptys = [];
+  snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'warn', 'cleared failure alone is not proof of running');
+});
+
+test('Health uses live terminal ownership and keeps starting and optional services distinct', async () => {
+  const native = nativeSnapshot();
+  native.registry.agents.god.status = 'starting';
+  native.ptys = [];
+  native.prereqs = { skid: { id: 'skid', installed: false, running: false } };
+  globalThis.window = { cth: bridge(native) };
+  let snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'warn');
+  assert.match(snapshot.services.find(s => s.id === 'orchestrator').detail, /Starting/);
+  native.roster = null;
+  native.ptys = [{ id: 'live-main', agentId: 'god' }];
+  snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'ok');
+  assert.equal(snapshot.services.find(s => s.id === 'skid').state, 'warn');
+  native.registry.agents.god.archived = true;
+  snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'warn');
+  assert.match(snapshot.services.find(s => s.id === 'orchestrator').detail, /archived/);
+});
+
+test('Health does not mistake another agent or a malformed terminal for the orchestrator', async () => {
+  const native = nativeSnapshot();
+  // A stale roster points at a PTY whose authoritative current owner is a worker.
+  native.ptys = [{ id: 'session-42', agentId: 'worker' }];
+  globalThis.window = { cth: bridge(native) };
+  let snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'warn');
+  native.roster = null;
+  native.ptys = [{ agentId: 'god' }];
+  snapshot = await createElectronProvider().snapshot();
+  assert.equal(snapshot.services.find(s => s.id === 'orchestrator').state, 'warn');
+});
+
+test('managed account catalog and writes retain exact public profile identity through provider', async () => {
+  const account = { id: 'opaque-profile', provider: 'claude', label: 'Work', source: 'managed', fingerprint: 'fp', unrestricted: false, available: false };
+  const sent = [];
+  const native = bridge();
+  native.paramountDispatch = async command => {
+    sent.push(command);
+    return command.type === 'team.models' ? { ok: true, models: { engines: [], agents: {}, accounts: [account] } }
+      : { ok: true, event: { id: 'managed-event', at: '', actor: 'you', command } };
+  };
+  globalThis.window = { cth: native };
+  const provider = createElectronProvider();
+  assert.deepEqual((await provider.teamModels()).accounts, [account]);
+  await provider.dispatch({ type: 'accounts.create', provider: 'claude', label: 'Work' });
+  await provider.dispatch({ type: 'accounts.rename', id: 'opaque-profile', label: 'Personal' });
+  assert.deepEqual(sent, [{ type: 'team.models' }, { type: 'accounts.create', provider: 'claude', label: 'Work' }, { type: 'accounts.rename', id: 'opaque-profile', label: 'Personal' }]);
+});

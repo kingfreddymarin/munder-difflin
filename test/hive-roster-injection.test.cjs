@@ -222,3 +222,18 @@ test('the hold survives a restart, because the registry is the record', async (t
   assert.equal(reg.agents['jim-1'].onHold, true,
     'a hold that evaporated on restart would hand the agent back to Michael silently');
 });
+
+ test('closed agents disappear immediately even before fleet refresh', async (t) => {
+  const { hive } = await floor(t);
+  snapshot(hive);
+  hive.setArchived('jim-1', true);
+  assert.doesNotMatch(hive.rosterContext(), /jim-1/);
+  assert.match(hive.rosterContext(), /god-1/);
+});
+
+test('an empty fleet explicitly replaces remembered agents', async (t) => {
+  const { hive } = await floor(t);
+  hive.writeFleetSnapshot({ ts: Date.now(), agents: [] });
+  assert.match(hive.rosterContext(), /0 ACTIVE agents/);
+  assert.match(hive.rosterContext(), /supersedes earlier rosters/);
+});

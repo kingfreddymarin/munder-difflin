@@ -1,3 +1,4 @@
+import { ExecutionPolicySelect, type ExecutionPolicy } from '@/features/settings/execution-policy';
 import * as React from 'react';
 import { Tile } from '@/components/app/tile';
 import { Input } from '@/components/ui/input';
@@ -41,6 +42,7 @@ export function CoreSettings() {
   const breakerNumber = (key: string, label: string) => <div className="grid gap-1.5" key={key}><label className="text-sm" htmlFor={`breaker-${key}`}>{label}</label><div className="flex gap-2"><Input id={`breaker-${key}`} type="number" min={1} max={1000000} value={drafts[key] ?? number(breaker[key])} onChange={(e) => setDrafts({ ...drafts, [key]: e.target.value })} /><Button variant="outline" disabled={!Number.isSafeInteger(Number(drafts[key])) || Number(drafts[key]) < 1 || Number(drafts[key]) > 1000000} onClick={() => { save('circuitBreaker', { [key]: Number(drafts[key]) }); setDrafts((d) => { const next = { ...d }; delete next[key]; return next; }); }}>Save</Button></div></div>;
   return <div className="grid gap-3 lg:grid-cols-2">
     <FloorLocationTile />
+    <Tile title="Execution permissions" hint="new and restarted sessions"><ExecutionPolicySelect value={String(settings.codexExecutionPolicy ?? 'inherit')} onChange={value => save('codexExecutionPolicy', value)} />{toggle('codexRemoteControl', 'Connect Codex through its remote-control daemon', 'Optional. Used only with Keep launcher permissions. Local execution choices start a local terminal directly; no daemon startup or tunnel is required.')}</Tile>
     <Tile title="Agents & models" hint="applies to future agents">
       <span className="text-sm">Default agent model</span>
       <span className="text-muted-foreground text-xs">New agents on each engine start on this model unless picked per agent. Claude's is the harness default.</span>

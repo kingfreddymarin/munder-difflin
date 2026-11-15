@@ -1,3 +1,4 @@
+import { validExecutionPolicy, type ExecutionPolicy } from '../shared/executionPolicy';
 import { resolveAgentModel } from './paramount-models';
 // First-run floor setup (Munder parity). A fresh profile has no floor: harnessHome
 // stays null and no hive services run until the human finishes setup, exactly as
@@ -68,7 +69,7 @@ export interface FloorSetupDeps {
   engines(): FloorSetupEngine[];
   ensureHome(path: string): { ok: boolean; error?: string };
   /** One atomic config write plus the hive bootstrap that follows a new harnessHome. */
-  complete(patch: { harnessHome: string; godProvider: string; godModel?: string; autoMode?: boolean; onboardingComplete: true }): void;
+  complete(patch: { harnessHome: string; godProvider: string; godModel?: string; autoMode?: boolean; codexExecutionPolicy?: ExecutionPolicy; onboardingComplete: true }): void;
   appendEvent(event: ParamountEvent): void;
   publish(event: ParamountEvent): void;
 }
@@ -94,7 +95,7 @@ export function floorSetupState(deps: FloorSetupDeps): FloorSetupState {
   };
 }
 
-const ALLOWED = ['type', 'home', 'engine', 'model', 'autoMode', 'launcher', 'launcherDefaults', 'tempLauncher'];
+const ALLOWED = ['type', 'home', 'engine', 'model', 'autoMode', 'codexExecutionPolicy', 'launcher', 'launcherDefaults', 'tempLauncher'];
 const oneLine = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= max && !/[\r\n\0]/.test(v);
 
 /** `setup.complete`; null for any other command. */
@@ -107,6 +108,7 @@ export function dispatchFloorSetup(command: Record<string, unknown>, deps: Floor
   if (Object.keys(command).some((k) => !ALLOWED.includes(k))) return fail('INVALID_INPUT', `setup.complete accepts ${ALLOWED.slice(1).join(', ')}`);
   if (floorSetupState(deps).complete) return fail('CONFLICT', 'This floor is already set up');
   if (!oneLine(command.home, 1024) || !isAbsolute(command.home.trim())) return fail('INVALID_INPUT', 'Choose a full folder path for the floor');
+  if (command.codexExecutionPolicy !== undefined && !validExecutionPolicy(command.codexExecutionPolicy)) return fail('INVALID_INPUT', 'Invalid Codex execution policy');
   if (command.autoMode !== undefined && typeof command.autoMode !== 'boolean') return fail('INVALID_INPUT', 'autoMode must be true or false');
   const engine = deps.engines().find((e) => e.id === command.engine);
   if (!engine) return fail('INVALID_INPUT', 'Unknown engine');
@@ -143,7 +145,7 @@ export function dispatchFloorSetup(command: Record<string, unknown>, deps: Floor
     for (const [provider, pick] of Object.entries(defaults ?? {})) saveLauncherPick(join(home, 'hive'), 'default', pick as LauncherPick | null, provider);
     if (command.tempLauncher !== undefined) saveLauncherPick(join(home, 'hive'), 'temps', command.tempLauncher as LauncherPick | null);
     if (command.launcher !== undefined) saveLauncherPick(join(home, 'hive'), 'orchestrator', command.launcher as LauncherPick | null);
-    deps.complete({ harnessHome: home, godProvider: engine.id, godModel: model || '', ...(typeof command.autoMode === 'boolean' ? { autoMode: command.autoMode } : {}), onboardingComplete: true });
+    deps.complete({ ...(validExecutionPolicy(command.codexExecutionPolicy) ? { codexExecutionPolicy: command.codexExecutionPolicy } : {}), harnessHome: home, godProvider: engine.id, godModel: model || '', ...(typeof command.autoMode === 'boolean' ? { autoMode: command.autoMode } : {}), onboardingComplete: true });
   } catch (error) {
     return fail('UNCERTAIN_STATE', `Setup may be partly saved; reopen Paramount before retrying: ${error instanceof Error ? error.message : String(error)}`, error);
   }

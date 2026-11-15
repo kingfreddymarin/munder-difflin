@@ -325,6 +325,8 @@ export interface Snapshot {
   settings?: Record<string, unknown>;
   prerequisites: Prerequisite[];
   setupDismissed?: boolean;
+  /** Providers whose automatic login reminders are silenced ("Don't ask again"). Absent = none muted. */
+  mutedSignInReminders?: string[];
   objectives: Objective[];
   wins: Win[];
   me: Account;

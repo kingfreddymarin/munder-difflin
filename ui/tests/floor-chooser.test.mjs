@@ -25,7 +25,7 @@ function hooks() {
 function chooserHarness(choice, { bridge, dispatchOk = true } = {}) {
   const h = hooks(); const commands = [];
   const state = { choice, lock: { state: 'none' } };
-  const store = { useDispatch: () => async (command) => { commands.push(command); return dispatchOk; }, useSnapshotRefresh: () => ({ refresh() {} }), useActionError: () => ({ error: null, clear() {} }) };
+  const store = { useFloor: (select) => select({ settings: { codexExecutionPolicy: 'inherit' } }), useDispatch: () => async (command) => { commands.push(command); return dispatchOk; }, useSnapshotRefresh: () => ({ refresh() {} }), useActionError: () => ({ error: null, clear() {} }) };
   const mod = load(compile('../src/app/floor-chooser.tsx', true), (id) => id === 'react' ? h.react : id === '@/data/store' ? store
     : id === '@/data/bridge' ? { findBridge: () => bridge ?? null } : id === './folder-pick' ? folderPick : id === './floor-refused' ? { FloorRefused: 'FloorRefused' }
     : new Proxy({}, { get: (_t, key) => key }));
@@ -129,7 +129,7 @@ test('the app shows the launch picker before anything else, and New Floor… as 
 function locationHarness(bridge, floor = '/f/a') {
   const h = hooks(); const commands = [];
   const snap = { floorSetup: { floorLock: floor ? { state: 'open', floor } : { state: 'none' } } };
-  const store = { useDispatch: () => async (c) => { commands.push(c); return true; }, useFloor: (sel) => sel(snap) };
+  const store = { useFloor: (select) => select({ settings: { codexExecutionPolicy: 'inherit' } }), useDispatch: () => async (c) => { commands.push(c); return true; }, useFloor: (sel) => sel(snap) };
   const mod = load(compile('../src/features/settings/floor-location.tsx', true), (id) => id === 'react' ? h.react : id === '@/data/store' ? store
     : id === '@/data/bridge' ? { findBridge: () => bridge } : id === '@/app/folder-pick' ? folderPick : new Proxy({}, { get: (_t, k) => k }));
   return { commands, render: () => { h.reset(); return mod.FloorLocationTile(); } };
@@ -188,4 +188,16 @@ test('the snapshot reader passes the picker state through (isolated check 2026-1
   assert.equal(floorChoiceOf({ recents: [] }), undefined);
   const provider = readFileSync(new URL('../src/data/electron-provider.ts', import.meta.url), 'utf8');
   assert.match(provider, /\.\.\.\(floorChoiceOf\(v\.choice\) \? \{ choice: floorChoiceOf\(v\.choice\) \} : \{\}\),/);
+});
+
+test('floor entry saves explicit permissions before starting agents and stops if saving fails', async () => {
+ for (const dispatchOk of [true, false]) {
+  const h = chooserHarness(choice, { dispatchOk });
+  nodes(h.render()).find(n => n.tag === 'ExecutionPolicySelect').props.onChange('full-ask');
+  button(h.render(), 'Open').props.onClick(); await tick(); await tick();
+  assert.deepEqual(h.commands, [
+   { type: 'settings.update', patch: { codexExecutionPolicy: 'full-ask' } },
+   ...(dispatchOk ? [{ type: 'floor.open', home: '/f/b' }] : [])
+  ]);
+ }
 });

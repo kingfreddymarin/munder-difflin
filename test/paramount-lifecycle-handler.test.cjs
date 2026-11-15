@@ -63,6 +63,8 @@ async function scenario(firstKind, secondKind) {
     claimFloor: () => true,
     ptyManager: manager,
     ptyToAgent,
+    ptyLaunchIdentity: new Map([[agentId, {provider: 'claude', model: 'old-model', launcher: null}]]),
+    engineSignIn: {refresh: async () => ({state: 'signed-in'})},
     worktreePaths: new Map(),
     statSync: fs.statSync,
     join: path.join,

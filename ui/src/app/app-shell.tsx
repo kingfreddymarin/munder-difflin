@@ -1,3 +1,4 @@
+import paramountMark from '@/assets/paramount-mark.svg';
 import * as React from 'react';
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarTrigger, useSidebar } from '@/components/animate-ui/components/radix/sidebar';
 import { ThemeTogglerButton } from '@/components/animate-ui/components/buttons/theme-toggler';
@@ -137,7 +138,7 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton size="lg" onClick={() => go('home')}>
-                <span className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-lg font-mono text-xs font-bold">PM</span>
+                <img src={paramountMark} alt="" aria-hidden="true" className="size-8 rounded-lg" />
                 <span className="flex flex-col leading-tight">
                   <span className="font-semibold">Paramount</span>
                   <span className="text-muted-foreground text-xs">Agent command center</span>

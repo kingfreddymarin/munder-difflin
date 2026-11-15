@@ -41,12 +41,17 @@ test('snapshot handler wires all named stages in its existing evaluation order',
   const handler = source.slice(start, end);
   const stages = [...handler.matchAll(/time\('([A-Za-z]+)'/g)].map((match) => match[1]);
   assert.deepEqual(stages, [
-    'config', 'floorSetup', 'hookHealth', 'orchestratorFailure', 'orchestratorFailure',
+    'config', 'floorSetup', 'hookHealth', 'orchestratorFailure',
     'registry', 'tasks', 'messages', 'organization', 'archivedAgents', 'log', 'roster',
     'activity', 'snapshotConfig', 'missions', 'ptys', 'preferences', 'integrations',
     'skidProbe', 'enginePaths', 'signIn'
   ]);
   assert.match(handler, /time\('skidProbe',\s*\(\) => paramountProbeService\('skid', span\.cid\)\)/);
+  for (const value of [null, {message: 'failed'}]) {
+    const actual = require('./snapshot-failure-fixture.cjs')(value);
+    assert.equal(actual.reads, 1, 'snapshot failure knowledge is read once regardless of banner presence');
+    assert.deepEqual(actual.stages, ['orchestratorFailure']);
+  }
 });
 
 test('injected blocking at a real HiveManager messages boundary preserves its production result', () => {

@@ -121,11 +121,38 @@ test('setup refuses a floor another app holds before writing anything there', (t
 test('index.ts: the hive gets its home through the floor gate, and the lock comes before every floor service', () => {
   const code = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
   assert.match(code, /new HiveManager\(\s*\(\) => floorGate\.homeFor\(readConfig\(\)\.harnessHome\)/);
-  const boot = code.slice(code.indexOf('function bootstrapHiveServices(): void {'));
-  const claim = boot.indexOf('floorGate.claim(');
-  assert.ok(claim > 0);
-  for (const service of ['hive.ensureHive()', 'archiveOrphanedAgents()', 'hive.startRouter()', 'hookServer.start()', 'startEphemeralWorkerWatcher()']) {
-    assert.ok(boot.indexOf(service) > claim, `${service} runs after the floor lock is held`);
+  const ts = require('typescript');
+  const vm = require('node:vm');
+  const source = ts.createSourceFile('index.ts', code, ts.ScriptTarget.Latest, true);
+  const bootstrap = source.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'bootstrapHiveServices');
+  assert.ok(bootstrap, 'production bootstrap function exists');
+  const js = ts.transpileModule(bootstrap.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  for (const state of ['refused', 'error', 'open']) {
+    const calls = [];
+    const mark = name => () => { calls.push(name); };
+    const service = name => ({ start: () => { calls.push(name); return Promise.resolve({ ok: false }); } });
+    const hive = new Proxy({}, { get: (_, name) => () => { calls.push(`hive.${String(name)}`); return name === 'enabled'; } });
+    const context = {
+      performance, console: { log() {}, error() {} }, readConfig: () => ({ harnessHome: '/fixture' }), lagOp: () => () => {},
+      floorGate: { claim: () => { calls.push('claim'); return { state, refusal: { owner: 'fixture', pid: 1, floor: 'fixture' }, detail: 'fixture' }; } },
+      broadcastParamountInvalidation: mark('invalidation'), hive,
+      app: { getVersion: () => 'fixture', isPackaged: false, getAppPath: () => 'fixture' }, councilBuild: () => 'fixture',
+      process: { execPath: 'fixture', versions: { electron: 'fixture' }, platform: 'fixture' },
+      control: { replaceAutoDeliveryPauses: mark('pauses') }, integrationBroker: service('broker'), hookServer: service('hooks'),
+      telemetry: service('telemetry'), memory: service('memory'), reflector: service('reflector'), paramountLog: mark('startup-log'),
+    };
+    for (const name of ['archiveOrphanedAgents', 'startEphemeralWorkerWatcher', 'ensureDefaultMissions', 'syncMissions', 'syncContextTriggers', 'startWebhookDoneObserver', 'armAlwaysOnBeats']) context[name] = mark(name);
+    const result = vm.runInNewContext(js + '\nbootstrapHiveServices()', context);
+    assert.equal(calls[0], 'claim', `${state}: no floor service precedes the claim`);
+    if (state !== 'open') {
+      assert.equal(result, false);
+      assert.deepEqual(calls, ['claim', 'invalidation'], `${state}: a denied claim starts no services`);
+    } else {
+      assert.equal(result, true);
+      for (const name of ['hive.ensureHive', 'archiveOrphanedAgents', 'hive.startRouter', 'hooks', 'startEphemeralWorkerWatcher']) {
+        assert.ok(calls.indexOf(name) > calls.indexOf('claim'), `${name} starts after a successful claim`);
+      }
+    }
   }
   assert.match(code, /function releaseFloorOnQuit\(\): void \{[\s\S]{0,300}?floorGate\.release\(\);\s*\}/);
   assert.match(code, /app\.on\('will-quit', releaseFloorOnQuit\);/);

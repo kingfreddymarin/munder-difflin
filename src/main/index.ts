@@ -1,15 +1,17 @@
+import { observeAccountOperation } from './account-observability';
 // Paramount identity (name, userData, UI scheme) — must evaluate before any
 // other module reads userData, so it is the first import.
 import { councilBuild, councilVersion, floorProcessHome, isFloorProcess, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
+import { codexExecutionArgs, useCodexRemoteControl } from '../shared/executionPolicy';
 import { bootFloorPlan, copyFloorPersistedState, dataFolderRefusal, FloorPersistedStateCopyError, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
-import { resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
+import { mergeAccountProfiles, resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync, appendFileSync,
   unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync, lstatSync, chmodSync,
-  readlinkSync, symlinkSync
+  readlinkSync, symlinkSync, realpathSync
 } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
@@ -24,7 +26,7 @@ import { createBoardDeps } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
 import { offeredModelIds, resolveAgentModel } from './paramount-models';
 import { agentModelPick, readAgentModels, saveAgentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
-import { preserveEngineSession, switchEngineTransaction, withAgentLifecycleLock } from './paramount-engine-switch';
+import { createSwitchTrace, preserveEngineSession, switchEngineTransaction, withAgentLifecycleLock } from './paramount-engine-switch';
 import { readOrg } from './paramount-org';
 import { floorSetupState, type FloorChoice, type FloorSetupDeps } from './paramount-floor-setup';
 import bakedModelCatalog from '../shared/modelCatalog.json';
@@ -85,7 +87,8 @@ import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import { accessFor, withAccess } from './accessMatrix';
 import { probePort } from './portProbe';
-import { createSignInMonitor, type SignInAccount, type SignInEngine } from './engine-signin';
+import { createAccountProfileStore } from './account-profiles';
+import { signInAccountKey, resolveSignInAccountHome, createSignInMonitor, type SignInAccount, type SignInEngine } from './engine-signin';
 import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
@@ -97,6 +100,7 @@ import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activit
 import { agentActivity, type ActivityFacts } from './paramount-activity';
 import { lagOp, startLagProbe } from './lag-probe';
 import { createSnapshotStageTimer, type SnapshotStage } from './paramountSnapshotTiming';
+import { createSnapshotStageCapture } from './snapshotStageCapture';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { readHireManifestFiles } from './hire';
@@ -274,7 +278,8 @@ async function enableCodexRemoteForSpawn(
  *  gets the PTY id, so this lets a closed tab archive the right registry agent. */
 const ptyToAgent = new Map<string, string>();
 /** Account launcher used by a live PTY, so an expired token is attributed to its own home. */
-const ptySignInAccount = new Map<string, { id: string; label: string; home: string; bin: string }>();
+const ptySignInAccount = new Map<string, SignInAccount>();
+const ptyLaunchIdentity = new Map<string, { provider: string; model?: string; launcher: LauncherPick | null; home?: string }>();
 /** PTY id → the spawn it should auto restart-and-continue into once a first-time
  *  CLI install finishes. The missing-CLI short-circuit runs the engine's installer
  *  in this PTY; when it exits cleanly the exit handler re-runs the SAME spawn (with
@@ -533,6 +538,7 @@ function teardownPty(id: string, opts: { keepEntry?: boolean; preserveWorktree?:
   // pty id == worker id == agent id for workers.
   const wasWorker = liveWorkers.has(id);
   ptySignInAccount.delete(id);
+  ptyLaunchIdentity.delete(id);
   // 0) Revoke this id's broker capability (if any). Idempotent + harmless for a
   //    non-worker PTY; ensures a dead worker's token can never reach an integration.
   try { integrationBroker.revoke(id); } catch { /* best-effort */ }
@@ -1298,9 +1304,12 @@ function godActionableInboxCount(): number {
  *  type directly into god's PTY here — if he's busy that would jam mid-step. The
  *  inbox message is delivered by the renderer's busy-aware inbox-wake (it nudges
  *  god to read his inbox only once he's idle), so the heartbeat defers around a
- *  working god instead of interrupting him. */
+ *  working god instead of interrupting him. Skip entirely when the orchestrator
+ *  has no live PTY — messages would pile up unread rather than waking anyone. */
 function reengageGod(digest: string): void {
   if (!hive.enabled()) return;
+  const godId = hive.registry().godId;
+  if (!godId || !ptyForAgent(godId)) return;
   hive.send({ to: 'god', act: 'request', subject: 'Heartbeat', body: digest }, 'heartbeat');
 }
 
@@ -2698,7 +2707,7 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
 
 /** Spawn options shared by the `pty:spawn` IPC handler and the god-triggered
  *  ephemeral-worker watcher. */
-type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; restoreSessionId?: boolean; provider?: AgentProvider; noAutoInstall?: boolean; councilLauncher?: LauncherPick | null; suppressLauncherSave?: boolean };
+type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; restoreSessionId?: boolean; clearSession?: boolean; requireProvisioning?: boolean; expectedAccountHome?: string; provider?: AgentProvider; noAutoInstall?: boolean; councilLauncher?: LauncherPick | null; suppressLauncherSave?: boolean };
 
 /** Map a `ptyManager.spawn` failure string to the closed `agent_spawn_failed.reason`
  *  enum (analytics.ts). The two known strings come from PtyManager.spawn; anything
@@ -2763,7 +2772,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   };
   let account: ReturnType<typeof resolveLauncherForSpawn>;
   try {
-    account = resolveLauncherForSpawn({ root: hive.root(), agentId: opts.hive?.id, isGod: opts.hive?.isGod === true, isTemp: opts.hive?.role === 'worker', provider, explicit: opts.councilLauncher, isNew: !!opts.hive && !Object.hasOwn(hive.registry().agents, opts.hive.id) }, () => launcherDiscovery.current());
+    await launcherDiscovery.warm();
+    account = resolveLauncherForSpawn({ root: hive.root(), agentId: opts.hive?.id, isGod: opts.hive?.isGod === true, isTemp: opts.hive?.role === 'worker', provider, explicit: opts.councilLauncher, isNew: !!opts.hive && !Object.hasOwn(hive.registry().agents, opts.hive.id) }, () => currentAccountDiscovery());
     if (account) {
       if (!ptyManager.isCommandAvailable(account.bin)) throw new Error('Selected launcher executable is unavailable. Install its provider and refresh.');
       const modelArgs = opts.args ?? [];
@@ -2917,6 +2927,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         { ...opts.hive, cwd: opts.cwd, provider },
         {
           preserveAccountHome: !!account,
+          ...(opts.clearSession ? { clearSession: true } : {}),
           ...(opts.restoreSessionId && opts.resumeSessionId ? { sessionId: opts.resumeSessionId } : {}),
           semanticMemory: memory.active(),
           responseStyleBrief: readConfig().responseStyleBrief,
@@ -2946,7 +2957,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // enterprise knowledge store (both no-ops / empty when their flags are off).
       opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env() };
     } catch (e) {
-      // Hive provisioning is best-effort; never block a spawn on it.
+      if (opts.requireProvisioning) return accountFailure('Agent provisioning failed; no replacement process was started.');
+      // Ordinary legacy spawns retain their best-effort provisioning behavior.
       console.error('[hive] ensureAgent failed:', e);
     }
   }
@@ -3160,7 +3172,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // Start/enable the daemon under this agent's isolated CODEX_HOME and connect
   // the TUI to it so the thread is visible in ChatGPT mobile. Best-effort: an
   // unavailable/older Codex install still gets a normal local terminal.
-  if (provider === 'codex' && opts.hive?.id && !account) {
+  if (provider === 'codex') opts.args = codexExecutionArgs(opts.args ?? [], readConfig().codexExecutionPolicy);
+  if (provider === 'codex' && opts.hive?.id && !account && useCodexRemoteControl(readConfig().codexRemoteControl, readConfig().codexExecutionPolicy)) {
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
   if (account) {
@@ -3170,8 +3183,19 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       if (opts.hive && !opts.hive.isGod && hive.root() && !opts.suppressLauncherSave) saveLauncherPick(hive.root()!, 'agent', frozenPick, opts.hive.id);
     } catch (e) { return accountFailure(e instanceof Error ? e.message : 'The launcher selection could not be saved'); }
   }
+  const actualHome = provider === 'codex' || provider === 'claude' ? opts.env?.[provider === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'] ?? resolveSignInAccountHome(provider) : undefined;
+  if (opts.expectedAccountHome) {
+    let sameHome = actualHome === opts.expectedAccountHome;
+    try { sameHome = !!actualHome && realpathSync(actualHome) === realpathSync(opts.expectedAccountHome); } catch { /* exact path equality remains valid for unavailable homes */ }
+    if (!sameHome) return accountFailure('The expected account environment changed; no replacement process was started.');
+  }
   const res = ptyManager.spawn(opts, owner);
-  if (res.ok && account) ptySignInAccount.set(opts.id, { id: account.id, label: account.label, home: account.home, bin: account.bin });
+  if (res.ok && account) ptySignInAccount.set(opts.id, { id: account.id, label: account.label, home: account.home, bin: account.bin, fingerprint: account.fingerprint });
+  if (res.ok) {
+    const modelIndex = (opts.args ?? []).findIndex(arg => arg === '--model' || arg === '-m');
+    ptyLaunchIdentity.set(opts.id, { provider, model: modelIndex >= 0 ? opts.args?.[modelIndex + 1] : undefined,
+      launcher: account ? { id: account.id, fingerprint: account.fingerprint, ...(account.unrestricted ? { allowUnrestricted: true } : {}) } : null, home: actualHome });
+  }
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)
@@ -3709,7 +3733,7 @@ function paramountPreferences(): Record<string, unknown> {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Paramount preferences are corrupt');
   return parsed as Record<string, unknown>;
 }
-function saveParamountPreference(key: 'profile' | 'setup' | 'home' | 'chats' | 'board', value: Record<string, unknown>): void {
+function saveParamountPreference(key: 'profile' | 'setup' | 'home' | 'chats' | 'board' | 'signInReminders', value: Record<string, unknown>): void {
   const root = hive.root();
   if (!root) throw new Error('hive disabled (no harnessHome)');
   hive.ensureHive();
@@ -3754,7 +3778,7 @@ const engineSignIn = createSignInMonitor({
 function signInAccount(provider: SignInEngine, accountId?: unknown, fingerprint?: unknown): ReturnType<typeof validateLauncher> | null | undefined {
   if (accountId === undefined && fingerprint === undefined) return undefined;
   if (typeof accountId !== 'string' || typeof fingerprint !== 'string' || !/^[a-z0-9_-]{1,32}$/i.test(accountId) || !/^[a-f0-9]{64}$/.test(fingerprint)) return null;
-  const discovery = launcherDiscovery.current();
+  const discovery = currentAccountDiscovery();
   const found = discovery.profiles.find((entry) => entry.id === accountId);
   if (!found || found.provider !== provider || found.fingerprint !== fingerprint) return null;
   try { return validateLauncher({ id: found.id, fingerprint: found.fingerprint, ...(found.unrestricted ? { allowUnrestricted: true } : {}) }, provider, discovery); }
@@ -3764,34 +3788,36 @@ ipcMain.handle('engine-signin:start', (event, input: unknown) => {
   const request = input && typeof input === 'object' ? input as { provider?: unknown; accountId?: unknown; accountFingerprint?: unknown } : {};
   if (request.provider !== 'claude' && request.provider !== 'codex') return { ok: false, error: 'Choose Claude Code or Codex.' };
   const provider = request.provider as SignInEngine;
+  return observeAccountOperation(paramountLog, 'sign-in-start', { provider, accountId: request.accountId }, () => {
   const account = signInAccount(provider, request.accountId, request.accountFingerprint);
-  if (request.accountId !== undefined && !account) return { ok: false, error: 'This account launcher changed or is unavailable. Refresh account choices and select it again.' };
+  if (account === null) return { ok: false, error: 'This account launcher changed or is unavailable. Refresh account choices and select it again.' };
   const bin = account?.bin ?? ptyManager.commandPath(provider);
   if (!bin || !ptyManager.isCommandAvailable(bin)) return { ok: false, error: `${provider} CLI is missing. Install it before signing in.` };
-  const accountHome = account?.home ?? (provider === 'codex'
-    ? process.env.CODEX_HOME?.trim() || join(homedir(), '.codex')
-    : process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), '.claude'));
+  const accountHome = resolveSignInAccountHome(provider, account ?? undefined);
   if (account) {
     try { if (!statSync(accountHome, { throwIfNoEntry: false })?.isDirectory()) return { ok: false, error: `The selected ${account.label} account home is unavailable.` }; }
     catch { return { ok: false, error: `The selected ${account.label} account home is unavailable.` }; }
   }
-  const ptyId = `engine-signin-${provider}-${account?.id ?? 'default'}`;
+  const ptyId = `engine-signin-${provider}-${signInAccountKey(provider, account ?? undefined)}`;
   const existing = ptyManager.list().find((session) => session.id === ptyId);
   if (existing) return { ok: true, ptyId, cwd: existing.cwd };
   const env = account ? launcherEnvironment(account) : { [provider === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR']: accountHome };
   const args = provider === 'codex' ? ['login'] : ['auth', 'login'];
   const started = ptyManager.spawn({ id: ptyId, cwd: homedir(), command: bin, args, env, envUnset: [...LAUNCHER_AUTH_ENV], cols: 110, rows: 30 }, BrowserWindow.fromWebContents(event.sender)?.webContents ?? null);
   return started.ok ? { ok: true, ptyId, cwd: homedir() } : { ok: false, error: started.error ?? 'Could not open the sign-in terminal.' };
+  });
 });
 ipcMain.handle('engine-signin:refresh', async (_event, input: unknown) => {
   const request = input && typeof input === 'object' ? input as { provider?: unknown; accountId?: unknown; accountFingerprint?: unknown } : {};
   if (request.provider !== 'claude' && request.provider !== 'codex') return { ok: false, error: 'Choose Claude Code or Codex.' };
   const provider = request.provider as SignInEngine;
+  return observeAccountOperation(paramountLog, 'sign-in-check', { provider, accountId: request.accountId }, async () => {
   const account = signInAccount(provider, request.accountId, request.accountFingerprint);
-  if (request.accountId !== undefined && !account) return { ok: false, error: 'This account launcher changed or is unavailable. Refresh account choices and select it again.' };
+  if (account === null) return { ok: false, error: 'This account launcher changed or is unavailable. Refresh account choices and select it again.' };
   const status = await engineSignIn.refresh(provider, account ?? undefined);
   broadcastParamountInvalidation('engine-signin');
   return { ok: true, status };
+  });
 });
 // The file picker is a one-file access grant for this narrowly scoped update;
 // no home-wide permission or persistent bookmark is saved.
@@ -3877,10 +3903,15 @@ function paramountSetIntegrationConnected(connectionId: string, connected: boole
 /** Paramount calls log `paramount-op` start/end lines and `paramount-error`
  *  lines into the hive's log.jsonl; see paramountObservability.ts. */
 const paramountLog: LogSink = (event) => hive.appendLog(event);
+const snapshotStageCapture = createSnapshotStageCapture({
+  directory: join(app.getPath('userData'), 'diagnostics'),
+  appRunId: randomBytes(16).toString('hex'),
+  version: app.getVersion()
+});
 const paramountSnapshotStageTimer = createSnapshotStageTimer({
   now: () => performance.now(),
-  // stderr is available before floor selection; the helper bounds this sink and emits no payloads.
-  log: (event) => console.warn(`[snapshot-stage] ${JSON.stringify(event)}`)
+  // Queue only validated timing fields; persistence is asynchronous and best effort.
+  log: (event) => { snapshotStageCapture.record(event); }
 });
 ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => {
   const time = <T>(stage: SnapshotStage, work: () => T): T =>
@@ -3888,8 +3919,8 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   const cfg = time('config', () => readConfig());
   const floorSetup = time('floorSetup', () => floorSetupState(paramountFloorSetupDeps(evt.sender)));
   const hookSocket = time('hookHealth', () => hookServer.health());
-  const hasOrchestratorFailure = time('orchestratorFailure', () => orchestratorStart.failure());
-  const orchestratorFailure = hasOrchestratorFailure ? time('orchestratorFailure', () => orchestratorStart.failure()) : undefined;
+  const orchestratorFailure = time('orchestratorFailure', () => orchestratorStart.failure());
+  const hasOrchestratorFailure = !!orchestratorFailure;
   const registry = time('registry', () => hive.registry());
   const tasks = time('tasks', () => hive.tasks());
   const messages = time('messages', () => hive.voiceMessages({ limit: 500 }));
@@ -3902,7 +3933,7 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   const rosterSnapshot = time('roster', () => roster.read());
   // Live busy/idle, last tool, tokens and context per agent: the Team graph's status and 'doing'.
   const activity = time('activity', () => paramountActivity());
-  const snapshotConfig = time('snapshotConfig', () => ({ notifications: cfg.notifications, autoMode: cfg.autoMode, autoModeExpiresAt: cfg.autoModeExpiresAt, accessMatrix: cfg.accessMatrix ?? {},
+  const snapshotConfig = time('snapshotConfig', () => ({ notifications: cfg.notifications, codexRemoteControl: cfg.codexRemoteControl === true, codexExecutionPolicy: cfg.codexExecutionPolicy ?? 'inherit', autoMode: cfg.autoMode, autoModeExpiresAt: cfg.autoModeExpiresAt, accessMatrix: cfg.accessMatrix ?? {},
     defaultModel: cfg.defaultModel, godProvider: cfg.godProvider, orchestratorMaySpawn: cfg.orchestratorMaySpawn,
     ticketKeyPrefix: cfg.ticketKeyPrefix ?? '',
     semanticMemory: cfg.semanticMemory, embeddingModel: cfg.embeddingModel, reflectEnabled: cfg.reflectEnabled,
@@ -3922,7 +3953,7 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
   // Installed engines that are not signed in.
   const signIn = time('signIn', () => Object.fromEntries([
     ...installedSnapshotEngines(snapshotCommandDiscovery).map((e) => [e, engineSignIn.status(e)] as const),
-    ...(launcherDiscovery.peek()?.profiles ?? []).map((profile) => [
+    ...currentAccountDiscovery().profiles.map((profile) => [
       `${profile.provider}-${profile.id}`,
       engineSignIn.status(profile.provider as 'claude' | 'codex', profile)
     ] as const)
@@ -4122,7 +4153,7 @@ ipcMain.handle('floor:open', (_evt, arg: unknown) => openFloorProcess(typeof (ar
 function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
   const team = paramountTeamDeps(sender);
   return {
-    launcherDiscovery: () => launcherDiscovery.current(),
+    launcherDiscovery: () => currentAccountDiscovery(),
     floor: {
       state: () => floorGate.state(),
       claim: (home) => floorGate.claim(home),
@@ -4160,6 +4191,18 @@ function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
  *  `launchers.refresh` (setup screen, "Refresh launchers"). Never per snapshot. */
 // The login-shell probe runs off the main thread (owner use of 8f574966: beach ball); warmed at boot.
 const launcherDiscovery = createLauncherDiscoveryCache(discoverLaunchers, discoverLaunchersAsync);
+let accountProfileStore: ReturnType<typeof createAccountProfileStore> | undefined;
+function deviceAccountProfiles() {
+  // The local instance lock guards initialization; catalog mutations additionally
+  // hold a shared-directory lock across independently running floor processes.
+  // app.quit() alone does not abort module evaluation, so explicitly guard losers.
+  if (!gotInstanceLock) throw new Error('Another Paramount instance owns the account catalog.');
+  return accountProfileStore ??= createAccountProfileStore(join(sharedDataDir(), 'account-profiles'));
+}
+function currentAccountDiscovery() {
+  return mergeAccountProfiles(launcherDiscovery.current(), deviceAccountProfiles().list());
+}
+
 function paramountResolveModel(provider: string, choices: Array<string | undefined>): string | undefined {
   return resolveAgentModel(provider, choices, (engine) => teamModels(paramountModelCatalog(), app.getVersion()).find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
 }
@@ -4179,7 +4222,28 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
     addTasksBatch: (tasks) => hive.enabled() && hive.addTasksBatch(tasks as HiveTask[]),
     sendAgentMessage: (agentId, subject, body) => { hive.send({ to: agentId, act: 'request', subject, body, requires_reply: false }, 'human'); },
     modelCatalog: paramountModelCatalog,
-    launcherDiscovery: () => launcherDiscovery.current(),
+    launcherDiscovery: () => currentAccountDiscovery(),
+    runningIdentity: (agentId) => {
+      const pty = ptyManager.list().find(p => ptyToAgent.get(p.id) === agentId);
+      if (!pty) return undefined;
+      const live = ptyLaunchIdentity.get(pty.id);
+      if (!live) return { provider: hive.registry().agents[agentId]?.provider ?? 'claude', accountSelection: 'unknown' };
+      const profile = ptySignInAccount.get(pty.id);
+      return { provider: live.provider, model: live.model, accountSelection: live.launcher ? 'selected' : 'default',
+        ...(live.launcher ? { launcher: { id: live.launcher.id, fingerprint: live.launcher.fingerprint, label: profile?.label ?? live.launcher.id } } : {}) };
+    },
+    accountProfiles: {
+      list: () => deviceAccountProfiles().inventory(),
+      create: (input) => {
+        const identity: { provider: string; accountId?: string } = { provider: input.provider };
+        return observeAccountOperation(paramountLog, 'profile-create', identity, () => {
+          identity.accountId = deviceAccountProfiles().create(input).id;
+          return deviceAccountProfiles().inventory();
+        });
+      },
+      rename: (id, label) => observeAccountOperation(paramountLog, 'profile-rename', { accountId: id }, () => { deviceAccountProfiles().rename(id, label); return deviceAccountProfiles().inventory(); })
+    },
+    warmLaunchers: async () => { await launcherDiscovery.warm(); },
     refreshLaunchers: async () => { await launcherDiscovery.refresh(); },
     claimFloor: () => { const root = hive.root(); return !root || claimFloor(root); },
     appVersion: app.getVersion(),
@@ -4291,48 +4355,72 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
       return locked ?? { ok: false, error: 'Another lifecycle operation is already running for this agent.' };
     },
     switchAgent: async (agentId, target) => {
+      const trace = createSwitchTrace(event => paramountLog(event), { provider: target.provider, accountId: target.launcher?.id });
       const locked = await withAgentLifecycleLock(agentId, async () => {
       const root = hive.root();
-      if (!root || !hive.enabled()) return { ok: false, error: 'Enable the Hive before switching an agent.' };
-      if (!claimFloor(root)) return { ok: false, error: 'Another Council or Munder process owns this floor.' };
+      if (!root || !hive.enabled()) return trace.refuse('hive-unavailable', { ok: false, error: 'Enable the Hive before switching an agent.' });
+      if (!claimFloor(root)) return trace.refuse('floor-owned', { ok: false, error: 'Another Council or Munder process owns this floor.' });
       const raw = hive.registry().agents[agentId];
-      if (!raw || raw.isGod || raw.role === 'temp') return { ok: false, error: 'This agent cannot be switched from its current role.' };
+      if (!raw || raw.role === 'temp') return trace.refuse('agent-unavailable', { ok: false, error: 'This agent cannot be switched from its current role.' });
       const fromProvider = raw.provider ?? 'claude';
-      if (fromProvider === target.provider) return { ok: false, error: 'Choose a different provider to switch engines.' };
+      const isGod = raw.isGod === true || hive.registry().godId === agentId;
+      const previousConfig = { godProvider: readConfig().godProvider, godModel: readConfig().godModel };
+      const launcherScope = isGod ? 'orchestrator' as const : 'agent' as const;
+      trace.setScope(launcherScope);
       const previousArchived = raw.archived === true;
       const activePty = ptyManager.list().find((pty) => ptyToAgent.get(pty.id) === agentId);
       const cwd = (activePty ? worktreePaths.get(activePty.id) : undefined) ?? raw.cwd;
-      if (!cwd || !statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return { ok: false, error: `The working folder is unavailable: ${cwd || '(empty)'}` };
+      if (!cwd || !statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return trace.refuse('folder-unavailable', { ok: false, error: `The working folder is unavailable: ${cwd || '(empty)'}` });
       const previousModel = readAgentModels(root)[agentId];
+      const liveIdentity = activePty ? ptyLaunchIdentity.get(activePty.id) : undefined;
+      if (activePty && (!liveIdentity || liveIdentity.provider !== fromProvider)) return trace.refuse('running-identity-unknown', { ok: false, error: 'The running account and model identity is unavailable. No session was stopped.' });
+      const previousEffectiveModel = liveIdentity ? liveIdentity.model : previousModel?.model ?? (isGod ? previousConfig.godModel : undefined);
+      if (liveIdentity && target.provider === liveIdentity.provider && (target.model || undefined) === liveIdentity.model && (target.launcher?.id ?? null) === (liveIdentity.launcher?.id ?? null) && (target.launcher?.fingerprint ?? null) === (liveIdentity.launcher?.fingerprint ?? null)) return trace.refuse('already-running', { ok: false, error: 'This provider, account and model are already running.' });
       let previousLauncher: LauncherPick | null;
+      let savedLauncher: LauncherPick | null;
       try {
-        previousLauncher = readLauncherState(root).agents[agentId] ?? null;
+        const selections = readLauncherState(root);
+        savedLauncher = (isGod ? selections.orchestrator : selections.agents[agentId]) ?? null;
+        previousLauncher = liveIdentity ? liveIdentity.launcher : savedLauncher;
         if (previousLauncher) {
-          const profile = validateLauncher(previousLauncher, fromProvider, launcherDiscovery.current());
-          if (!statSync(profile.home, { throwIfNoEntry: false })?.isDirectory()) return { ok: false, error: 'The current account home is unavailable; no session was stopped.' };
+          const profile = validateLauncher(previousLauncher, fromProvider, currentAccountDiscovery());
+          if (!statSync(profile.home, { throwIfNoEntry: false })?.isDirectory()) return trace.refuse('current-account-unavailable', { ok: false, error: 'The current account home is unavailable; no session was stopped.' });
         }
-      } catch (error) { return { ok: false, error: `Cannot safely preserve the current account selection: ${error instanceof Error ? error.message : String(error)}` }; }
+      } catch (error) { return trace.refuse('current-account-unavailable', { ok: false, error: `Cannot safely preserve the current account selection: ${error instanceof Error ? error.message : String(error)}` }); }
       let targetLauncher: LauncherPick | null = target.launcher;
       let targetBin: string;
+      let targetAccount: SignInAccount | undefined;
       try {
         if (targetLauncher) {
-          const profile = validateLauncher(targetLauncher, target.provider, launcherDiscovery.current());
-          if (!statSync(profile.home, { throwIfNoEntry: false })?.isDirectory()) return { ok: false, error: 'The selected account home is unavailable; no session was stopped.' };
+          const profile = validateLauncher(targetLauncher, target.provider, currentAccountDiscovery());
+          if (!statSync(profile.home, { throwIfNoEntry: false })?.isDirectory()) return trace.refuse('target-account-unavailable', { ok: false, error: 'The selected account home is unavailable; no session was stopped.' });
           targetBin = profile.bin;
+          targetAccount = profile;
         } else targetBin = buildWorkerLaunch({ requestProvider: target.provider, requestModel: target.model || undefined, defaultCommand: readConfig().defaultCommand, autoMode: !!readConfig().autoMode }).bin;
-      } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'The selected account is unavailable.' }; }
-      if (!ptyManager.isCommandAvailable(targetBin)) return { ok: false, error: `${targetBin} is not installed or available on PATH.` };
+      } catch (error) { return trace.refuse('target-account-unavailable', { ok: false, error: error instanceof Error ? error.message : 'The selected account is unavailable.' }); }
+      if (!ptyManager.isCommandAvailable(targetBin)) return trace.refuse('cli-unavailable', { ok: false, error: `${targetBin} is not installed or available on PATH.` });
+      if (!targetAccount && (target.provider === 'claude' || target.provider === 'codex')) {
+        targetAccount = { id: `default-${agentId}`, label: 'Provider default', bin: targetBin, home: target.provider === 'codex' ? join(root, 'agents', agentId, '.codex') : resolveSignInAccountHome('claude') };
+      }
+      if (target.provider === 'claude' || target.provider === 'codex') {
+        const auth = await engineSignIn.refresh(target.provider, targetAccount);
+        if (auth.state !== 'signed-in') return trace.refuse(auth.state === 'expired' ? 'auth-expired' : auth.state === 'unknown' ? 'auth-unknown' : 'auth-signed-out', { ok: false, error: 'Sign in to the selected account and check its status before switching. No session was stopped.' });
+      }
       const previousSession = hive.lastSession(agentId);
-      try { preserveEngineSession(root, agentId, { provider: fromProvider, at: new Date().toISOString(), ...(previousSession ? { sessionId: previousSession } : {}), ...(previousModel?.model ? { model: previousModel.model } : {}), ...(previousLauncher ? { launcherId: previousLauncher.id } : {}) }); }
-      catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Could not preserve the previous provider session.' }; }
-      const spawnFor = async (provider: string, model: string | undefined, launcher: LauncherPick | null, resume: boolean, resumeSessionId?: string) => {
+      if (activePty && !previousSession) return trace.refuse('session-missing', { ok: false, error: 'The current session has no saved resume identity yet. No session was stopped; wait for its session to be recorded before switching.' });
+      try { preserveEngineSession(root, agentId, { provider: fromProvider, isGod, at: new Date().toISOString(), ...(previousSession ? { sessionId: previousSession } : {}), ...(previousEffectiveModel ? { model: previousEffectiveModel } : {}), ...(previousLauncher ? { launcherId: previousLauncher.id, launcherFingerprint: previousLauncher.fingerprint } : {}) }); }
+      catch (error) { return trace.refuse('history-unavailable', { ok: false, error: error instanceof Error ? error.message : 'Could not preserve the previous provider session.' }); }
+      trace.emit({ phase: 'preflight', outcome: 'ok' });
+      const spawnFor = async (provider: string, model: string | undefined, launcher: LauncherPick | null, resume: boolean, resumeSessionId?: string, expectedAccountHome?: string) => {
         const launch = buildWorkerLaunch({ requestProvider: provider, requestModel: model, defaultCommand: readConfig().defaultCommand, autoMode: !!readConfig().autoMode });
         return spawnAgentCore({ id: agentId, cwd, command: launch.bin, args: launch.args, cols: 120, rows: 32,
-          hive: { id: agentId, name: raw.name, provider: provider as AgentProvider, ...(raw.role ? { role: raw.role } : {}), cwd },
-          provider: provider as AgentProvider, resume, requireResume: resume, ...(resumeSessionId ? { resumeSessionId, restoreSessionId: true } : {}), isolate: false, councilLauncher: launcher, suppressLauncherSave: true }, sender);
+          hive: { id: agentId, name: raw.name, provider: provider as AgentProvider, ...(raw.role ? { role: raw.role } : {}), ...(isGod ? { isGod: true } : {}), cwd },
+          provider: provider as AgentProvider, resume, requireResume: resume, clearSession: !resume, requireProvisioning: true, expectedAccountHome, ...(resumeSessionId ? { resumeSessionId, restoreSessionId: true } : {}), isolate: false, councilLauncher: launcher, suppressLauncherSave: true }, sender);
       };
       let targetResult: Awaited<ReturnType<typeof spawnFor>> | undefined;
       const tx = await switchEngineTransaction({
+        cid: trace.cid,
+        observe: (event) => trace.emit(event),
         stopCurrent: async () => {
           if (!activePty) return { ok: true };
           const stopped = ptyManager.kill(activePty.id);
@@ -4341,7 +4429,7 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
           return { ok: true };
         },
         startTarget: async () => {
-          targetResult = await spawnFor(target.provider, target.model || undefined, targetLauncher, false);
+          targetResult = await spawnFor(target.provider, target.model || undefined, targetLauncher, false, undefined, targetAccount?.home);
           return { ok: targetResult.ok, error: targetResult.error };
         },
         targetViable: async () => {
@@ -4350,7 +4438,8 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
         },
         persistTarget: async () => {
           saveAgentModelPick(root, agentId, target.provider, target.model || undefined);
-          saveLauncherPick(root, 'agent', targetLauncher, agentId);
+          saveLauncherPick(root, launcherScope, targetLauncher, agentId);
+          if (isGod) applyConfigUpdate({ godProvider: target.provider as AgentProvider, godModel: target.model || undefined });
         },
         stopTarget: async () => {
           const live = ptyManager.list().find((pty) => ptyToAgent.get(pty.id) === agentId);
@@ -4367,34 +4456,39 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
           try {
             if (previousModel) saveAgentModelPick(root, agentId, previousModel.engine, previousModel.model);
             else saveAgentModelPick(root, agentId, fromProvider, undefined);
-            saveLauncherPick(root, 'agent', previousLauncher, agentId);
+            saveLauncherPick(root, launcherScope, savedLauncher, agentId);
+            if (isGod) applyConfigUpdate(previousConfig);
           } catch (error) { errors.push(error instanceof Error ? error.message : 'Could not restore previous model/account settings.'); }
+          if (errors.length) return { ok: false, error: errors.join(' ') };
           if (activePty) {
-            const restored = await spawnFor(fromProvider, previousModel?.model, previousLauncher, !!previousSession, previousSession);
+            const restored = await spawnFor(fromProvider, previousEffectiveModel, previousLauncher, !!previousSession, previousSession, liveIdentity?.home);
             if (!restored.ok || (!!previousSession && !restored.resumed)) {
               hive.setAgentProvider(agentId, fromProvider);
               restoreArchived(agentId, true);
               errors.push(restored.error ?? 'The previous session could not be resumed. Its files and history remain available for a fresh start.');
             } else {
+              if (isGod) { paramountOrchestrators.add(agentId); orchestratorStart.started(agentId, fromProvider, restored.resumed === true, previousArchived); }
               try { sender.send('hive:agentSpawned', { id: agentId, name: raw.name, provider: fromProvider, cwd, role: raw.role }); } catch { /* window closed */ }
             }
           } else {
-            const restored = await hive.ensureAgent({ id: agentId, name: raw.name, provider: fromProvider, ...(raw.role ? { role: raw.role } : {}), cwd }, { preserveAccountHome: true, ...(previousSession ? { sessionId: previousSession } : {}) });
+            const restored = await hive.ensureAgent({ id: agentId, name: raw.name, provider: fromProvider, ...(raw.role ? { role: raw.role } : {}), ...(isGod ? { isGod: true } : {}), cwd }, { preserveAccountHome: true, clearSession: !previousSession, ...(previousSession ? { sessionId: previousSession } : {}) });
             void restored;
             restoreArchived(agentId, previousArchived);
           }
           return errors.length ? { ok: false, error: errors.join(' ') } : { ok: true };
         }
       });
+      if (tx.ok && isGod) { paramountOrchestrators.add(agentId); orchestratorStart.started(agentId, target.provider, false, previousArchived); }
       if (!tx.ok) return { ok: false, error: tx.error, rollbackError: tx.rollbackError };
       try { sender.send('hive:agentSpawned', { id: agentId, name: raw.name, provider: target.provider, cwd, role: raw.role }); } catch { /* window closed */ }
-      hive.send({ to: agentId, act: 'request', subject: 'Continue after provider switch', body: [
+      hive.send({ to: agentId, act: 'request', subject: isGod ? 'Continue orchestrating after account or provider switch' : 'Continue after account or provider switch', body: [
         `This is a new ${target.provider} session for your existing agent identity. The prior provider session and its history were retained; its unsaved conversation context was not transferred.`,
+        ...(isGod ? ['You remain the Paramount orchestrator for this floor. Review board.md, tasks.json and fleet.json and resume coordinating existing work.'] : []),
         `Read your durable rules and memory in ${join(root, 'agents', agentId)}, your handoff, and the existing assignment in board.md and tasks.json. Continue from durable files and report any missing context to god. Do not recreate completed work.`
       ].join('\n\n'), requires_reply: false }, 'system');
       return { ok: true };
       });
-      return locked ?? { ok: false, error: 'Another lifecycle operation is already running for this agent.' };
+      return locked ?? trace.refuse('lifecycle-busy', { ok: false, error: 'Another lifecycle operation is already running for this agent.' });
     }
   };
 }
@@ -4621,9 +4715,9 @@ ipcMain.handle('skills:reveal', (_evt, path: unknown) => {
  * Finder-launched app) and knows whether the palace is initialised, so it is
  * authoritative and reused rather than re-probed differently here.
  */
-ipcMain.handle('tools:status', (): ToolStatus[] => {
+ipcMain.handle('tools:status', async (): Promise<ToolStatus[]> => {
   const win = process.platform === 'win32';
-  const mem = (() => { try { memory.resetBinCache(); return memory.status(); } catch { return null; } })();
+  const mem = await (async () => { try { return await memory.refresh(); } catch { return null; } })();
   return toolCatalog().map((spec): ToolStatus => {
     const installCommand = win ? spec.install.win32 : spec.install.posix;
     if (spec.id === 'mempalace') {
@@ -4648,11 +4742,11 @@ ipcMain.handle('tools:status', (): ToolStatus[] => {
 });
 
 // ─── IPC: semantic memory (MemPalace CLI) ───────────────────────────────────
-// refresh() = resetBinCache + an idempotent start(). The poll is the one thing
+// refresh() awaits bounded asynchronous discovery. The poll is the one thing
 // that reliably notices mempalace being installed after boot, so it is what arms
 // the mine loop that boot's start() had to skip — otherwise the pill reads
 // "getting ready" until the app is restarted.
-ipcMain.handle('hive:memoryStatus', () => memory.refresh());
+ipcMain.handle('hive:memoryStatus', async () => memory.refresh());
 ipcMain.handle('hive:searchMemory', (_evt, query: unknown, wing: unknown) => {
   if (typeof query !== 'string' || !query.trim()) return { ok: false, output: '', error: 'empty query' };
   return memory.search(query, { wing: typeof wing === 'string' ? wing : undefined });
@@ -6431,7 +6525,11 @@ app.whenReady().then(() => {
   // Main-thread lag probe (owner use of 8f574966: beach ball): a stall over 200 ms is logged to the
   // floor as 'paramount-lag' with the operations running during it.
   void launcherDiscovery.warm()?.catch(() => { /* a failed probe is reported when launchers are read */ });
-  startLagProbe({ now: () => Date.now(), log: (event) => { console.warn(`[lag] ${event.ms} ms during ${event.op}`); try { hive.appendLog(event); } catch { /* no floor yet */ } } });
+  startLagProbe({ now: () => Date.now(), log: (event) => {
+    snapshotStageCapture.record(event);
+    console.warn(`[lag] ${event.ms} ms during ${event.op}`);
+    try { hive.appendLog(event); } catch { /* no floor yet */ }
+  } });
   // Warm the model catalog cache before any picker opens. The renderer reads
   // the same cache over IPC on load; doing the network hop here means the file
   // is already fresh on disk by the time a modal is opened, and a failure is

@@ -6,7 +6,7 @@ import { discoverLaunchers, publicDiscovery, launcherDisplayCommand, validateLau
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import type { ParamountCommand, ParamountErrorCode, ParamountEvent, ParamountHirePlan, ParamountResult, ParamountTeamModels, ParamountTeamResult } from '../preload/paramount';
+import type { CouncilAccountProfile, ParamountCommand, ParamountErrorCode, ParamountEvent, ParamountHirePlan, ParamountResult, ParamountTeamModels, ParamountTeamResult } from '../preload/paramount';
 import type { Span } from './paramountObservability';
 import { validateHireManifest, type HireManifest } from '../shared/hire';
 import { AGENT_PROVIDER_PRESETS, normalizeAgentProvider } from '../shared/agentProvider';
@@ -33,8 +33,16 @@ export interface TeamSpawn {
 }
 
 export interface ParamountTeamDeps {
+  runningIdentity?(agentId: string): ParamountTeamModels['agents'][string]['running'];
+  accountProfiles?: {
+    list(): CouncilAccountProfile[];
+    create(input: {provider: 'claude' | 'codex'; label: string}): CouncilAccountProfile[];
+    rename(id: string, label: string): CouncilAccountProfile[];
+  };
   /** The cached launcher discovery (never runs a shell after the first read). */
   launcherDiscovery?(): ReturnType<typeof discoverLaunchers>;
+  /** Starts or joins asynchronous discovery, respecting its retry backoff. */
+  warmLaunchers?(): void | Promise<void>;
   /** Reruns discovery: only the setup screen and "Refresh launchers" ask for it. */
   refreshLaunchers?(): void | Promise<void>;
   /** Takes or keeps the floor's runtime lock; false while another live process
@@ -83,7 +91,7 @@ interface Deps {
   team?: ParamountTeamDeps;
 }
 
-const TEAM_TYPES = new Set(['card.create', 'team.models', 'team.org.get', 'team.org.save', 'team.delegate', 'agent.hire', 'agent.restart', 'agent.switch', 'launchers.configure', 'launchers.refresh', 'orchestrator.ensure']);
+const TEAM_TYPES = new Set(['accounts.list', 'accounts.create', 'accounts.rename', 'card.create', 'team.models', 'team.org.get', 'team.org.save', 'team.delegate', 'agent.hire', 'agent.restart', 'agent.switch', 'launchers.configure', 'launchers.refresh', 'orchestrator.ensure']);
 const MODELS_FILE = 'paramount-agent-models.json';
 // IPC creates a new adapter per request. Keep reservations by hive so two
 // windows cannot both pass the registry check while ensureAgent is awaiting IO.
@@ -266,6 +274,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (!onlyKeys(command, ['type'])) return fail('INVALID_INPUT', 'orchestrator.ensure takes no fields');
         if (!team.setupComplete?.() || !team.hiveRoot()) return fail('CONFLICT', 'Finish floor setup before starting the orchestrator');
         const root = team.hiveRoot()!;
+        if (pendingOrchestrators.has(root)) return fail('CONFLICT', 'An orchestrator lifecycle operation is in progress.');
         const state = automaticOrchestrators.get(root) ?? { starts: 0 };
         automaticOrchestrators.set(root, state);
         if (state.inFlight) return state.inFlight;
@@ -285,6 +294,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         const step = (stage: string) => {
           try { deps.logStep?.({ kind: 'paramount-orchestrator', cid: span.cid, step: stage }); } catch { /* diagnostics cannot block startup */ }
         };
+        let discoveryUnavailable = false;
         // Defer all readiness checks until AFTER reserving the attempt.
         const attempt = Promise.resolve().then(async (): Promise<ParamountResult> => {
           step('setup-ready');
@@ -297,6 +307,17 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           const preset = AGENT_PROVIDER_PRESETS.find((p) => p.id === provider);
           if (!preset?.supportsModel || !preset.canReceiveInbox) return fail('INVALID_INPUT', 'The configured orchestrator engine is unsupported. Correct the floor engine configuration and reopen this floor');
           const model = resolveAgentModel(provider!, [engine.model], (id) => teamModels(team.modelCatalog(), team.appVersion).find((e) => e.id === id)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
+          // Discovery is readiness, not a process start. Let the shared async cache
+          // enforce backoff and single-flight probing before validating a saved account.
+          // Never retry auth/session failures returned by the actual spawn below.
+          try { await team.warmLaunchers?.(); }
+          catch { /* Readiness below reports the cached unavailable state. */ }
+          const discovery = team.launcherDiscovery?.();
+          const savedLauncher = runtimeLauncher(root, undefined, true, false, undefined, provider, true);
+          if (savedLauncher && discovery && discovery.status !== 'ok' && !discovery.profiles.some(p => p.id === savedLauncher.id && p.source === 'managed')) {
+            discoveryUnavailable = true;
+            return fail('INVALID_INPUT', discovery.message ?? 'Launcher discovery is unavailable.');
+          }
           const raw = registered ? agents[registered] : undefined;
           const name = object(raw) && typeof raw.name === 'string' ? raw.name : 'Paramount';
           step('launch-requested');
@@ -310,7 +331,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           } }, span)!;
         }).catch(failCaught).then((result) => {
           step(result.ok ? 'launch-accepted' : 'startup-failed');
-          if (!result.ok) state.failure = result;
+          if (!result.ok && !discoveryUnavailable) state.failure = result;
           state.inFlight = undefined;
           return result;
         });
@@ -373,6 +394,23 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
           return done({ delegated: { parentKey, childKeys } });
         } catch (error) { return fail(writeAttempted ? 'UNCERTAIN_STATE' : 'INVALID_INPUT', error instanceof Error ? error.message : 'Delegation failed', error); }
       }
+      case 'accounts.list': {
+        if (!onlyKeys(command, ['type'])) return fail('INVALID_INPUT', 'accounts.list takes no fields');
+        if (!team.accountProfiles) return fail('UNSUPPORTED', 'Account catalog is unavailable.');
+        return done({ accounts: team.accountProfiles.list() });
+      }
+      case 'accounts.create': {
+        if (!onlyKeys(command, ['type', 'provider', 'label']) || !['claude', 'codex'].includes(String(command.provider)) || typeof command.label !== 'string') return fail('INVALID_INPUT', 'Choose a provider and account label.');
+        if (!team.accountProfiles) return fail('UNSUPPORTED', 'Account catalog is unavailable.');
+        writeAttempted = true;
+        return done({ accounts: team.accountProfiles.create({provider: command.provider as 'claude' | 'codex', label: command.label}) });
+      }
+      case 'accounts.rename': {
+        if (!onlyKeys(command, ['type', 'id', 'label']) || typeof command.id !== 'string' || typeof command.label !== 'string') return fail('INVALID_INPUT', 'Choose an account and label.');
+        if (!team.accountProfiles) return fail('UNSUPPORTED', 'Account catalog is unavailable.');
+        writeAttempted = true;
+        return done({ accounts: team.accountProfiles.rename(command.id, command.label) });
+      }
       case 'launchers.refresh': {
         if (!onlyKeys(command, ['type'])) return fail('INVALID_INPUT', 'launchers.refresh takes no fields');
         // The shell probe runs off the main thread; answer once it has finished.
@@ -429,7 +467,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
             // An unreadable/invalid launcher record is not equivalent to provider default.
             accountSelection = 'unavailable';
           }
-          agents[id] = { ...selected, installed: team.commandAvailable(selectedProfile?.bin ?? engine), accountSelection, ...(launcher ? { launcher } : {}) };
+          agents[id] = { ...selected, ...(team.runningIdentity?.(id) ? { running: team.runningIdentity(id) } : {}), installed: team.commandAvailable(selectedProfile?.bin ?? engine), accountSelection, ...(launcher ? { launcher } : {}) };
         }
         let launchers = publicDiscovery(team.launcherDiscovery?.());
         let launcherState;
@@ -447,6 +485,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         } catch { /* reported through launchers above */ }
         return done({ models: {
           engines,
+          accounts: team.accountProfiles?.list() ?? [],
           launchers,
           ...(launcherState ? { launcherState } : {}),
           ...(team.defaultModel() ? { defaultModel: team.defaultModel() } : {}),
@@ -491,17 +530,23 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         const raw = deps.agents()[command.agentId];
         if (!object(raw)) return fail('NOT_FOUND', 'Agent not found');
         if (!team.restartAgent) return fail('UNSUPPORTED', 'Agent restart is not available in this build');
+        const restartRoot = raw.isGod === true || command.agentId === team.orchestratorId() ? team.hiveRoot() : null;
+        if (restartRoot && (pendingOrchestrators.has(restartRoot) || automaticOrchestrators.get(restartRoot)?.inFlight)) return fail('CONFLICT', 'An orchestrator lifecycle operation is in progress.');
+        if (restartRoot) pendingOrchestrators.add(restartRoot);
         writeAttempted = true;
-        return team.restartAgent(command.agentId, command.mode as 'resume' | 'fresh').then((result) => {
+        return Promise.resolve().then(() => team.restartAgent!(command.agentId as string, command.mode as 'resume' | 'fresh')).then((result) => {
           if (!result.ok) return fail('CONFLICT', result.error ?? 'Agent could not be restarted');
           return done({});
-        }, failCaught);
+        }, failCaught).finally(() => { if (restartRoot) pendingOrchestrators.delete(restartRoot); });
       }
       case 'agent.switch': {
         if (!onlyKeys(command, ['type', 'agentId', 'provider', 'model', 'launcher']) || typeof command.agentId !== 'string' || typeof command.provider !== 'string' || typeof command.model !== 'string' || (command.launcher !== null && !object(command.launcher))) return fail('INVALID_INPUT', 'Choose an agent, provider, account and model to switch');
         const raw = deps.agents()[command.agentId];
         if (!object(raw)) return fail('NOT_FOUND', 'Agent not found');
-        if (raw.isGod === true || command.agentId === team.orchestratorId()) return fail('UNSUPPORTED', 'Switch the orchestrator only through its dedicated recovery flow');
+        const isGod = raw.isGod === true || command.agentId === team.orchestratorId();
+        const switchRoot = isGod ? team.hiveRoot() : null;
+        if (isGod && !switchRoot) return fail('UNSUPPORTED', 'Enable the Hive before switching the orchestrator.');
+        if (switchRoot && (pendingOrchestrators.has(switchRoot) || automaticOrchestrators.get(switchRoot)?.inFlight)) return fail('CONFLICT', 'An orchestrator lifecycle operation is in progress.');
         const provider = normalizeAgentProvider(command.provider);
         if (!provider) return fail('INVALID_INPUT', 'Choose a supported provider');
         const engine = teamModels(team.modelCatalog(), team.appVersion).find((entry) => entry.id === provider);
@@ -510,12 +555,15 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (model && !engine.models.some((entry) => entry.id === model)) return fail('INVALID_INPUT', `${model} is not an available ${engine.label} model`);
         const launcher = command.launcher as LauncherPick | null;
         const discovery = team.launcherDiscovery?.();
-        if (['claude', 'codex'].includes(provider) && discovery?.status !== 'ok') return fail('UNSUPPORTED', discovery?.message ?? 'Refresh account launcher discovery before switching providers');
+        if (['claude', 'codex'].includes(provider) && discovery?.status !== 'ok' && !(launcher && discovery?.profiles.some(p => p.id === launcher.id && p.source === 'managed'))) return fail('UNSUPPORTED', discovery?.message ?? 'Refresh account launcher discovery before switching providers');
         if (launcher) { try { validateLauncher(launcher, provider, discovery); } catch (error) { return fail('INVALID_INPUT', error instanceof Error ? error.message : 'The selected account is unavailable'); } }
-        if (!launcher && discovery?.choices.some((choice) => choice.provider === provider)) return fail('INVALID_INPUT', 'Choose the exact account launcher for this provider; its account will not be inferred.');
         if (!team.switchAgent) return fail('UNSUPPORTED', 'Provider switching is unavailable in this build');
         writeAttempted = true;
-        return team.switchAgent(command.agentId, { provider, model, launcher }).then((result) => result.ok ? done({}) : fail('CONFLICT', result.error ?? 'Provider switch failed', { rollbackError: result.rollbackError }), failCaught);
+        if (switchRoot) pendingOrchestrators.add(switchRoot);
+        return Promise.resolve().then(() => team.switchAgent!(command.agentId as string, { provider, model, launcher })).then((result) => {
+          if (result.ok && switchRoot) automaticOrchestrators.delete(switchRoot);
+          return result.ok ? done({}) : fail('CONFLICT', [result.error ?? 'Provider switch failed', result.rollbackError].filter(Boolean).join(' '), { rollbackError: result.rollbackError });
+        }, failCaught).finally(() => { if (switchRoot) pendingOrchestrators.delete(switchRoot); });
       }
       case 'agent.hire': {
         if (!onlyKeys(command, ['type', 'manifest', 'cwd', 'confirm', 'orchestrator', 'launcher'])) return fail('INVALID_INPUT', 'agent.hire accepts manifest, cwd, confirm and orchestrator');

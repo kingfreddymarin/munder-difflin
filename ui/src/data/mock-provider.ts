@@ -37,6 +37,7 @@ export function createMockProvider(): DataProvider {
     },
     async dispatch(input: Command) {
       const command: Command = input.type === 'card.create' ? { ...input, key: nextCardKey(current().cards.map((card) => card.key)) } : input;
+      if (command.type === 'accounts.create' || command.type === 'accounts.rename' || command.type === 'accounts.list') throw BackendError.local('UNSUPPORTED', 'Managed accounts require the desktop core; sample data cannot create or rename real profiles.', command.type);
       // The browser cannot open local apps; a stored https link opens in a new tab instead.
       if (command.type === 'card.open') throw BackendError.local('UNSUPPORTED', 'Opening a folder in Warp or VS Code needs the desktop app.', command.type);
       if (command.type === 'card.link') {

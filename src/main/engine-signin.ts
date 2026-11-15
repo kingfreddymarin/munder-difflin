@@ -7,6 +7,7 @@
 //    because a status command can still report signed in with a revoked token.
 // Each result names the exact fix. Exit 0 means signed in; any other exit means signed out; a
 // timeout or a spawn error is "unknown" and is not flagged.
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +15,7 @@ import { LAUNCHER_AUTH_ENV } from './council-account-launchers';
 
 export type SignInEngine = 'claude' | 'codex';
 export type SignInAccount = { id: string; label: string; home: string; fingerprint?: string; bin?: string };
-export type SignInState = { state: 'signed-in' | 'unknown'; accountId?: string; accountLabel?: string; accountHome?: string; accountFingerprint?: string } | { state: 'signed-out' | 'expired'; fix: string; seen?: string; accountId?: string; accountLabel?: string; accountHome?: string; accountFingerprint?: string };
+export type SignInState = { state: 'signed-in' | 'unknown'; accountId?: string; accountLabel?: string; accountFingerprint?: string } | { state: 'signed-out' | 'expired'; fix: string; seen?: string; accountId?: string; accountLabel?: string; accountFingerprint?: string };
 
 export const SIGN_IN_FIX: Record<SignInEngine, string> = {
   claude: 'Run `claude auth login` in Terminal, then start the agent again.',
@@ -39,17 +40,25 @@ const runStatus: Run = (bin, args, timeoutMs, env) => new Promise((done) => {
   });
 });
 
+/** Shared by status probes and interactive login: never silently switch default homes. */
+export function resolveSignInAccountHome(engine: SignInEngine, account?: SignInAccount, env: NodeJS.ProcessEnv = process.env): string {
+  return account?.home ?? (env[engine === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR']?.trim() || join(homedir(), engine === 'codex' ? '.codex' : '.claude'));
+}
+export function signInAccountKey(engine: SignInEngine, account?: SignInAccount, env: NodeJS.ProcessEnv = process.env): string {
+  return createHash('sha256').update(JSON.stringify([engine, account?.id ?? 'default', account?.fingerprint ?? '', resolveSignInAccountHome(engine, account, env), account?.bin ?? engine])).digest('hex');
+}
+
 export function createSignInMonitor(opts: { path: (engine: SignInEngine) => string | null; resolvePath?: (engine: SignInEngine) => Promise<string | null>; now?: () => number; run?: Run }) {
   const now = opts.now ?? Date.now;
   const run = opts.run ?? runStatus;
-  const keyFor = (engine: SignInEngine, account?: SignInAccount) => `${engine}:${account?.id ?? 'default'}`;
+  const keyFor = signInAccountKey;
   const probed = new Map<string, { at: number; state: 'signed-in' | 'signed-out' | 'unknown' }>();
   const pending = new Map<string, Promise<void>>();
   const expired = new Map<string, string>();
   const environment = (engine: SignInEngine, account?: SignInAccount): NodeJS.ProcessEnv | undefined => {
     const env = { ...process.env };
     for (const name of LAUNCHER_AUTH_ENV) delete env[name];
-    env[engine === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'] = account?.home ?? join(homedir(), engine === 'codex' ? '.codex' : '.claude');
+    env[engine === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'] = resolveSignInAccountHome(engine, account);
     return env;
   };
   const probe = (engine: SignInEngine, account?: SignInAccount): void => {
@@ -62,14 +71,13 @@ export function createSignInMonitor(opts: { path: (engine: SignInEngine) => stri
     }).catch(() => { probed.set(key, { at: now(), state: 'unknown' }); }).finally(() => pending.delete(key));
     pending.set(key, check);
   };
-  const fields = (account?: SignInAccount) => account ? { accountId: account.id, accountLabel: account.label, accountHome: account.home, ...(account.fingerprint ? { accountFingerprint: account.fingerprint } : {}) } : {};
-  const stateFor = (engine: SignInEngine, account?: SignInAccount): SignInState => {
-    const key = keyFor(engine, account);
+  const fields = (account?: SignInAccount) => account ? { accountId: account.id, accountLabel: account.label, ...(account.fingerprint ? { accountFingerprint: account.fingerprint } : {}) } : {};
+  const stateFor = (engine: SignInEngine, account?: SignInAccount, key = keyFor(engine, account)): SignInState => {
     const accountFields = fields(account);
     const seen = expired.get(key);
-    if (seen) return { state: 'expired', fix: account ? `Run ${engine} login in Terminal using the ${account.label} account, then start the agent again.` : SIGN_IN_FIX[engine], seen, ...accountFields };
+    if (seen) return { state: 'expired', fix: account ? `Sign in to the ${account.label} account in Settings, then start the agent again.` : SIGN_IN_FIX[engine], seen, ...accountFields };
     const p = probed.get(key)?.state ?? 'unknown';
-    return p === 'signed-out' ? { state: 'signed-out', fix: account ? `Run ${engine} login in Terminal using the ${account.label} account, then start the agent again.` : SIGN_IN_FIX[engine], ...accountFields } : { state: p, ...accountFields };
+    return p === 'signed-out' ? { state: 'signed-out', fix: account ? `Sign in to the ${account.label} account in Settings, then start the agent again.` : SIGN_IN_FIX[engine], ...accountFields } : { state: p, ...accountFields };
   };
   return {
     /** Current knowledge for an installed engine; starts a background status check when stale. */
@@ -80,6 +88,7 @@ export function createSignInMonitor(opts: { path: (engine: SignInEngine) => stri
     /** Force a status check for this exact account and return the refreshed result. */
     async refresh(engine: SignInEngine, account?: SignInAccount): Promise<SignInState> {
       const key = keyFor(engine, account);
+      const env = environment(engine, account);
       const bin = account?.bin ?? (opts.resolvePath ? await opts.resolvePath(engine) : opts.path(engine));
       if (!bin) return { state: 'unknown', ...fields(account) };
       expired.delete(key);
@@ -88,13 +97,13 @@ export function createSignInMonitor(opts: { path: (engine: SignInEngine) => stri
       if (running) await running;
       const check = (async () => {
       try {
-        const result = await run(bin, STATUS_ARGS[engine], 8000, environment(engine, account));
+        const result = await run(bin, STATUS_ARGS[engine], 8000, env);
         probed.set(key, { at: now(), state: result.error || result.code === null ? 'unknown' : result.code === 0 ? 'signed-in' : 'signed-out' });
       } catch { probed.set(key, { at: now(), state: 'unknown' }); }
       })().finally(() => pending.delete(key));
       pending.set(key, check);
       await check;
-      return stateFor(engine, account);
+      return stateFor(engine, account, key);
     },
     /** An agent on `engine` exited abnormally with this output tail. */
     agentExited(engine: string, tail: string | undefined, account?: SignInAccount): void {

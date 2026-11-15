@@ -89,14 +89,13 @@ test('agent.switch rejects unavailable models and never invokes the switch callb
   assert.equal(called, false);
 });
 
-test('agent.switch requires an explicit account when launchers were discovered', async () => {
+test('agent.switch accepts explicit provider default when launchers were discovered', async () => {
   let called = false;
   const choice = { id: 'dcxm', provider: 'codex', label: 'dcxm · Alternate', fingerprint: 'a'.repeat(64), unrestricted: false };
   const f = fixture({ launcherDiscovery: () => ({ status: 'ok', choices: [choice], profiles: [{ ...choice, bin: 'codex', args: [], home: '/tmp/codex-alt' }] }), switchAgent: async () => { called = true; return { ok: true }; } });
   const result = await dispatchParamount({ type: 'agent.switch', agentId: 'jim', provider: 'codex', model: 'gpt-x', launcher: null }, f.deps);
-  assert.equal(result.ok, false);
-  assert.match(result.message, /exact account launcher/);
-  assert.equal(called, false);
+  assert.equal(result.ok, true);
+  assert.equal(called, true);
 });
 
 test('team delegation atomically creates a lead parent and owned dependent subtasks then messages each owner', () => {
@@ -498,4 +497,121 @@ test('Council diagnostics failure cannot block the reused baseline launch path',
   f.deps.logStep = () => { throw new Error('diagnostic sink offline'); };
   assert.equal((await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps)).ok, true);
   assert.equal(f.state.spawned.length, 1);
+});
+
+test('automatic ensure retries discovery with cache backoff and preserves the process-start budget', async () => {
+  const { createLauncherDiscoveryCache, saveLauncherPick } = loadTs('src/main/council-account-launchers.ts');
+  let now = 0, probes = 0, syncProbes = 0, healthy = false;
+  const choice = { id: 'dc', provider: 'claude', label: 'Claude test account', fingerprint: 'a'.repeat(64), unrestricted: false };
+  const cache = createLauncherDiscoveryCache(() => { syncProbes++; throw new Error('sync probe forbidden'); }, async () => {
+    probes++;
+    return healthy ? { status: 'ok', choices: [choice], profiles: [{ ...choice, bin: 'claude', args: [], home: '/tmp/test-account' }] }
+      : { status: 'timeout', choices: [], profiles: [], message: 'Launcher discovery timed out.' };
+  }, { now: () => now, retryMs: 5, maxRetryMs: 30 });
+  const f = fixture({ setupComplete: () => true, launcherDiscovery: () => cache.current(), warmLaunchers: async () => { await cache.warm(); } });
+  saveLauncherPick(f.root, 'orchestrator', { id: choice.id, fingerprint: choice.fingerprint });
+  const ensure = () => dispatchParamount({ type: 'orchestrator.ensure' }, f.deps);
+  assert.equal((await ensure()).ok, false);
+  for (let i = 0; i < 10; i++) assert.equal((await ensure()).ok, false);
+  assert.equal(probes, 1, 'repeated ensure calls obey cache backoff');
+  for (let i = 0; i < 3; i++) { now += 31; assert.equal((await ensure()).ok, false); }
+  assert.equal(probes, 4, 'discovery retries were not permanently latched');
+  assert.equal(f.state.spawned.length, 0);
+  healthy = true; now += 31;
+  const recovered = await Promise.all([ensure(), ensure(), ensure()]);
+  assert.ok(recovered.every((result) => result.ok));
+  assert.equal(probes, 5);
+  assert.equal(f.state.spawned.length, 1, 'concurrent recovery launches exactly once');
+  assert.deepEqual(f.state.spawned[0].launcher, { id: choice.id, fingerprint: choice.fingerprint });
+  f.state.agents.god.live = false;
+  assert.equal((await ensure()).ok, true, 'one real process recovery remains available');
+  f.state.agents.god.live = false;
+  assert.equal((await ensure()).ok, false, 'real process restart limit still applies');
+  assert.equal(f.state.spawned.length, 2);
+  assert.equal(syncProbes, 0);
+});
+
+test('automatic ensure keeps genuine session-account failures latched after discovery recovery', async () => {
+  let calls = 0;
+  const f = fixture({ setupComplete: () => true, warmLaunchers: async () => {}, spawnHire: async () => {
+    calls++; return { ok: false, error: 'Session is unavailable in the selected account. No replacement process was started.' };
+  } });
+  const first = await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps);
+  const second = await dispatchParamount({ type: 'orchestrator.ensure' }, f.deps);
+  assert.equal(first.ok, false); assert.equal(second.ok, false);
+  assert.match(second.message, /Session is unavailable/);
+  assert.equal(calls, 1);
+});
+
+test('ensure retries rejected async discovery with backoff and never reaches startup-failure recording', async () => {
+  const { createLauncherDiscoveryCache, saveLauncherPick } = loadTs('src/main/council-account-launchers.ts');
+  let now = 0, probes = 0, startFailure = null;
+  const choice = { id: 'dc', provider: 'claude', label: 'Claude test', fingerprint: 'b'.repeat(64), unrestricted: false };
+  const cache = createLauncherDiscoveryCache(() => { throw new Error('sync forbidden'); }, async () => {
+    probes++;
+    if (probes === 1) throw new Error('probe subprocess unavailable');
+    return { status: 'ok', choices: [choice], profiles: [{ ...choice, bin: 'claude', args: [], home: '/tmp/test-account' }] };
+  }, { now: () => now, retryMs: 5, maxRetryMs: 30 });
+  const f = fixture({ setupComplete: () => true, launcherDiscovery: () => cache.current(),
+    warmLaunchers: async () => { await cache.warm(); }, orchestratorStartFailure: () => startFailure });
+  saveLauncherPick(f.root, 'orchestrator', { id: choice.id, fingerprint: choice.fingerprint });
+  const ensure = () => dispatchParamount({ type: 'orchestrator.ensure' }, f.deps);
+  for (let i = 0; i < 8; i++) assert.equal((await ensure()).ok, false);
+  assert.equal(probes, 1);
+  assert.equal(f.state.spawned.length, 0, 'preflight failure cannot reach main spawn failure tracker');
+  now = 31;
+  assert.equal((await ensure()).ok, true);
+  assert.equal(probes, 2);
+  f.state.agents.god.live = false;
+  startFailure = { message: 'Session unavailable in selected account' };
+  assert.equal((await ensure()).ok, false, 'main startup failure remains authoritative');
+  assert.equal(f.state.spawned.length, 1);
+});
+
+test('accounts commands create and rename safe inventory without launching or accepting credential fields', async () => {
+ const { createAccountProfileStore } = loadTs('src/main/account-profiles.ts');
+ const f = fixture(); const store = createAccountProfileStore(path.join(f.root,'device'));
+ f.deps.team.accountProfiles = { list:()=>store.inventory(), create:(p)=>{store.create(p);return store.inventory();}, rename:(id,label)=>{store.rename(id,label);return store.inventory();} };
+ assert.equal((await dispatchParamount({type:'accounts.create',provider:'claude',label:'Work',password:'fake'},f.deps)).ok,false);
+ const created = await dispatchParamount({type:'accounts.create',provider:'claude',label:'Work'},f.deps);
+ assert.equal(created.ok,true); assert.equal(created.accounts.length,1); assert.equal(created.accounts[0].available,true);
+ assert.equal(created.accounts[0].home,undefined); assert.equal(f.state.spawned.length,0);
+ const renamed = await dispatchParamount({type:'accounts.rename',id:created.accounts[0].id,label:'Personal'},f.deps);
+ assert.equal(renamed.accounts[0].label,'Personal'); assert.equal(renamed.accounts[0].fingerprint,created.accounts[0].fingerprint);
+ assert.deepEqual((await dispatchParamount({type:'accounts.list'},f.deps)).accounts,renamed.accounts);
+ assert.deepEqual((await dispatchParamount({type:'team.models'},f.deps)).models.accounts,renamed.accounts);
+});
+test('ensure resolves registered managed account during shell timeout but refuses missing managed account', async () => {
+ const {createAccountProfileStore} = loadTs('src/main/account-profiles.ts');
+ const {mergeAccountProfiles,saveLauncherPick} = loadTs('src/main/council-account-launchers.ts');
+ for (const missing of [false,true]) {
+  const f = fixture({setupComplete:()=>true}); const store=createAccountProfileStore(path.join(f.root,'device'));
+  const p=store.create({provider:'claude',label:'Work'});
+  saveLauncherPick(f.root,'orchestrator',{id:p.id,fingerprint:p.fingerprint});
+  if(missing) fs.rmdirSync(p.home);
+  f.deps.team.launcherDiscovery=()=>mergeAccountProfiles({status:'timeout',message:'Shell timed out',choices:[],profiles:[]},store.list());
+  const result=await dispatchParamount({type:'orchestrator.ensure'},f.deps);
+  assert.equal(result.ok,!missing); assert.equal(f.state.spawned.length,missing?0:1);
+  if(!missing) {await dispatchParamount({type:'orchestrator.ensure'},f.deps);assert.equal(f.state.spawned.length,1);}
+ }
+});
+test('orchestrator switch reserves the floor against ensure, hire and restart until completion', async () => {
+ let release; let entered; const ready=new Promise(r=>entered=r);
+ const f=fixture({setupComplete:()=>true,switchAgent:()=>{entered();return new Promise(r=>release=r);}});
+ f.state.agents.god={name:'Paramount',provider:'claude',isGod:true,live:true};
+ const switching=dispatchParamount({type:'agent.switch',agentId:'god',provider:'codex',model:'gpt-x',launcher:null},f.deps);
+ await ready;
+ for(const command of [{type:'orchestrator.ensure'},orchestratorHire(true),{type:'agent.restart',agentId:'god',mode:'resume'}]) {
+  const result=await dispatchParamount(command,f.deps); assert.equal(result.ok,false);assert.equal(result.code,'CONFLICT');
+ }
+ release({ok:true});assert.equal((await switching).ok,true);
+ assert.equal((await dispatchParamount({type:'orchestrator.ensure'},f.deps)).ok,true);
+});
+test('same-provider managed account switch remains available during shell timeout', async () => {
+ const {createAccountProfileStore}=loadTs('src/main/account-profiles.ts'); const {mergeAccountProfiles}=loadTs('src/main/council-account-launchers.ts');
+ let target; const f=fixture({switchAgent:async(id,value)=>{target=value;return {ok:true};}});
+ const p=createAccountProfileStore(path.join(f.root,'device')).create({provider:'claude',label:'Other'});
+ f.deps.team.launcherDiscovery=()=>mergeAccountProfiles({status:'timeout',message:'shell down',choices:[],profiles:[]},[p]);
+ assert.equal((await dispatchParamount({type:'agent.switch',agentId:'jim',provider:'claude',model:'claude-sonnet-4-6',launcher:{id:p.id,fingerprint:p.fingerprint}},f.deps)).ok,true);
+ assert.equal(target.launcher.id,p.id);
 });
