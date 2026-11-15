@@ -108,3 +108,19 @@ test('other commands and a build without setup support', () => {
  assert.equal(bad.calls.complete.length, 0);
  assert.equal(bad.calls.ensure.length, 0);
  });
+
+// NSC-216 (owner beach ball on floor entry): snapshot-timing.0.jsonl recorded the snapshot's floorSetup
+// stage blocking the main thread for 2.8 s median, 17.3 s max. Every snapshot probed every engine preset;
+// a missing CLI is never cached, so each one cost a synchronous login-shell `which`. Only the setup
+// screen shows engines, so a set-up floor must not probe them.
+test('a set-up floor builds its snapshot without probing engines; setup still lists them', () => {
+  let probes = 0;
+  const f = fixture({ onboardingComplete: true, harnessHome: '/tmp/existing' });
+  f.deps.engines = () => { probes += 1; return ENGINES; };
+  for (let i = 0; i < 5; i += 1) assert.deepEqual(floorSetupState(f.deps).engines, []);
+  assert.equal(probes, 0, 'no engine probe per snapshot once the floor is set up');
+  const fresh = fixture();
+  fresh.deps.engines = () => { probes += 1; return ENGINES; };
+  assert.equal(floorSetupState(fresh.deps).engines.length, 3);
+  assert.equal(probes, 1, 'the setup screen still gets the engine list');
+});

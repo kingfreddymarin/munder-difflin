@@ -91,7 +91,9 @@ export function floorSetupState(deps: FloorSetupDeps): FloorSetupState {
     ...(!complete && deps.launcherDiscovery ? { launchers: publicDiscovery(deps.launcherDiscovery()) } : {}),
     ...(deps.floor ? { floorLock: deps.floor.state() } : {}),
     ...(complete && deps.floor?.choice ? { choice: deps.floor.choice() } : {}),
-    engines: deps.engines()
+    // Only the setup screen lists engines. Probing them costs a login-shell `which` per missing
+    // CLI on the main thread, so a set-up floor skips it on every snapshot (NSC-216).
+    engines: complete ? [] : deps.engines()
   };
 }
 
