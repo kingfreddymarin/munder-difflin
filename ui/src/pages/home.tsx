@@ -11,6 +11,7 @@ import { stateDot } from '@/components/app/status';
 import { LIVE_REFRESH_MS, useDispatch, useFloor, useLiveRefresh } from '@/data/store';
 import { AskPreview, isOpenAsk } from '@/features/home/ask-preview';
 import { CustomizeHome, resolveTiles, type HomeTileId } from '@/features/home/customize-home';
+import { ObjectivesEditor } from '@/features/home/objectives-editor';
 import { AGENT_VIEW, agentViewParams, orchestratorOf } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
@@ -39,6 +40,7 @@ function Stat({ label, value, decimals = 0, suffix }: { label: string; value: nu
 
 export function HomePage() {
   const objectives = useFloor((s) => s.objectives);
+  const [editingObjectives, setEditingObjectives] = React.useState(false);
   const cards = useFloor((s) => s.cards);
   const agents = useFloor((s) => s.agents);
   const chats = useFloor((s) => s.chats);
@@ -78,9 +80,10 @@ export function HomePage() {
     switch (id) {
       case 'objectives':
         return (
-          <Tile key={id} title="Main objectives" hint={objectives.length ? undefined : 'none set'} className={cls}>
-            <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
-              {objectives.length === 0 && <span className="text-muted-foreground text-sm">The core has no objectives for this floor yet.</span>}
+          <Tile key={id} title="Main objectives" hint={objectives.length ? undefined : 'none set'} className={cls}
+            actions={!editingObjectives && <Button size="sm" variant="ghost" onClick={() => setEditingObjectives(true)}>{objectives.length ? 'Edit' : 'Set objectives'}</Button>}>
+            {editingObjectives ? <ObjectivesEditor objectives={objectives} agents={agents} onDone={() => setEditingObjectives(false)} /> : <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
+              {objectives.length === 0 && <span className="text-muted-foreground text-sm">No objectives for this floor yet.</span>}
               {objectives.map((o) => {
                 const own = cards.filter((c) => o.cardKeys.includes(c.key));
                 const steps = own.reduce((n, c) => n + c.plan.length, 0);
@@ -103,7 +106,7 @@ export function HomePage() {
                   </button>
                 );
               })}
-            </div>
+            </div>}
           </Tile>
         );
       case 'asks':

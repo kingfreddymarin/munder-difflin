@@ -2,6 +2,7 @@ import type { CouncilLauncherPick } from './paramount-api';
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
 import type { ParamountBoardCommand, ParamountArtifactMap, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountOpenInApp, ParamountHirePlan, ParamountOrganization, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './paramount-api';
+import type { ObjectiveInput } from './objectives';
 import type { Access, Agent, AskMode, CardStatus, ChatView, HomeLayout, IterationSettings, Snapshot, YoloSettings } from './types';
 export type Command =
   | { type: 'chat.send'; chatId: string; text: string }
@@ -42,6 +43,7 @@ export type Command =
   | { type: 'ask.reply'; messageId: string; mode: AskMode; text: string }
   | { type: 'ask.dismiss'; messageId: string }
   | { type: 'home.layout'; layout: HomeLayout }
+  | { type: 'home.objectives'; objectives: ObjectiveInput[] }
   | ({ type: 'chats.view' } & ChatView)
   | ParamountBoardCommand;
 

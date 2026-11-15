@@ -13,6 +13,7 @@ const compile = (rel, jsx = false) => ts.transpileModule(readFileSync(new URL(re
   { compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true, ...(jsx ? { jsx: ts.JsxEmit.React } : {}) } }).outputText;
 const load = (js, req) => { const mod = { exports: {} }; new Function('module', 'exports', 'require', js)(mod, mod.exports, req); return mod.exports; };
 const folderPick = load(compile('../src/app/folder-pick.ts'), () => ({}));
+const enterGuard = load(compile('../src/app/enter-guard.ts'), () => ({}));
 
 function hooks() {
   const values = []; let cursor = 0;
@@ -22,12 +23,15 @@ function hooks() {
   } };
   return { react, reset: () => { cursor = 0; } };
 }
-function chooserHarness(choice, { bridge, dispatchOk = true } = {}) {
+// clock: by default every reading is 10 s later, so the Enter guard never blocks; pass { t } to drive it.
+function chooserHarness(choice, { bridge, dispatchOk = true, clock = null } = {}) {
   const h = hooks(); const commands = [];
+  let auto = 0; const now = clock ? () => clock.t : () => (auto += 10_000);
   const state = { choice, lock: { state: 'none' } };
   const store = { useFloor: (select) => select({ settings: { codexExecutionPolicy: 'inherit' } }), useDispatch: () => async (command) => { commands.push(command); return dispatchOk; }, useSnapshotRefresh: () => ({ refresh() {} }), useActionError: () => ({ error: null, clear() {} }) };
   const mod = load(compile('../src/app/floor-chooser.tsx', true), (id) => id === 'react' ? h.react : id === '@/data/store' ? store
     : id === '@/data/bridge' ? { findBridge: () => bridge ?? null } : id === './folder-pick' ? folderPick : id === './floor-refused' ? { FloorRefused: 'FloorRefused' }
+    : id === './enter-guard' ? { createEnterGuard: () => enterGuard.createEnterGuard(now) }
     : new Proxy({}, { get: (_t, key) => key }));
   return { mod, commands, state, render: () => { h.reset(); return mod.FloorChooser({ choice: state.choice, lock: state.lock }); } };
 }
@@ -200,4 +204,30 @@ test('floor entry saves explicit permissions before starting agents and stops if
    ...(dispatchOk ? [{ type: 'floor.open', home: '/f/b' }] : [])
   ]);
  }
+});
+
+// NSC-222 (B2): a chooser that just took focus (window relaunched while the human types elsewhere)
+// ignores the Enter that arrives with it; a deliberate Enter after the grace period opens the floor.
+test('a newly focused chooser ignores the triggering Enter; a later Enter opens the selected floor', async () => {
+  const clock = { t: 1_000 };
+  const h = chooserHarness(choice, { clock });
+  let tree = h.render();
+  listbox(tree).props.onFocus();
+  clock.t += 50;
+  listbox(h.render()).props.onKeyDown(key('Enter'));
+  await tick();
+  assert.deepEqual(h.commands, [], 'Enter right after focus must not open a floor');
+  clock.t += enterGuard.FOCUS_ENTER_GRACE_MS;
+  listbox(h.render()).props.onKeyDown({ key: 'Enter', repeat: true, preventDefault() {} });
+  await tick();
+  assert.deepEqual(h.commands, [], 'auto-repeat of a held key is not a deliberate Enter');
+  listbox(h.render()).props.onKeyDown(key('Enter'));
+  await tick();
+  assert.deepEqual(h.commands.map((c) => c.type), ['floor.open']);
+  assert.equal(h.commands[0].home, '/f/b');
+  // Regaining focus re-arms the guard.
+  listbox(h.render()).props.onFocus();
+  listbox(h.render()).props.onKeyDown(key('Enter'));
+  await tick();
+  assert.equal(h.commands.length, 1);
 });

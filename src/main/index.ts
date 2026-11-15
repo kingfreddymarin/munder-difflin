@@ -95,6 +95,7 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { claimFloor, directoryStateForPath, readRecord, registerParamountRuntime, remapMovedCwds, seedRecordFromRegistry, settleFailedStart } from './paramount-runtime';
 import { createFloorGate, FLOOR_LOCK_FILE, floorOwnerName, removeFloorContents, type FloorGateState } from './floor-lock';
+import { textContextMenuTemplate } from './text-context-menu';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { agentActivity, type ActivityFacts } from './paramount-activity';
@@ -2454,6 +2455,11 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   const wc = win.webContents;
   if (TEST_LABEL) win.on('page-title-updated', (e) => e.preventDefault()); // keep the test label
 
+  wc.on('context-menu', (_e, params) => {
+    const template = textContextMenuTemplate(params);
+    if (template.length) Menu.buildFromTemplate(template).popup({ window: win });
+  });
+
   allWindows.add(win);
   // Global timer events follow the user — the most-recently-focused window is
   // primary. The primary is also seeded synchronously so boot events route now.
@@ -3737,7 +3743,7 @@ function paramountPreferences(): Record<string, unknown> {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Paramount preferences are corrupt');
   return parsed as Record<string, unknown>;
 }
-function saveParamountPreference(key: 'profile' | 'setup' | 'home' | 'chats' | 'board' | 'signInReminders', value: Record<string, unknown>): void {
+function saveParamountPreference(key: 'profile' | 'setup' | 'home' | 'chats' | 'objectives' | 'board' | 'signInReminders', value: Record<string, unknown>): void {
   const root = hive.root();
   if (!root) throw new Error('hive disabled (no harnessHome)');
   hive.ensureHive();

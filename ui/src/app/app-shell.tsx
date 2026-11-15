@@ -114,6 +114,7 @@ function MoreMenu() {
         <DropdownMenuSeparator />
         {item('Agents & temps', 'Hire, import, configure and manage agents', () => go('team'))}
         {item('Automations', 'Schedules, triggers and team activity', () => go('team', { panel: 'automations' }))}
+        {item('Team configuration', 'Orchestrator, teams and temp-worker defaults', () => go('settings', { tab: 'team' }))}
         {item('Engines & models', 'Provider and model settings', () => go('settings', { tab: 'providers' }))}
         {item('Terminal', 'Live agent sessions', () => go('terminal'))}
         <DropdownMenuSeparator />

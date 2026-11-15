@@ -56,7 +56,7 @@ export function SettingsPage() {
           <TabsTrigger value="setup">Setup</TabsTrigger>
           <TabsTrigger value="account">Account</TabsTrigger>
           <TabsTrigger value="connections">Connections</TabsTrigger>
-          <TabsTrigger value="team">Team & models</TabsTrigger>
+          <TabsTrigger value="team">Team</TabsTrigger>
           <TabsTrigger value="providers">AI engines</TabsTrigger>
           <TabsTrigger value="memory">Memory</TabsTrigger>
           <TabsTrigger value="autonomy">Autonomy & YOLO</TabsTrigger>
@@ -110,7 +110,14 @@ export function SettingsPage() {
               </DialogContent>
             </Dialog>
           </TabsContent>
-          <TabsContent value="team"><CoreSettings /><TeamsEditor /></TabsContent>
+          <TabsContent value="team">
+            {/* STD-8: Team configuration lives here; the Team page links to this section. */}
+            <CoreSettings />
+            <TeamsEditor />
+            <Tile title="Temporary workers" hint="the account new temp workers start on">
+              <LauncherSettings refreshToken={accountsRevision} scope="temps" />
+            </Tile>
+          </TabsContent>
           <TabsContent value="providers"><ProviderSettings /></TabsContent>
           <TabsContent value="memory"><MemorySettings /></TabsContent>
           <TabsContent value="autonomy">

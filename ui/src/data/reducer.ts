@@ -53,6 +53,9 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
     }
     case 'home.layout':
       return { ...s, homeLayout: { ...s.homeLayout, ...c.layout } };
+    case 'home.objectives':
+      // The editor sends the full normalized list (objectivesToSave); keep this file type-import only.
+      return { ...s, objectives: c.objectives.map((o) => ({ ...o, cardKeys: [...o.cardKeys] })) };
     case 'chats.view': {
       const { type: _type, ...view } = c;
       return { ...s, chatView: { ...s.chatView, ...view } };

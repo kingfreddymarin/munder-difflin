@@ -590,3 +590,43 @@ test('managed account catalog and writes retain exact public profile identity th
   await provider.dispatch({ type: 'accounts.rename', id: 'opaque-profile', label: 'Personal' });
   assert.deepEqual(sent, [{ type: 'team.models' }, { type: 'accounts.create', provider: 'claude', label: 'Work' }, { type: 'accounts.rename', id: 'opaque-profile', label: 'Personal' }]);
 });
+
+// STD-4: the snapshot carries the saved Main Objectives instead of a hardcoded empty list.
+test('maps saved Main Objectives from preferences and forwards home.objectives to the core', async () => {
+  const native = nativeSnapshot();
+  native.preferences = { objectives: { items: [
+    { id: 'o1', title: 'Ship the DMG', why: 'testers', owner: 'god', cardKeys: ['T-1'], health: 'blocked' },
+    { id: '', title: 'dropped: no id', health: 'on-track' },
+    { id: 'o2', title: 'Unattended floor', health: 'sideways' }] } };
+  const b = bridge(native);
+  const dispatched = [];
+  b.paramountDispatch = async (command) => { dispatched.push(command); return { ok: true, event: { id: 'e9', at: '', actor: 'you', command } }; };
+  globalThis.window = { cth: b };
+  const provider = createElectronProvider();
+  const snapshot = await provider.snapshot();
+  assert.deepEqual(snapshot.objectives, [
+    { id: 'o1', title: 'Ship the DMG', why: 'testers', owner: 'god', cardKeys: ['T-1'], health: 'blocked' },
+    { id: 'o2', title: 'Unattended floor', why: '', owner: '', cardKeys: [], health: 'on-track' }]);
+  const objectives = [{ id: 'o3', title: 'New', why: '', owner: '', cardKeys: [], health: 'at-risk' }];
+  await provider.dispatch({ type: 'home.objectives', objectives });
+  assert.deepEqual(dispatched, [{ type: 'home.objectives', objectives }]);
+  globalThis.window = { cth: bridge() };
+  assert.deepEqual((await createElectronProvider().snapshot()).objectives, [], 'no saved objectives: empty, not fixtures');
+});
+
+// NSC-222 (B1): an archived god is not drawn, so nobody reports to it: no dangling edge, no missing root.
+test('an archived god is absent from both the agents and every reportsTo edge', async () => {
+  const native = nativeSnapshot();
+  native.registry = { godId: 'god', agents: { god: { name: 'Ada', archived: true }, jim: { name: 'Jim' }, pam: { name: 'Pam' } } };
+  native.roster = { agents: [] }; native.ptys = []; native.tasks = { tasks: [] };
+  native.organization = { reportsTo: { pam: 'god' } };
+  globalThis.window = { cth: bridge(native) };
+  const { agents } = await createElectronProvider().snapshot();
+  assert.deepEqual(agents.map((a) => a.id).sort(), ['jim', 'pam']);
+  assert.equal(agents.some((a) => a.id === 'god'), false);
+  assert.deepEqual(agents.filter((a) => a.reportsTo).map((a) => [a.id, a.reportsTo]), [], 'neither the default nor an explicit edge points at the archived god');
+  native.registry.agents.god.archived = false;
+  globalThis.window = { cth: bridge(native) };
+  const live = await createElectronProvider().snapshot();
+  assert.deepEqual(live.agents.filter((a) => a.id !== 'god').map((a) => a.reportsTo), ['god', 'god'], 'a live god is still the default root');
+});

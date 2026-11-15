@@ -31,7 +31,7 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   setAgentTokenCap(id: string, cap: number): void;
   setNotifications(on: boolean): void;
   saveSettings?(patch: Partial<HarnessConfig>): void;
-  savePreference(key: 'profile' | 'setup' | 'home' | 'chats' | 'signInReminders', value: Record<string, unknown>): void;
+  savePreference(key: 'profile' | 'setup' | 'home' | 'chats' | 'objectives' | 'signInReminders', value: Record<string, unknown>): void;
   /** First-run floor setup (`setup.complete`); absent means unsupported. */
   floorSetup?: FloorSetupDeps;
   appendEvent(event: ParamountEvent): void;
@@ -455,7 +455,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
         imported = { agent: { ...found.agent, warnings }, manifest: hire.manifest as unknown as Record<string, unknown>, adjustments: hire.adjustments };
         break;
       }
-      case 'ask.reply': case 'ask.dismiss': case 'home.layout': case 'chats.view': { const r = dispatchHomeChats(command as unknown as ParamountHomeChatsCommand, deps, fail, () => { writeAttempted = true; }); if (r) return r; break; }
+      case 'ask.reply': case 'ask.dismiss': case 'home.layout': case 'home.objectives': case 'chats.view': { const r = dispatchHomeChats(command as unknown as ParamountHomeChatsCommand, deps, fail, () => { writeAttempted = true; }); if (r) return r; break; }
       case 'shell.openExternal': case 'shell.openIn': return runShellCommand(command, deps.shell, span.cid, fail);
       case 'layout.panels':
         return fail('UNSUPPORTED', 'Team panel layout is a renderer-local preference');

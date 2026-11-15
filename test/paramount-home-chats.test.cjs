@@ -104,3 +104,32 @@ test('chats.view persists hideUpdates and caps hiddenIds', () => {
   assert.equal(state.preferences.chats.hiddenIds[499], 'm599');
   assert.equal(dispatchParamount({ type: 'chats.view', hideUpdates: 'yes' }, deps).code, 'INVALID_INPUT');
 });
+
+// STD-4: Main Objectives are set on Home and saved under preferences.objectives.items.
+test('home.objectives validates, normalizes and replaces the saved list', () => {
+  const { state, deps } = fixture();
+  const ok = dispatchParamount({ type: 'home.objectives', objectives: [
+    { id: 'o1', title: '  Ship the DMG ', why: 'testers need it', owner: 'jim', cardKeys: ['P-1'], health: 'at-risk' },
+    { id: 'o2', title: 'Floor runs unattended', why: '  ', owner: '', health: 'on-track' }] }, deps);
+  assert.equal(ok.ok, true);
+  assert.deepEqual(state.preferences.objectives.items, [
+    { id: 'o1', title: 'Ship the DMG', health: 'at-risk', why: 'testers need it', owner: 'jim', cardKeys: ['P-1'] },
+    { id: 'o2', title: 'Floor runs unattended', health: 'on-track' }]);
+  assert.equal(dispatchParamount({ type: 'home.objectives', objectives: [] }, deps).ok, true);
+  assert.deepEqual(state.preferences.objectives.items, [], 'saving an empty list clears it');
+});
+
+test('home.objectives refuses malformed objectives without writing', () => {
+  const { state, deps } = fixture();
+  const bad = [
+    { objectives: 'x' },
+    { objectives: [{ id: 'o1', title: '', health: 'on-track' }] },
+    { objectives: [{ id: 'o1', title: 'A', health: 'great' }] },
+    { objectives: [{ id: 'o1', title: 'A', health: 'blocked' }, { id: 'o1', title: 'B', health: 'blocked' }] },
+    { objectives: [{ id: 'o1', title: 'A', health: 'blocked', token: 'secret' }] },
+    { objectives: [{ id: 'o1', title: 'A', health: 'blocked', cardKeys: 'P-1' }] },
+    { objectives: Array.from({ length: 21 }, (_, i) => ({ id: `o${i}`, title: 'A', health: 'on-track' })) },
+  ];
+  for (const body of bad) assert.equal(dispatchParamount({ type: 'home.objectives', ...body }, deps).code, 'INVALID_INPUT', JSON.stringify(body).slice(0, 80));
+  assert.equal(state.preferences.objectives, undefined);
+});

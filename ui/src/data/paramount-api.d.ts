@@ -225,6 +225,16 @@ export interface ParamountHomeLayout {
   tiles?: Record<string, { size?: 'sm' | 'md' | 'lg'; hidden?: boolean }>;
 }
 
+/** A Main Objective the human sets on Home (STD-4). `owner` is an agent id; `cardKeys` link board cards. */
+export interface ParamountObjective {
+  id: string;
+  title: string;
+  why?: string;
+  owner?: string;
+  cardKeys?: string[];
+  health: 'on-track' | 'at-risk' | 'blocked';
+}
+
 export type ParamountHomeChatsCommand =
   /** Answers an open ask (Munder's ASK ME). `messageId` is `<task id>:<humanQA index>` for a card's ask:
    *  the reply lands on the card as `a` (with `mode`) and is mailed to god and to the asking agent.
@@ -234,6 +244,8 @@ export type ParamountHomeChatsCommand =
   | { type: 'ask.dismiss'; messageId: string }
   /** Saves the Home layout under `home` in the snapshot's `preferences`. */
   | { type: 'home.layout'; layout: ParamountHomeLayout }
+  /** Replaces the floor's Main Objectives, saved under `objectives.items` in the snapshot's `preferences`. */
+  | { type: 'home.objectives'; objectives: ParamountObjective[] }
   /** Saves which update cards Chats hides, under `chats` in the snapshot's `preferences`. */
   | { type: 'chats.view'; hideUpdates?: boolean; hiddenIds?: string[] };
 

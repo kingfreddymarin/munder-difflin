@@ -50,7 +50,7 @@ test('blank labels, failed writes, unsupported backend and duplicate submissions
 });
 test('render wiring keys identity by fingerprint and refreshes selector controllers without remounting drafts',()=>{
   const source=fs.readFileSync(path.join(ui,'src/features/settings/managed-accounts.tsx'),'utf8');assert.match(source,/key=\{`\$\{account.id\}:\$\{account.fingerprint\}`\}/);assert.match(source,/Labels are names you choose, not verified email/);assert.doesNotMatch(source,/type="password"/);
-  const settings=fs.readFileSync(path.join(ui,'src/pages/settings.tsx'),'utf8');assert.equal((settings.match(/LauncherSettings refreshToken=\{accountsRevision\}/g)||[]).length,4);
+  const settings=fs.readFileSync(path.join(ui,'src/pages/settings.tsx'),'utf8');assert.equal((settings.match(/LauncherSettings refreshToken=\{accountsRevision\}/g)||[]).length,5); // STD-8: Settings › Team adds the temps selector, also refreshed
   const launcher=fs.readFileSync(path.join(ui,'src/features/team/launcher-select.tsx'),'utf8');assert.match(launcher,/if \(api && refreshToken\) void controller.load\(\)/);
 });
 test('sample provider refuses real account mutations instead of reporting fake success',async()=>{

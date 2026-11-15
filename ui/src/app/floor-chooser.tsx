@@ -11,6 +11,7 @@ import { useActionError, useDispatch, useSnapshotRefresh, useFloor } from '@/dat
 import type { FloorChoice, FloorLockState } from '@/data/types';
 import { chooseFolder } from './folder-pick';
 import { FloorRefused } from './floor-refused';
+import { createEnterGuard, type EnterGuard } from './enter-guard';
 import { findBridge } from '@/data/bridge';
 
 type Recent = FloorChoice['recents'][number];
@@ -44,6 +45,7 @@ export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: Flo
   const launch = choice.pending;
   const [selected, setSelected] = React.useState<string | null>(initialFloor(choice));
   const [busy, setBusy] = React.useState(false);
+  const [enterGuard] = React.useState<EnterGuard>(createEnterGuard());
   const [pickError, setPickError] = React.useState<string | null>(null);
   // The folder a launch open was refused for (another app holds its .floor-lock): the refusal screen.
   const [refusedAt, setRefusedAt] = React.useState<string | null>(null);
@@ -66,10 +68,10 @@ export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: Flo
     else if (r.kind === 'unavailable') setPickError('The folder dialog is not available here.');
   };
 
-  const onKeyDown = (e: { key: string; preventDefault(): void }) => {
+  const onKeyDown = (e: { key: string; repeat?: boolean; preventDefault(): void }) => {
     if (busy) return;
     const i = usable.findIndex((r) => r.path === selected);
-    if (e.key === 'Enter' && selected) { e.preventDefault(); void open(selected); }
+    if (e.key === 'Enter' && selected) { e.preventDefault(); if (enterGuard.allows(e)) void open(selected); }
     else if (e.key === 'Escape' && !launch) { e.preventDefault(); void dispatch({ type: 'floor.picker', open: false }); }
     else if (e.key === 'ArrowDown' && usable.length) { e.preventDefault(); setSelected(usable[Math.min(i + 1, usable.length - 1)].path); }
     else if (e.key === 'ArrowUp' && usable.length) { e.preventDefault(); setSelected(usable[Math.max(i - 1, 0)].path); }
@@ -91,7 +93,7 @@ export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: Flo
           </p>
         </div>
         {choice.recents.length > 0 && (
-          <div role="listbox" aria-label="Recent floors" tabIndex={0} autoFocus onKeyDown={onKeyDown} className="divide-y rounded-lg border outline-none focus-visible:ring-2" data-testid="floor-recents">
+          <div role="listbox" aria-label="Recent floors" tabIndex={0} autoFocus onFocus={() => enterGuard.focused()} onKeyDown={onKeyDown} className="divide-y rounded-lg border outline-none focus-visible:ring-2" data-testid="floor-recents">
             {choice.recents.map((r) => {
               const ok = canOpen(r, launch);
               const label = stateLabel(r);

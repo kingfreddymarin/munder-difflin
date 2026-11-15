@@ -3,6 +3,7 @@
 //                 option, or "done" for a to-do only the human could do.
 //   ask.dismiss - clears a card's open ask without answering (the question stays).
 //   home.layout - Home tile sizes, order, hidden tiles and spacing.
+//   home.objectives - the floor's Main Objectives (replaces the list).
 //   chats.view  - which update cards (pipeline, routing, context) Chats hides.
 // dispatchParamount routes these here; on success it appends and publishes the
 // event, so this file only validates and writes.
@@ -15,7 +16,7 @@ export interface HomeChatsDeps {
   tasks(): { tasks?: Array<{ id: string; title?: string; assignee?: string; humanQA?: AskEntry[] }> };
   patchTask(id: string, patch: Record<string, unknown>): boolean;
   agents(): Record<string, unknown>;
-  savePreference(key: 'home' | 'chats', value: Record<string, unknown>): void;
+  savePreference(key: 'home' | 'chats' | 'objectives', value: Record<string, unknown>): void;
   /** hive.send on the human's behalf. Absent means replies cannot be mailed (UNSUPPORTED). */
   send?(msg: { to: string; act: 'inform'; subject: string; body: string; in_reply_to?: string }): { ok: boolean; error?: string };
   /** One hive message by id, for replies to a direct question. */
@@ -26,7 +27,9 @@ export interface HomeChatsDeps {
 
 type Fail = (code: ParamountErrorCode, message: string, cause?: unknown) => ParamountResult;
 
-export const HOME_CHATS_COMMANDS = ['ask.reply', 'ask.dismiss', 'home.layout', 'chats.view'] as const;
+export const HOME_CHATS_COMMANDS = ['ask.reply', 'ask.dismiss', 'home.layout', 'home.objectives', 'chats.view'] as const;
+const HEALTH = ['on-track', 'at-risk', 'blocked'];
+const MAX_OBJECTIVES = 20;
 const MODES: readonly ParamountAskMode[] = ['answer', 'decision', 'done'];
 const DENSITIES = ['compact', 'comfortable', 'spacious'];
 const SIZES = ['sm', 'md', 'lg'];
@@ -129,6 +132,27 @@ export function dispatchHomeChats(command: ParamountHomeChatsCommand, deps: Home
       if (!Object.keys(value).length) return fail('INVALID_INPUT', 'home.layout changed nothing');
       markWrite();
       deps.savePreference('home', value);
+      return null;
+    }
+    case 'home.objectives': {
+      const list = command.objectives;
+      if (!Array.isArray(list) || list.length > MAX_OBJECTIVES) return fail('INVALID_INPUT', `objectives must be a list of at most ${MAX_OBJECTIVES}`);
+      const items: Record<string, unknown>[] = [];
+      const seen = new Set<string>();
+      for (const o of list as unknown[]) {
+        if (!isObject(o) || !isId(o.id) || seen.has(o.id)) return fail('INVALID_INPUT', 'Each objective needs a unique id');
+        if (typeof o.title !== 'string' || !o.title.trim() || o.title.length > 200) return fail('INVALID_INPUT', 'Each objective needs a title of at most 200 characters');
+        if (typeof o.health !== 'string' || !HEALTH.includes(o.health)) return fail('INVALID_INPUT', `health must be one of ${HEALTH.join(', ')}`);
+        if (o.why !== undefined && (typeof o.why !== 'string' || o.why.length > 1000)) return fail('INVALID_INPUT', 'why must be text of at most 1000 characters');
+        if (o.owner !== undefined && o.owner !== '' && !isId(o.owner)) return fail('INVALID_INPUT', 'owner must be an agent id');
+        if (o.cardKeys !== undefined && (!Array.isArray(o.cardKeys) || o.cardKeys.length > 50 || !o.cardKeys.every(isId))) return fail('INVALID_INPUT', 'cardKeys must be a list of card keys');
+        if (Object.keys(o).some((k) => !['id', 'title', 'why', 'owner', 'cardKeys', 'health'].includes(k))) return fail('INVALID_INPUT', 'An objective accepts only id, title, why, owner, cardKeys and health');
+        seen.add(o.id);
+        items.push({ id: o.id, title: o.title.trim(), health: o.health, ...(typeof o.why === 'string' && o.why.trim() ? { why: o.why.trim() } : {}),
+          ...(typeof o.owner === 'string' && o.owner ? { owner: o.owner } : {}), ...(Array.isArray(o.cardKeys) && o.cardKeys.length ? { cardKeys: o.cardKeys } : {}) });
+      }
+      markWrite();
+      deps.savePreference('objectives', { items });
       return null;
     }
     case 'chats.view': {

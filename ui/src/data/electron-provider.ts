@@ -2,6 +2,7 @@
 // fork's raw data, commands go to the preload, and every failure becomes a BackendError with an errorId.
 import { engineSignIns, externalTools, mutedSignInProviders, selectedSignInProviders, setupDismissedFor } from './external-tools';
 import { floorChoiceOf } from './floor-choice';
+import { objectivesOf } from './objectives';
 import { findBridge, requireBridge } from './bridge';
 import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
@@ -205,6 +206,8 @@ export function createElectronProvider(): ElectronProvider {
       // the registry's status stays 'idle' while agents run, so the graph never showed anyone working).
       const activity = object(native.activity);
       const registryGod = string(registry.godId);
+      // NSC-222 (B1): an archived agent (an archived god included) is not drawn, so it is never a reportsTo target.
+      const liveTarget = (target: string) => !!target && !(registryAgents[target] !== undefined && object(registryAgents[target]).archived);
       const agents: Agent[] = Object.entries(registryAgents).filter(([, raw]) => !object(raw).archived).map(([id, raw]) => {
         const source = object(raw);
         const local = rosterById.get(id) ?? {};
@@ -232,7 +235,7 @@ export function createElectronProvider(): ElectronProvider {
         tokensCached: ((finite(live.cacheReadTokens) ?? 0) + (finite(live.cacheCreationTokens) ?? 0)) / 1e6,
         contextPct, costUsd: finite(live.costUsd), breaker: liveBreaker || undefined,
         bundle: '', skills: [], mcps: [], rules: [],
-        ...(string(reporting[id]) ? { reportsTo: string(reporting[id]) } : registryGod && id !== registryGod && registryAgents[registryGod] ? { reportsTo: registryGod } : {}),
+        ...(liveTarget(string(reporting[id])) ? { reportsTo: string(reporting[id]) } : registryGod && id !== registryGod && registryAgents[registryGod] && liveTarget(registryGod) ? { reportsTo: registryGod } : {}),
         teamIds: orgTeams.filter((team) => Array.isArray(object(team).memberIds) && (object(team).memberIds as unknown[]).includes(id)).map((team) => string(object(team).id)),
         teamNames: orgTeams.filter((team) => Array.isArray(object(team).memberIds) && (object(team).memberIds as unknown[]).includes(id)).map((team) => string(object(team).name, string(object(team).id))),
       }; });
@@ -307,7 +310,7 @@ export function createElectronProvider(): ElectronProvider {
         usageReported: false,
         archivedAgents: array(native.archivedAgents).map((agent) => ({ id: string(agent.id), name: string(agent.name, string(agent.id)) })),
         settings: Object.fromEntries(['codexRemoteControl', 'codexExecutionPolicy', 'defaultModel', 'godProvider', 'orchestratorMaySpawn', 'semanticMemory', 'embeddingModel', 'reflectEnabled', 'maxTurns', 'costCapTokens', 'costCapUsd', 'agentTokenCaps', 'circuitBreaker', 'providerBaseUrls', 'providerDefaultModels', 'responseStyleBrief', 'claudeOutputStyle', 'ticketKeyPrefix'].filter((key) => key in config).map((key) => [key, config[key]])),
-        floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(orchestratorFailureOf(native.orchestratorFailure) ? { orchestratorFailure: orchestratorFailureOf(native.orchestratorFailure) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: setupDismissedFor(object(preferences.setup), prerequisites), ...(mutedProviders.size ? { mutedSignInReminders: [...mutedProviders] } : {}), objectives: [], wins: [],
+        floorSetup: floorSetupOf(native.floorSetup), ...(hookSocketOf(native.hookSocket) ? { hookSocket: hookSocketOf(native.hookSocket) } : {}), ...(orchestratorFailureOf(native.orchestratorFailure) ? { orchestratorFailure: orchestratorFailureOf(native.orchestratorFailure) } : {}), ...(typeof native.testLabel === 'string' && native.testLabel ? { testLabel: native.testLabel } : {}), prerequisites, setupDismissed: setupDismissedFor(object(preferences.setup), prerequisites), ...(mutedProviders.size ? { mutedSignInReminders: [...mutedProviders] } : {}), objectives: objectivesOf(preferences.objectives), wins: [],
         me: { name: string(profile.name), email: '', workEmail: string(profile.workEmail), timezone: string(profile.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone),
           connections: array(native.integrations).map((item) => ({ id: string(item.id), name: string(item.label, string(item.id)), detail: string(item.kind), connected: item.enabled === true,
             kind: string(item.kind), baseUrl: string(item.baseUrl), authType: string(item.authType), hasSecret: item.hasSecret === true })),

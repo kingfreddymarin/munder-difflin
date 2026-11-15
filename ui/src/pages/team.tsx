@@ -1,4 +1,3 @@
-import { LauncherSettings } from '@/features/team/launcher-select';
 import * as React from 'react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/animate-ui/components/radix/popover';
 import { Switch } from '@/components/animate-ui/components/radix/switch';
@@ -152,7 +151,7 @@ export function TeamPage() {
         <Button disabled={!teamApi} onClick={() => setHiring({ bundle: false })}
           title={teamApi ? 'Add an agent: review the exact command, then start it in a terminal' : 'Hiring needs the desktop core.'}>Hire</Button>
       </div>
-      <Button variant="link" className="self-start" onClick={() => go('settings', { tab: 'team' })}>Team settings</Button>
+      <Button variant="link" className="self-start" onClick={() => go('settings', { tab: 'team' })}>Team configuration is in Settings › Team</Button>
       <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3', gridFor[panels.length] ?? gridFor[5])}>
         {panels.map((id) => (
           <div key={id} id={`team-panel-${id}`} className="min-w-0">
@@ -160,7 +159,6 @@ export function TeamPage() {
           </div>
         ))}
       </div>
-      <LauncherSettings scope="temps" />
       <AgentSheet agentId={open} tab={route.params.get('tab')} onClose={() => go('team')} />
       <ImportAgentsSheet open={importing} onClose={() => setImporting(false)} onImported={(manifest, notes) => { setImporting(false); setHiring({ bundle: false, manifest, notes }); }} />
       <HireSheet open={!!hiring} bundle={!!hiring?.bundle} orchestrator={!!hiring?.orchestrator} manifest={hiring?.manifest} notes={hiring?.notes} onClose={() => setHiring(null)} />
