@@ -26,6 +26,7 @@ const defineMain = {
 // build, so the sidecar is emitted from a single place for every path.
 function copyMainSidecars() {
   const ASSETS: Array<[string, string]> = [
+    ['src/main/board-validation.cjs', 'out/main/board-validation.cjs'],
     ['src/main/slack-trigger.cjs', 'out/main/slack-trigger.cjs'],
     // Knowledge Graph core: required by knowledge.ts at runtime (pure-JS, no
     // native deps), so it must be emitted next to the main bundle like the

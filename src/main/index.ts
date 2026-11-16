@@ -6248,6 +6248,20 @@ function bootstrapHiveServices(): boolean {
   if (!stage('hive.enabled-check', () => hive.enabled())) return false;
   stage('hive.ensure', () => hive.ensureHive());
   stage('hive.generated-docs', () => { hive.refreshGeneratedDocs(); });
+  // One fresh, bounded check per floor entry; never repairs or accepts task cards.
+  stage('hive.board-validation', () => {
+    const root = hive.root();
+    if (!root) return;
+    try {
+      const validator = require('./board-validation.cjs') as {
+        installAndValidateBoard(root: string, assetPath: string, appendLog: (event: Record<string, unknown>) => void): unknown;
+      };
+      validator.installAndValidateBoard(root, join(__dirname, 'board-validation.cjs'), (event) => hive.appendLog(event));
+    } catch {
+      // Missing packaged assets must be visible without preventing floor recovery.
+      hive.appendLog({ kind: 'board-validation', ok: false, error: 'VALIDATION_UNAVAILABLE' });
+    }
+  });
   // Tell the hive what it is running inside, BEFORE anything spawns: the prompt
   // builder reads this, so an agent spawned earlier would never learn it.
   stage('hive.runtime-info', () => hive.setRuntimeInfo({ version: app.getVersion(), packaged: app.isPackaged, appPath: app.getAppPath() }));
