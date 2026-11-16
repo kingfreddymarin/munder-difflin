@@ -154,8 +154,8 @@ export function TeamPage() {
       <Button variant="link" className="self-start" onClick={() => go('settings', { tab: 'team' })}>Team configuration is in Settings › Team</Button>
       <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3', gridFor[panels.length] ?? gridFor[5])}>
         {panels.map((id) => (
-          <div key={id} id={`team-panel-${id}`} className="min-w-0">
-            <Tile title={PANELS[id].title} hint={PANELS[id].hint}>{body(id)}</Tile>
+          <div key={id} id={`team-panel-${id}`} className="min-h-0 min-w-0">
+            <Tile title={PANELS[id].title} hint={PANELS[id].hint} className="h-full">{body(id)}</Tile>
           </div>
         ))}
       </div>
