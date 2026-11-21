@@ -120,7 +120,7 @@ function status(value: string, breaker: string): Agent['status'] {
 }
 
 type OkResult = Extract<ParamountResult, { ok: true }> & Omit<ParamountTeamResult, 'ok' | 'event'>;
-type ResultPayload = 'diagnostics' | 'saved' | 'discovery' | 'imported' | 'models' | 'hire' | 'artifacts' | 'organization' | 'delegated';
+type ResultPayload = 'diagnostics' | 'saved' | 'discovery' | 'imported' | 'models' | 'hire' | 'artifacts' | 'organization' | 'createdTeam' | 'delegated';
 
 /** Sends a command whose answer is a payload on the result rather than a floor event. */
 async function query<K extends ResultPayload>(command: ParamountCommand | ParamountTeamCommand, payload: K, missing: string): Promise<NonNullable<OkResult[K]>> {
@@ -428,6 +428,9 @@ export function createElectronProvider(): ElectronProvider {
       if (!result.ok || !result.status) throw BackendError.local('CONFLICT', result.error ?? 'Could not refresh this account status.', 'engine-signin.refresh');
       refresh();
       return result.status;
+    },
+    createTeam(request) {
+      return query(request, 'createdTeam', 'The core did not create the team.').then((result) => { refresh(); return result; });
     },
     organization(): Promise<import('./paramount-api').ParamountOrganization> {
       return query({ type: 'team.org.get' }, 'organization', 'The core returned no team organization.');

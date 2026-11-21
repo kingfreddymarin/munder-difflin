@@ -16,7 +16,7 @@ import type { CatalogModel, ModelCatalog } from '../shared/modelCatalogPayload';
 import { isNewer } from '../shared/updateState';
 import { redact } from './paramountObservability';
 import { buildWorkerLaunch } from './workerLaunch';
-import { readOrg, saveOrg, validateOrg, type ParamountOrg } from './paramount-org';
+import { createOrgTeam, readOrg, saveOrg, validateOrg, type ParamountOrg } from './paramount-org';
 
 /** What a confirmed hire hands to main, which owns the PTY layer. */
 export interface TeamSpawn {
@@ -92,7 +92,7 @@ interface Deps extends FloorAudit {
   team?: ParamountTeamDeps;
 }
 
-const TEAM_TYPES = new Set(['accounts.list', 'accounts.create', 'accounts.rename', 'card.create', 'team.models', 'team.org.get', 'team.org.save', 'team.delegate', 'agent.hire', 'agent.restart', 'agent.switch', 'launchers.configure', 'launchers.refresh', 'orchestrator.ensure']);
+const TEAM_TYPES = new Set(['accounts.list', 'accounts.create', 'accounts.rename', 'card.create', 'team.models', 'team.org.get', 'team.org.create', 'team.org.save', 'team.delegate', 'agent.hire', 'agent.restart', 'agent.switch', 'launchers.configure', 'launchers.refresh', 'orchestrator.ensure']);
 const MODELS_FILE = 'paramount-agent-models.json';
 // IPC creates a new adapter per request. Keep reservations by hive so two
 // windows cannot both pass the registry check while ensureAgent is awaiting IO.
@@ -363,6 +363,16 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (!onlyKeys(command, ['type'])) return fail('INVALID_INPUT', 'team.org.get takes no fields');
         try { return done({ organization: readOrg(team.hiveRoot(), Object.keys(deps.agents())) }); }
         catch (error) { return fail('INVALID_INPUT', error instanceof Error ? error.message : 'Team organization is invalid', error); }
+      }
+      case 'team.org.create': {
+        if (!onlyKeys(command, ['type', 'name', 'objective', 'leadId', 'memberIds'])) return fail('INVALID_INPUT', 'Invalid team creation request');
+        const agents = deps.agents();
+        const activeAgents = Object.keys(agents).filter((id) => { const agent = agents[id]; return !object(agent) || agent.archived !== true; });
+        let createdTeam: ParamountOrg['teams'][number];
+        try { createdTeam = createOrgTeam(team.hiveRoot(), command, Object.keys(agents), activeAgents); }
+        catch (error) { return fail('INVALID_INPUT', error instanceof Error ? error.message : 'Could not create team', error); }
+        writeAttempted = true;
+        return done({ createdTeam });
       }
       case 'team.org.save': {
         if (!onlyKeys(command, ['type', 'organization', 'expected'])) return fail('INVALID_INPUT', 'Invalid team organization');

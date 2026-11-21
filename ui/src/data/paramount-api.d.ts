@@ -297,6 +297,7 @@ export type ParamountTeamCommand =
   /** Read-only: models per engine, the harness default model and each agent's pick. */
   | { type: 'team.models' }
   | { type: 'team.org.get' }
+  | { type: 'team.org.create'; name: string; objective: string; leadId: string; memberIds: string[] }
   | { type: 'team.org.save'; organization: ParamountOrganization; expected?: ParamountOrganization }
   | { type: 'team.delegate'; teamId: string; title: string; description?: string; subtasks: Array<{ title: string; description?: string; ownerId: string; dependsOn: number[] }> }
   /** The Add-Agent form. Read-only unless `confirm: true`: without it the core
@@ -366,6 +367,7 @@ export type ParamountTeamResult = Extract<ParamountResult, { ok: true }> & {
   card?: { key: string };
   models?: ParamountTeamModels;
   organization?: ParamountOrganization;
+  createdTeam?: ParamountOrganization['teams'][number];
   delegated?: { parentKey: string; childKeys: string[] };
   hire?: ParamountHirePlan;
 };

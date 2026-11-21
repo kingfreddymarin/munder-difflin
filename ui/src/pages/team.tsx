@@ -12,6 +12,7 @@ import { AutomationsPanel } from '@/features/team/automations-panel';
 import { AgentSheet } from '@/features/team/agent-sheet';
 import { ImportAgentsSheet } from '@/features/team/import-agents-sheet';
 import { HireSheet } from '@/features/team/hire-sheet';
+import { NewTeamDialog } from '@/features/team/new-team-dialog';
 import { NewCardDialog } from '@/features/team/new-card-dialog';
 import { LIVE_REFRESH_MS, useAgentImport, useFloor, useLiveRefresh, useTeamApi } from '@/data/store';
 import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
@@ -68,6 +69,7 @@ export function TeamPage() {
   // null = closed; otherwise which way the Add-Agent form opens (empty, or pre-filled from a bundle file).
   const [hiring, setHiring] = React.useState<null | { bundle: boolean; orchestrator?: boolean; manifest?: Record<string, unknown>; notes?: string[] }>(null);
   const [creating, setCreating] = React.useState(false);
+  const [createdTeam, setCreatedTeam] = React.useState('');
 
   const apply = React.useCallback((next: PanelId[]) => {
     setPanels(persistTeamPanels(next));
@@ -143,6 +145,7 @@ export function TeamPage() {
         </Popover>
         <Button variant="outline" disabled={!agentImport} onClick={() => setImporting(true)}
           title={agentImport ? 'List agents defined in Claude Code, Codex and Munder on this machine' : 'Import needs the desktop core.'}>Import from Claude / Codex / Munder</Button>
+        <NewTeamDialog onCreated={(team) => setCreatedTeam(team.name)} />
         <Button variant="outline" onClick={() => setCreating(true)}>New card</Button>
         <Button variant="outline" disabled={!teamApi} onClick={() => setHiring({ bundle: true })}
           title={teamApi ? 'Pre-fill the Add-Agent form from a munder-difflin/hire@1 file' : 'Hiring needs the desktop core.'}>Hire from a bundle</Button>
@@ -151,6 +154,7 @@ export function TeamPage() {
         <Button disabled={!teamApi} onClick={() => setHiring({ bundle: false })}
           title={teamApi ? 'Add an agent: review the exact command, then start it in a terminal' : 'Hiring needs the desktop core.'}>Hire</Button>
       </div>
+      <span role="status" className="sr-only">{createdTeam && `Team ${createdTeam} created.`}</span>
       <Button variant="link" className="self-start" onClick={() => go('settings', { tab: 'team' })}>Team configuration is in Settings › Team</Button>
       <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto auto-rows-[minmax(22rem,1fr)]', gridFor[panels.length] ?? gridFor[5])}>
         {panels.map((id) => (
