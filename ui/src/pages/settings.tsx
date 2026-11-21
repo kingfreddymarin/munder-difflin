@@ -19,7 +19,7 @@ import { Screen } from '@/components/app/screen';
 import { CoreSettings } from '@/features/settings/core-settings';
 import { ProviderSettings } from '@/features/settings/provider-settings';
 import { MemorySettings } from '@/features/settings/memory-settings';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 
 export function SettingsPage() {
   const [accountsRevision, setAccountsRevision] = React.useState(0);
@@ -101,11 +101,13 @@ export function SettingsPage() {
             </div>
             {!me.connections.length && <p className="text-muted-foreground p-4 text-sm">No integrations are registered in this core.</p>}
             <Dialog open={!!connection} onOpenChange={(open) => !open && setConnectionId(null)}>
-              <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+              <DialogContent className="sm:max-w-lg">
                 {connection && <><DialogHeader><DialogTitle>{connection.name}</DialogTitle><DialogDescription>{connection.kind || connection.detail}</DialogDescription></DialogHeader>
-                  <div className="grid gap-2 text-sm"><span>Endpoint: {connection.baseUrl || 'Not reported'}</span><span>Authentication: {connection.authType || 'Not reported'}</span><span>Credential: {connection.hasSecret ? 'Stored securely' : 'Not stored'}</span></div>
-                  <div className="flex items-center gap-3"><span className="flex-1 text-sm">Allow agents to use this connection</span><Switch checked={connection.connected} disabled={!!unsupported({ type: 'account.connection', id: connection.id, connected: !connection.connected })} onCheckedChange={(on) => { void dispatch({ type: 'account.connection', id: connection.id, connected: on }); }} aria-label={`Enable ${connection.name}`} /></div>
-                  <UnsupportedReason reason={unsupported({ type: 'account.connection', id: connection.id, connected: !connection.connected })} />
+                  <DialogBody>
+                    <div className="grid gap-2 text-sm"><span>Endpoint: {connection.baseUrl || 'Not reported'}</span><span>Authentication: {connection.authType || 'Not reported'}</span><span>Credential: {connection.hasSecret ? 'Stored securely' : 'Not stored'}</span></div>
+                    <div className="flex items-center gap-3"><span className="flex-1 text-sm">Allow agents to use this connection</span><Switch checked={connection.connected} disabled={!!unsupported({ type: 'account.connection', id: connection.id, connected: !connection.connected })} onCheckedChange={(on) => { void dispatch({ type: 'account.connection', id: connection.id, connected: on }); }} aria-label={`Enable ${connection.name}`} /></div>
+                    <UnsupportedReason reason={unsupported({ type: 'account.connection', id: connection.id, connected: !connection.connected })} />
+                  </DialogBody>
                 </>}
               </DialogContent>
             </Dialog>
