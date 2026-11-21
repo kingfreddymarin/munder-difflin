@@ -92,7 +92,7 @@ export function useGraphPlacement(storageKey: string, slots: GraphBoxes, height:
       role: 'button',
       tabIndex: 0,
       'aria-keyshortcuts': 'ArrowUp ArrowDown ArrowLeft ArrowRight',
-      className: `select-none outline-none [&:focus-visible>rect:first-child]:stroke-foreground ${preview?.id === id ? 'cursor-grabbing' : 'cursor-grab'}`,
+      className: `select-none outline-none [&:focus-visible>rect:first-child]:stroke-black dark:[&:focus-visible>rect:first-child]:stroke-white ${preview?.id === id ? 'cursor-grabbing' : 'cursor-grab'}`,
       onPointerDown: (event) => {
         if (event.button !== 0 || !event.isPrimary || drag.current) return;
         const start = svgPoint(event);
