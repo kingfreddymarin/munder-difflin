@@ -43,6 +43,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
+import { runHiveTeamCommand, TEAM_COMMAND_SHIM } from './hive-team-command';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
@@ -435,6 +436,22 @@ export class HiveManager {
   ) {}
 
   private routerTimer: NodeJS.Timeout | null = null;
+  private readonly teamCommandToken = randomBytes(32).toString('hex');
+
+  handleTeamCommand(agentId: unknown, token: unknown, request: unknown): unknown {
+    const root = this.root();
+    const denied = { ok: false, error: 'Only the active floor orchestrator can run team commands.' };
+    if (!root || typeof agentId !== 'string' || token !== this.teamCommandToken) return denied;
+    try {
+      const registry = this.registry();
+      if (registry.godId !== agentId || !registry.agents[agentId] || registry.agents[agentId].archived) return denied;
+      const value = runHiveTeamCommand(root, registry.agents, request);
+      if (!Array.isArray(value)) this.appendLog({ kind: 'team-organization', agentId, teamId: value.id });
+      return { ok: true, value };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'Team command failed.' };
+    }
+  }
 
   /** The embedded OTLP collector's loopback URL, set by the main process once the
    *  collector is bound (telemetry.ts). null = telemetry off → no OTel env is
@@ -701,6 +718,7 @@ export class HiveManager {
     // on every bootstrap so it tracks code changes.
     mkdirSync(join(root, 'bin'), { recursive: true });
     writeFileSync(this.shimPath()!, HOOK_SHIM, 'utf8');
+    writeFileSync(join(root, 'bin', 'hive-team.cjs'), TEAM_COMMAND_SHIM, 'utf8');
     // The proxy-bridge sidecar for hookless CLIs (qwen). Same refresh policy.
     writeFileSync(this.proxyShimPath()!, PROXY_BRIDGE_SHIM, 'utf8');
     // The bundled-node launcher every shim above is invoked through — MUST be
@@ -854,6 +872,11 @@ export class HiveManager {
       HIVE_ROOT: root,
       AGENT_DIR: dir
     };
+    const teamSocket = meta.isGod ? this.sockPath() : null;
+    if (teamSocket) {
+      env.HIVE_SOCK = teamSocket;
+      env.HIVE_TEAM_TOKEN = this.teamCommandToken;
+    }
     // The bundled-node launcher, so an agent can run the hive's .cjs helpers (KG
     // CLI, Slack reply helper) even when `node` is not on its PATH. Invoking the
     // Electron binary directly would open a second app window, so this must stay
@@ -1653,6 +1676,9 @@ export class HiveManager {
     const spawnQueueLine = meta.isGod && this.orchestratorMaySpawn()
       ? `SPAWNING A WORKER: you can start an ephemeral worker yourself by writing ONE JSON file into ${inRoot('spawn-requests')}/<id>.json. Required: \`objective\` (what the worker must do) and \`cwd\` (the repo it runs in). Optional: \`name\`, \`command\` (overrides the provider default), \`provider\` (selects its default CLI when command is omitted), \`model\`, \`isolate\` (default true = its own git worktree), \`tokenCap\`, and \`slack\` ({channel, thread_ts}) to route its failures back to a thread. The harness polls that directory, spawns \`worker-<id>\`, and moves the request to \`spawn-requests/.done/\` on success or \`.failed/\` with a reason. This is the ONLY way you can spawn; a hire manifest under research/hires/ needs the human to confirm it in the UI, so it is not a route you can complete on your own. Reuse an existing agent first, as above — a worker is a fresh spend every time.`
       : '';
+    const teamsLine = meta.isGod
+      ? `TEAM ORGANIZATION: Run \`"${hiveNode}" "${inRoot('bin', 'hive-team.cjs')}" --help\` for the floor's team commands. Use list to find team IDs, create with a name, objective, lead and members, or assign an agent under a team member.`
+      : '';
     const godLine = meta.isGod
       ? 'You are the GOD / ORCHESTRATOR of this hive — your job is to ORCHESTRATE, not to implement: maintain live situational awareness and delegate the work. (1) AWARENESS — always know what is going on: keep an accurate picture of every agent (active vs archived/idle), the task board, and all in-flight work; drain your inbox continually and triage every other agent\'s requests, answering clarifications so the team runs autonomously. (2) DELEGATE — decompose work and fan it out to the hive agents via their inboxes (route messages and assign owners; do not do their jobs); do NOT take on grunt implementation yourself. Stay aware of who is already on the floor and delegate OPPORTUNISTICALLY: BEFORE you spawn anything, CHECK THE LIVE ROSTER (active agents in registry.json + their state in fleet.json) and prefer routing to an EXISTING agent that fits — above all when the request names one ("ask Pam to…", "have Jim…"), route to that agent instead of reflexively creating a new one. Reuse an idle or already-running agent whose role matches; only spawn a fresh agent when no existing one is a sensible fit, and say that you checked. One capable owner beats a duplicate. (3) OWN ONLY THE IMPORTANT, high-leverage things — task decomposition, dispatch decisions, sign-offs, conflict resolution, branch integration, and final QA — and remain the sole scribe of board.md. You are otherwise fully autonomous — there is NO separate approval queue. For the genuinely critical (destructive actions, spending real money, scope changes, unresolvable conflicts), ask the human directly in your own session and let the tool-permission prompt gate the action; the human approves natively, including remotely from their phone via /remote-control. Keep the team unblocked. When you DISPATCH a task, write it as a 4-part contract so the agent can run autonomously: (1) OBJECTIVE — the concrete goal; (2) OUTPUT — the expected deliverable/format; (3) TOOLS — what to use or avoid, and any references to read instead of re-deriving; (4) BOUNDARIES — scope limits + the definition of done. Pass references (file paths, message ids, board sections), not pasted content — keep dispatches short.'
         + ` MONITOR the floor by reading ${inRoot('fleet.json')} (live per-agent tokens, cost, status, last tool, breaker level, inbox backlog) and ${inRoot('registry.json')} — note that running 'claude agents' will NOT list your hive's sibling agents. A full Claude Code command reference is at ${inRoot('COMMANDS.md')} (slash commands act ONLY on your own session; CLI commands run in your shell and can target the fleet). You periodically receive scheduler / "Heartbeat" standup requests — on each, review every agent via fleet.json, re-engage anyone stalled, over-budget, or breaker-armed, and keep board.md and tasks.json accurate. In tasks.json, ALWAYS set each task's "assignee" to the worker's agent id the moment you dispatch it, and NEVER clear it on status changes — a done card must still say who did the work (the human reads the board by who-did-what). HUMAN FEEDBACK is first-class in the ledger: when a task can only proceed with the human's input — a QUESTION to answer OR an ACTION only the human can perform (create an account, approve a purchase, provide credentials/screenshots, test on their device) — set its status to "blocked" and append the concrete ask to the card's "humanQA" array (push {"q":"...","askedAt":"<iso>"}; phrase actions as clear to-dos; keep every past entry — the history documents the card's decisions). WRITE THE ASK SHORT AND IN MARKDOWN. The human reads it on a CARD, not in a terminal, so an ask longer than a short paragraph plus its options (roughly 700 characters) is a report, not a question — cut the narrative, keep the decision. Open with ONE **bold** sentence saying exactly what you need from them; put paths, commands, values and identifiers in \`backticks\`; give each option or step its own "-" bullet or "1." number; leave a blank line between paragraphs (a single newline is a line break, so each option stays on its own line). When the ask originates in another agent's report, REWRITE it into that shape — never paste the report body in as the question, and never make the human read the investigation to find the decision. The harness surfaces open questions on the office floor's ASK ME board; the human's answer lands in the same entry ("a") AND arrives as an inbox message to you — read it, act on it, and unblock the card so work continues. Do NOT park human questions in separate files (no HumanQuestion.md) and never sit waiting on the human in your own session. Steward the token budget.`
@@ -1678,6 +1704,7 @@ export class HiveManager {
       knowledgeLine,
       godLine,
       spawnQueueLine,
+      teamsLine,
       runtimeLine,
       slackLine,
       ctxLine,

@@ -182,7 +182,14 @@ export function createElectronProvider(): ElectronProvider {
       const registryAgents = object(registry.agents);
       const organization = object(native.organization);
       const reporting = object(organization.reportsTo);
-      const orgTeams = array(organization.teams);
+      const orgTeams = array(organization.teams).flatMap((team) => {
+        const id = string(team.id);
+        const leadId = string(team.leadId);
+        if (!id || !leadId) return [];
+        const memberIds = Array.isArray(team.memberIds) ? team.memberIds.filter((member): member is string => typeof member === 'string') : [];
+        const parents = Object.fromEntries(Object.entries(object(team.parents)).flatMap(([member, manager]) => typeof manager === 'string' ? [[member, manager]] : []));
+        return [{ id, leadId, memberIds, name: string(team.name, id), objective: string(team.objective), parents }];
+      });
       const roster = object(native.roster);
       const rosterAgents = array(roster.agents);
       const rosterById = new Map(rosterAgents.map((item) => [string(item.id), item]));
@@ -236,8 +243,8 @@ export function createElectronProvider(): ElectronProvider {
         contextPct, costUsd: finite(live.costUsd), breaker: liveBreaker || undefined,
         bundle: '', skills: [], mcps: [], rules: [],
         ...(liveTarget(string(reporting[id])) ? { reportsTo: string(reporting[id]) } : registryGod && id !== registryGod && registryAgents[registryGod] && liveTarget(registryGod) ? { reportsTo: registryGod } : {}),
-        teamIds: orgTeams.filter((team) => Array.isArray(object(team).memberIds) && (object(team).memberIds as unknown[]).includes(id)).map((team) => string(object(team).id)),
-        teamNames: orgTeams.filter((team) => Array.isArray(object(team).memberIds) && (object(team).memberIds as unknown[]).includes(id)).map((team) => string(object(team).name, string(object(team).id))),
+        teamIds: orgTeams.filter((team) => team.memberIds.includes(id)).map((team) => team.id),
+        teamNames: orgTeams.filter((team) => team.memberIds.includes(id)).map((team) => team.name),
       }; });
       const agentIds = new Set(agents.map((agent) => agent.id));
       const chats = agents.map((agent) => ({ id: `agent:${agent.id}`, kind: 'agent' as const, title: agent.name, agentIds: [agent.id], pinned: agent.role === 'paramount' }));
@@ -317,7 +324,7 @@ export function createElectronProvider(): ElectronProvider {
             kind: string(item.kind), baseUrl: string(item.baseUrl), authType: string(item.authType), hasSecret: item.hasSecret === true })),
           notify: [{ id: 'desktop', label: 'Desktop', on: config.notifications === true }], yolo: { on: config.autoMode === true, autoOffHours: null, keepHardRules: true },
           iteration: { speed: 'balanced', heartbeatSec: 0, standupMin: 0, checkpointEverySteps: 0 } },
-        agents, chats, messages,
+        agents, teams: orgTeams, chats, messages,
         notifications: messages.filter((message) => message.kind === 'question' && !message.read && !message.answer && !message.dismissed).map((message) => {
           const [first, ...rest] = message.text.split('\n').filter((line) => line.trim());
           return {
@@ -425,8 +432,8 @@ export function createElectronProvider(): ElectronProvider {
     organization(): Promise<import('./paramount-api').ParamountOrganization> {
       return query({ type: 'team.org.get' }, 'organization', 'The core returned no team organization.');
     },
-    saveOrganization(organization): Promise<import('./paramount-api').ParamountOrganization> {
-      return query({ type: 'team.org.save', organization }, 'organization', 'The core did not save the team organization.').then((result) => { refresh(); return result; });
+    saveOrganization(organization, expected): Promise<import('./paramount-api').ParamountOrganization> {
+      return query({ type: 'team.org.save', organization, expected }, 'organization', 'The core did not save the team organization.').then((result) => { refresh(); return result; });
     },
     delegate(request): Promise<NonNullable<ParamountTeamResult['delegated']>> {
       return query(request, 'delegated', 'The core did not create delegated tasks.').then((result) => { refresh(); return result; });

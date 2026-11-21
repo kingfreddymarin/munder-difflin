@@ -1,7 +1,9 @@
 // Team graph layout. Agents sit in rows by reporting depth; open task cards get their own
 // column per owner in a band below, wrapped into extra rows when they do not fit, so no two
 // card boxes can overlap. Owner, dependsOn and parentId edges join them.
-import type { Card, CardStatus } from '@/data/types';
+import type { Card, CardStatus, Snapshot } from '@/data/types';
+
+export type GraphTeam = NonNullable<Snapshot['teams']>[number];
 
 export interface Point { x: number; y: number }
 export interface GraphBox extends Point { width: number; height: number }
@@ -17,11 +19,14 @@ export const AGENT_W = 108;
 export const AGENT_H = 62;
 export const CARD_W = 120;
 export const CARD_H = 30;
+export const TEAM_W = 166;
+export const TEAM_H = 38;
 export const TRIGGER_W = 144;
 export const TRIGGER_H = 28;
 export const YOU: GraphBox = { x: 468, y: 25, width: 38, height: 36 };
 export const agentKey = (id: string) => `agent:${id}`;
 export const cardKey = (id: string) => `card:${id}`;
+export const teamKey = (id: string) => `team:${id}`;
 export const triggerKey = (id: string) => `automation:${id}`;
 const COL_GAP = 130;
 const ROW_GAP = 44;
@@ -99,16 +104,43 @@ export function buildTaskGraph(cards: readonly Card[], agentPos: Readonly<Record
 export type GraphPositions = Readonly<Record<string, Point>>;
 export type GraphBoxes = Readonly<Record<string, GraphBox>>;
 
-export function buildGraphLayout(agents: readonly { id: string; reportsTo?: string }[], cards: readonly Card[], triggerIds: readonly string[]) {
+/** Keep the tree connected when a parent is archived and therefore has no graph node. */
+export function visibleTeamChain(team: GraphTeam, visible: ReadonlySet<string>) {
+  const members = new Set([team.leadId, ...team.memberIds]);
+  return [...members].filter((id) => visible.has(id)).map((id) => {
+    let parentId = id === team.leadId ? undefined : teamParent(team, id);
+    const seen = new Set([id]);
+    while (parentId && members.has(parentId) && !seen.has(parentId) && !visible.has(parentId)) {
+      seen.add(parentId);
+      parentId = parentId === team.leadId ? undefined : teamParent(team, parentId);
+    }
+    return { id, parentId: parentId && !seen.has(parentId) && members.has(parentId) && visible.has(parentId) ? parentId : undefined };
+  });
+}
+
+function teamParent(team: GraphTeam, id: string): string {
+  return team.parents && Object.hasOwn(team.parents, id) ? team.parents[id] : team.leadId;
+}
+
+export function buildGraphLayout(agents: readonly { id: string; reportsTo?: string }[], cards: readonly Card[], triggerIds: readonly string[], teamIds: readonly string[] = []) {
   const layout = agentLayout(agents);
   const triggers = triggerIds.map((id, i) => [triggerKey(id), { x: 82, y: 86 + i * 42, width: TRIGGER_W, height: TRIGGER_H }] as const);
   const triggerBottom = triggers.length ? triggers[triggers.length - 1][1].y + TRIGGER_H / 2 : 0;
-  const tasks = buildTaskGraph(cards, layout, { taskTop: triggerBottom + 80 });
-  const height = Math.max(tasks.height, triggerBottom + 12);
+  const teamTop = Math.max(triggerBottom, ...Object.values(layout).map((box) => box.y + AGENT_H / 2), YOU.y + YOU.height / 2) + 48;
+  const teams = teamIds.map((id, index) => {
+    const row = Math.floor(index / 4);
+    const inRow = Math.min(4, teamIds.length - row * 4);
+    const x = GRAPH_WIDTH / 2 + (index % 4 - (inRow - 1) / 2) * 184;
+    return [teamKey(id), { x, y: teamTop + row * 56, width: TEAM_W, height: TEAM_H }] as const;
+  });
+  const teamBottom = teams.length ? teams[teams.length - 1][1].y + TEAM_H / 2 : 0;
+  const tasks = buildTaskGraph(cards, layout, { taskTop: Math.max(triggerBottom, teamBottom) + 80 });
+  const height = Math.max(tasks.height, triggerBottom + 12, teamBottom + 12);
   const slots: GraphBoxes = Object.fromEntries([
     ['you', YOU],
     ...Object.entries(layout).map(([id, p]) => [agentKey(id), { ...p, width: AGENT_W, height: AGENT_H }]),
     ...triggers,
+    ...teams,
     ...tasks.nodes.map((node) => [cardKey(node.key), { x: node.x, y: node.y, width: CARD_W, height: CARD_H }]),
     ...tasks.columns.map((c) => [`column:${c.owner}`, { x: c.x, y: c.top - 28, width: CARD_W, height: 14 }]),
   ]);

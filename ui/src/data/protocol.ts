@@ -83,7 +83,7 @@ export interface DataProvider {
   /** Models per engine, the default model and each agent's pick (`team.models`). */
   teamModels?(): Promise<ParamountTeamModels>;
   organization?(): Promise<ParamountOrganization>;
-  saveOrganization?(organization: ParamountOrganization): Promise<ParamountOrganization>;
+  saveOrganization?(organization: ParamountOrganization, expected?: ParamountOrganization): Promise<ParamountOrganization>;
   delegate?(request: Extract<ParamountTeamCommand, { type: 'team.delegate' }>): Promise<NonNullable<ParamountTeamResult['delegated']>>;
   archiveAgent?(id: string, archived: boolean): Promise<void>;
   sendNote?(id: string, text: string): Promise<void>;

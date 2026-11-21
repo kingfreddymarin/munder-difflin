@@ -160,3 +160,17 @@ test('arrow movement finds a clear landing beyond a neighbour and stops at the c
   const placed = placeGraphNodes(slots, { [id]: { x: 722, y: 86 } }, 280);
   assert.equal(keyboardGraphMove(id, right, slots, placed, 280), undefined);
 });
+
+test('team work chains retain intermediate managers and collapse archived nodes', () => {
+  const team = { id: 'release', name: 'Release', leadId: 'lead', memberIds: ['lead', 'reviewer', 'worker'], parents: { reviewer: 'worker' } };
+  const { visibleTeamChain, teamKey } = mod.exports;
+  assert.deepEqual(visibleTeamChain(team, new Set(team.memberIds)), [
+    { id: 'lead', parentId: undefined }, { id: 'reviewer', parentId: 'worker' }, { id: 'worker', parentId: 'lead' },
+  ]);
+  assert.deepEqual(visibleTeamChain(team, new Set(['lead', 'reviewer'])), [
+    { id: 'lead', parentId: undefined }, { id: 'reviewer', parentId: 'lead' },
+  ]);
+  const { slots, height } = buildGraphLayout(shapes[7], mixed, triggers, ['a', 'b', 'c', 'd', team.id]);
+  assert.ok(slots[teamKey(team.id)]);
+  for (const [id, box] of Object.entries(slots)) assert.ok(canPlace(box, id, slots, slots, height), id);
+});

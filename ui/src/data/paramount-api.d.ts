@@ -297,7 +297,7 @@ export type ParamountTeamCommand =
   /** Read-only: models per engine, the harness default model and each agent's pick. */
   | { type: 'team.models' }
   | { type: 'team.org.get' }
-  | { type: 'team.org.save'; organization: ParamountOrganization }
+  | { type: 'team.org.save'; organization: ParamountOrganization; expected?: ParamountOrganization }
   | { type: 'team.delegate'; teamId: string; title: string; description?: string; subtasks: Array<{ title: string; description?: string; ownerId: string; dependsOn: number[] }> }
   /** The Add-Agent form. Read-only unless `confirm: true`: without it the core
    *  validates the hire manifest and returns the exact spawn plan for review;
@@ -338,7 +338,7 @@ export interface ParamountTeamModels {
   /** Model chosen per agent in Paramount; an agent missing here runs the default. */
   agents: Record<string, { running?: { provider: string; model?: string; accountSelection: 'default' | 'selected' | 'unknown'; launcher?: { id: string; fingerprint: string; label: string } }; engine: string; model?: string; installed: boolean; accountSelection: 'default' | 'selected' | 'stale' | 'unavailable'; launcher?: { id: string; fingerprint: string; label: string } }>;
 }
-export interface ParamountOrganization { version: 1; teams: Array<{ id: string; name: string; leadId: string; memberIds: string[] }>; reportsTo: Record<string, string> }
+export interface ParamountOrganization { version: 1; teams: Array<{ id: string; name: string; objective?: string; leadId: string; memberIds: string[]; parents?: Record<string, string> }>; reportsTo: Record<string, string> }
 export interface ParamountHirePlan {
   launcher?: string;
   agentId: string;

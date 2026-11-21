@@ -332,6 +332,7 @@ export interface Snapshot {
   wins: Win[];
   me: Account;
   agents: Agent[];
+  teams?: import('./paramount-api').ParamountOrganization['teams'];
   archivedAgents?: Array<{ id: string; name: string }>;
   chats: Chat[];
   messages: Message[];

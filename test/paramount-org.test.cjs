@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { readOrg, saveOrg, validateOrg } = loadTs('src/main/paramount-org.ts');
+const { createOrgTeam, readOrg, saveOrg, validateOrg } = loadTs('src/main/paramount-org.ts');
 
 test('teams persist and validate existing members and reporting hierarchy', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paramount-org-'));
@@ -20,4 +20,19 @@ test('team organization rejects duplicate ids, unknown agents, self lines and cy
   assert.throws(() => validateOrg({ ...base, reportsTo: { a: 'a' } }, ['a']), /itself/);
   assert.throws(() => validateOrg({ ...base, reportsTo: { a: 'b', b: 'a' } }, ['a', 'b']), /cycle/);
   assert.throws(() => validateOrg({ ...base, teams: [{ id: 'x', name: 'X', leadId: 'a', memberIds: [] }, { id: 'x', name: 'Y', leadId: 'a', memberIds: [] }] }, ['a']), /unique/);
+});
+
+test('quick creation preserves existing teams and requires a current lead and objective', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paramount-org-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const agents = ['lead', 'member', 'archived'];
+  const active = ['lead', 'member'];
+  const original = saveOrg(root, { version: 1, teams: [{ id: 'legacy', name: 'Legacy', leadId: 'archived', memberIds: [] }], reportsTo: {} }, agents);
+  const input = { name: '  Release  ', objective: '  Deliver the next build  ', leadId: 'lead', memberIds: ['member', 'member'] };
+  assert.throws(() => createOrgTeam(root, { ...input, objective: ' ' }, agents, active), /objective/);
+  assert.throws(() => createOrgTeam(root, { ...input, memberIds: ['archived'] }, agents, active), /current floor/);
+  const created = createOrgTeam(root, input, agents, active);
+  assert.deepEqual(created, { id: created.id, name: 'Release', objective: 'Deliver the next build', leadId: 'lead', memberIds: active });
+  assert.throws(() => createOrgTeam(root, { ...input, name: 'release' }, agents, active), /already exists/);
+  assert.deepEqual(readOrg(root, agents).teams, [...original.teams, created]);
 });
