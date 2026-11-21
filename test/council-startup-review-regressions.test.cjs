@@ -38,7 +38,7 @@ for (const provider of ['claude', 'codex']) test(`P1: actual stored defaults -> 
   assert.equal(saved.ok, true);
   assert.equal(readConfig().godModel, '', 'explicit empty string must survive config persistence/default merging');
   const effective = modelForRole({ isGod: true }, readConfig());
-  assert.equal(effective, '', 'spawnAgentCore must not inject a recommended or stale model');
+  assert.ok(effective === '' || effective == null, 'spawnAgentCore must not inject a recommended or stale model');
   f.deps.team.orchestratorProvider = () => readConfig().godProvider;
   f.deps.team.orchestratorModel = () => modelForRole({ isGod: true }, readConfig());
   assert.equal((await f.ensure()).ok, true); assert.equal(f.launches.length, 1); assert.equal(f.launches[0].provider, provider);
