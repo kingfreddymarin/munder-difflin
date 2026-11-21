@@ -63,3 +63,20 @@ test('startup helper installs executable checker, logs fresh state, preserves le
  assert.equal(child.status,0);assert.equal(JSON.parse(child.stdout).taskCount,0);
  installAndValidateBoard(root,path.join(root,'missing'),e=>events.push(e));assert.equal(events[2].error,'VALIDATION_UNAVAILABLE');
 });
+// NSC-244: optional parent links
+const parentCheck = (t, tasks) => validateBoard(fixture(t, tasks), { now });
+test('cards without parentId, null parentId and valid parents pass', t => {
+ const r = parentCheck(t, [task, { ...task, id: 'VRM-2', parentId: 'VRM-1' }, { ...task, id: 'VRM-3', parentId: null }]);
+ assert.equal(r.ok, true); assert.equal(r.checks.find(c => c.name === 'parents').result, 'pass');
+});
+test('a missing parent warns without failing the board', t => {
+ const r = parentCheck(t, [{ ...task, parentId: 'VRM-404' }]);
+ const check = r.checks.find(c => c.name === 'parents');
+ assert.equal(r.ok, true); assert.equal(check.result, 'warn'); assert.match(check.items[0], /VRM-404 does not exist/);
+});
+test('self parents, non-string parents and cycles fail', t => {
+ for (const tasks of [[{ ...task, parentId: 'VRM-1' }], [{ ...task, parentId: 7 }]]) assert.equal(parentCheck(t, tasks).ok, false);
+ const r = parentCheck(t, [{ ...task, parentId: 'VRM-3' }, { ...task, id: 'VRM-2', parentId: 'VRM-1' }, { ...task, id: 'VRM-3', parentId: 'VRM-2' }, { ...task, id: 'VRM-4', parentId: 'VRM-3' }]);
+ const check = r.checks.find(c => c.name === 'parents');
+ assert.equal(r.ok, false); assert.equal(check.result, 'error'); assert.equal(check.items.length, 1); assert.match(check.items[0], /parent cycle/);
+});

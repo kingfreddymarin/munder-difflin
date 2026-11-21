@@ -16,6 +16,17 @@ function audit(s: Snapshot, ev: FloorEvent, action: string, target: string, deta
   return { ...s, audit: [entry, ...s.audit], messages: [...s.messages, ...notes] };
 }
 
+/** Same rule as the core's parentError: another active card, and not one of `key`'s descendants. */
+function parentAllowed(cards: Card[], key: string, parent: string): boolean {
+  if (!cards.some((x) => x.key === parent && !x.boardArchivedAt)) return false;
+  const seen = new Set<string>();
+  for (let at: string | undefined = parent; at && !seen.has(at); at = cards.find((x) => x.key === at)?.parentId) {
+    if (at === key) return false;
+    seen.add(at);
+  }
+  return true;
+}
+
 export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
   const c = ev.command;
   switch (c.type) {
@@ -92,6 +103,8 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
     case 'card.update': {
       const card = s.cards.find((x) => x.key === c.key);
       if (!card) return s;
+      // The core refuses a missing parent, the card itself and cycles; the mock relies on this guard.
+      if (c.patch.parentId && !parentAllowed(s.cards, c.key, c.patch.parentId)) return s;
       const priorityStr: 'P1' | 'P2' | 'P3' | undefined = c.patch.priority === 1 ? 'P1' : c.patch.priority === 3 ? 'P3' : c.patch.priority === 2 ? 'P2' : undefined;
       const cards = s.cards.map((x) => x.key !== c.key ? x : {
         ...x,
@@ -99,6 +112,7 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
         ...(c.patch.description !== undefined ? { description: c.patch.description } : {}),
         ...(priorityStr !== undefined ? { priority: priorityStr } : {}),
         ...(c.patch.assignee !== undefined ? { agentId: c.patch.assignee } : {}),
+        ...(c.patch.parentId !== undefined ? { parentId: c.patch.parentId || undefined } : {}),
         updated: ev.at,
       });
       const detail = Object.entries(c.patch).map(([k, v]) => `${k} = ${v}`).join(', ');

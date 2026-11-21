@@ -79,7 +79,7 @@ export function isBoardOwnerSender(sender: { knownWindow: boolean; mainFrame: bo
 }
 
 function cardPatch(value: unknown, agents: () => Record<string, unknown>): ParamountCardPatch | null {
-  if (!object(value) || !onlyKeys(value, ['title', 'description', 'assignee', 'priority']) || !Object.keys(value).length) return null;
+  if (!object(value) || !onlyKeys(value, ['title', 'description', 'assignee', 'priority', 'parentId']) || !Object.keys(value).length) return null;
   const patch: ParamountCardPatch = {};
   if ('title' in value) {
     if (!key(value.title) || !value.title.trim()) return null;
@@ -97,7 +97,28 @@ function cardPatch(value: unknown, agents: () => Record<string, unknown>): Param
     if (value.priority !== 1 && value.priority !== 2 && value.priority !== 3) return null;
     patch.priority = value.priority;
   }
+  if ('parentId' in value) {
+    // '' clears the parent; the parent's existence and cycles are checked against the ledger by parentError.
+    if (value.parentId !== '' && !key(value.parentId)) return null;
+    patch.parentId = value.parentId;
+  }
   return patch;
+}
+
+/** Why `parent` cannot be the parent of card `key`, or null when it can: it must be another
+ *  active card, and `key` must not be among its ancestors (no cycles). */
+export function parentError(tasks: readonly unknown[], key: string, parent: string): { code: 'INVALID_INPUT' | 'NOT_FOUND'; message: string } | null {
+  if (parent === key) return { code: 'INVALID_INPUT', message: 'A card cannot be its own parent' };
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const task of tasks) if (object(task) && typeof task.id === 'string' && !byId.has(task.id)) byId.set(task.id, task);
+  const target = byId.get(parent);
+  if (!target || target.boardArchivedAt) return { code: 'NOT_FOUND', message: `No active Board card ${parent} to be the parent` };
+  const seen = new Set<string>();
+  for (let at: unknown = parent; typeof at === 'string' && at && !seen.has(at); at = byId.get(at)?.parentId) {
+    if (at === key) return { code: 'INVALID_INPUT', message: `${parent} is already under ${key}; a parent cannot be its own descendant` };
+    seen.add(at);
+  }
+  return null;
 }
 
 export function httpsUrl(value: unknown): value is string {
@@ -171,13 +192,17 @@ export function dispatchBoard(command: Record<string, unknown>, deps: ParamountD
       case 'card.update': {
         const patch = cardPatch(command.patch, deps.agents);
         if (!onlyKeys(command, ['type', 'key', 'patch']) || !key(command.key) || !patch) {
-          return fail('INVALID_INPUT', 'Provide a valid title, description, priority or assignee');
+          return fail('INVALID_INPUT', 'Provide a valid title, description, priority, assignee or parent');
         }
         const card = task();
         if (!card || card.boardArchivedAt) return fail('NOT_FOUND', `No active Board card ${command.key}`);
+        const parentProblem = patch.parentId ? parentError(deps.tasks().tasks ?? [], command.key, patch.parentId) : null;
+        if (parentProblem) return fail(parentProblem.code, parentProblem.message);
         applied = { type: command.type, key: command.key, patch };
         writeAttempted = true;
-        if (!deps.patchTask(command.key, { ...patch, updatedAt: at })) return fail('CONFLICT', 'Card changed; refresh the Board');
+        // An empty parentId removes the field from tasks.json (undefined is dropped when the ledger is saved).
+        const write = patch.parentId === '' ? { ...patch, parentId: undefined } : patch;
+        if (!deps.patchTask(command.key, { ...write, updatedAt: at })) return fail('CONFLICT', 'Card changed; refresh the Board');
         break;
       }
       case 'card.archive': {
