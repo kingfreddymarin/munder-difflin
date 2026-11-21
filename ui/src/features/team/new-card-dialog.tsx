@@ -8,40 +8,42 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { UnsupportedReason } from '@/components/app/error-notice';
-import { useDispatch, useFloor, useGetSnapshot, useUnsupported } from '@/data/store';
+import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 
 const PRIORITIES = [{ value: 1, label: 'P1' }, { value: 2, label: 'P2' }, { value: 3, label: 'P3' }] as const;
 
 export function NewCardDialog({ open, onClose, onCreated, assignee }: { open: boolean; onClose: () => void; onCreated?: (key: string) => void; assignee?: string }) {
   const agents = useFloor((s) => s.agents);
   const dispatch = useDispatch();
-  const getSnapshot = useGetSnapshot();
   const unsupported = useUnsupported();
+  // Tracks whether the user dismissed the dialog before the create resolved.
+  const cancelledRef = React.useRef(false);
   const empty = React.useCallback(() => ({ title: '', description: '', assignee: assignee ?? '', priority: 2 as 1 | 2 | 3 }), [assignee]);
   const [form, setForm] = React.useState(empty);
   const [sending, setSending] = React.useState(false);
-  React.useEffect(() => { if (open) setForm(empty()); }, [open, empty]);
+  React.useEffect(() => { if (open) { setForm(empty()); cancelledRef.current = false; } }, [open, empty]);
 
   const command = { type: 'card.create' as const, title: form.title.trim(), priority: form.priority,
     ...(form.description.trim() ? { description: form.description.trim() } : {}), ...(form.assignee ? { assignee: form.assignee } : {}) };
   const reason = unsupported(command);
+
+  const handleClose = () => { cancelledRef.current = true; onClose(); };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (!command.title || reason) return;
     setSending(true);
-    const keysBefore = new Set((getSnapshot()?.cards ?? []).map((c) => c.key));
-    const ok = await dispatch(command);
+    const result = await dispatch(command);
     setSending(false);
-    if (ok) {
-      const newCard = getSnapshot()?.cards.find((c) => !keysBefore.has(c.key) && c.title === command.title);
-      if (newCard) onCreated?.(newCard.key);
+    if (result && !cancelledRef.current) {
+      if (typeof result === 'string') onCreated?.(result);
       onClose();
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
       <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>New card</DialogTitle>
@@ -63,7 +65,7 @@ export function NewCardDialog({ open, onClose, onCreated, assignee }: { open: bo
             </ToggleGroup></div>
           <UnsupportedReason reason={reason} />
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="button" variant="ghost" onClick={handleClose}>Cancel</Button>
             <Button type="submit" disabled={!command.title || !!reason || sending}>{sending ? 'Creating…' : 'Create card'}</Button>
           </DialogFooter>
         </form>

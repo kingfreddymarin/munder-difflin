@@ -12,7 +12,7 @@ export class ManagedAccountsController {
   private generation = 0;
   private active = true;
   private listeners = new Set<() => void>();
-  constructor(private api: { models: () => Promise<{ accounts?: CouncilAccountProfile[] }>; dispatch: (command: { type: 'accounts.create'; provider: 'claude' | 'codex'; label: string } | { type: 'accounts.rename'; id: string; label: string }) => Promise<boolean>; changed: () => void }) {}
+  constructor(private api: { models: () => Promise<{ accounts?: CouncilAccountProfile[] }>; dispatch: (command: { type: 'accounts.create'; provider: 'claude' | 'codex'; label: string } | { type: 'accounts.rename'; id: string; label: string }) => Promise<string | boolean>; changed: () => void }) {}
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private update(patch: Partial<typeof this.state>) { if (!this.active) return; this.state = { ...this.state, ...patch }; this.listeners.forEach(fn => fn()); }

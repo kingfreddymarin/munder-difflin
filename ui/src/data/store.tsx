@@ -29,7 +29,8 @@ type Store = {
   retry: () => void;
   start: () => () => void;
   subscribe: (fn: () => void) => () => void;
-  dispatch: (c: Command) => Promise<boolean>;
+  /** Resolves to the core-assigned key string for card.create; true for other commands; false on failure. */
+  dispatch: (c: Command) => Promise<string | boolean>;
 };
 
 const StoreContext = React.createContext<Store | null>(null);
@@ -104,8 +105,10 @@ export function FloorProvider({ provider, children, fallback }: { provider: Data
         pending++;
         emit();
         try {
-          await provider.dispatch(c);
+          const event = await provider.dispatch(c);
           actionError = null;
+          const cmd = event?.command;
+          if (cmd?.type === 'card.create' && cmd.key) return cmd.key;
           return true;
         } catch (cause) {
           actionError = toBackendError(cause, c.type);

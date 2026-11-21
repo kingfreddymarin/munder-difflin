@@ -46,7 +46,7 @@ function CardPicker({ objectiveId, cardKeys, openCards, onEdit }: {
           {linked.map(({ key, title }) => (
             <span key={key} className="border-input bg-muted flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs">
               <span>{key}{title ? ` · ${title.length > 28 ? title.slice(0, 28) + '…' : title}` : ''}</span>
-              <button type="button" aria-label={`Remove ${key}`} className="text-muted-foreground hover:text-foreground" onClick={() => removeKey(key)}>×</button>
+              <button type="button" aria-label={`Remove ${key}`} className="text-muted-foreground hover:text-foreground" onClick={() => { removeKey(key); newBtnRef.current?.focus(); }}>×</button>
             </span>
           ))}
         </div>
@@ -59,7 +59,7 @@ function CardPicker({ objectiveId, cardKeys, openCards, onEdit }: {
             className={select}
             value=""
             data-testid={`obj-card-select-${objectiveId}`}
-            onChange={(e) => { addKey(e.target.value); e.target.value = ''; }}
+            onChange={(e) => { addKey(e.target.value); e.target.value = ''; if (available.length === 1) newBtnRef.current?.focus(); }}
           >
             <option value="">Add card…</option>
             {available.map((c) => (

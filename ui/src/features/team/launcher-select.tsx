@@ -58,8 +58,8 @@ export class LauncherSettingsController {
   constructor(private readonly io: {
     models: () => Promise<ParamountTeamModels>;
     persisted: (models: ParamountTeamModels) => CouncilLauncherPick | null;
-    refresh: () => Promise<boolean>;
-    save: (value: CouncilLauncherPick | null) => Promise<boolean>;
+    refresh: () => Promise<string | boolean>;
+    save: (value: CouncilLauncherPick | null) => Promise<string | boolean>;
     changed?: () => void;
     schedule?: typeof setTimeout;
     cancel?: typeof clearTimeout;

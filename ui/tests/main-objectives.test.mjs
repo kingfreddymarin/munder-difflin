@@ -15,6 +15,7 @@ const load = (js, req) => { const mod = { exports: {} }; new Function('module', 
 const objectives = load(compile('../src/data/objectives.ts'), () => ({}));
 const reducer = load(compile('../src/data/reducer.ts'), () => ({}));
 const editorJs = compile('../src/features/home/objectives-editor.tsx', true);
+const dialogJs = compile('../src/features/team/new-card-dialog.tsx', true);
 
 // ── Helpers shared by both harnesses ─────────────────────────────────────────
 const nodes = (t) => !t || typeof t !== 'object' ? [] : [t, ...(t.props?.children ?? []).flat(Infinity).flatMap(nodes)];
@@ -103,7 +104,8 @@ function makePickerHarness(initialCardKeys = [], openCards = [], snapshotCards =
   const findDialog = (tree) => nodes(tree).find((n) => typeof n.tag === 'function' && 'open' in (n.props ?? {}) && 'onClose' in (n.props ?? {}));
   return { render, nodes, byId, byTestId, button, edits,
     getCardKeys: () => cardKeys, findDialog,
-    updateSnapshot: (cards) => { snapshot = { cards }; } };
+    updateSnapshot: (cards) => { snapshot = { cards }; },
+    setRef: (i, val) => { if (!refMap.has(i)) refMap.set(i, { current: null }); refMap.get(i).current = val; } };
 }
 
 // ── ObjectivesEditor tests ────────────────────────────────────────────────────
@@ -287,4 +289,109 @@ test('chips show card key; linked card title is shown if in openCards', () => {
   const chipTexts = nodes(chips).filter((n) => n.tag === 'span').map((n) => n.props.children).flat(Infinity).join(' ');
   assert.match(String(chipTexts), /NSC-10/, 'NSC-10 key shown');
   assert.match(String(chipTexts), /NSC-99/, 'unknown key still shown as chip');
+});
+
+// ── NewCardDialog harness ────────────────────────────────────────────────────
+// Tests NewCardDialog directly. Hooks in order: useRef (cancelledRef), useCallback, useState×2, useEffect.
+// useEffect is suppressed (we manage initial state directly); dispatch is a controllable promise.
+function makeDialogHarness() {
+  const values = []; let cursor = 0;
+  const refMap = new Map(); let refCursor = 0;
+  let resolveDispatch = null;
+  const dispatched = [];
+  const created = []; let closed = 0;
+  let currentDispatchPromise = new Promise((res) => { resolveDispatch = res; });
+
+  const react = {
+    createElement: (tag, props, ...children) => ({ tag, props: { ...props, children } }),
+    useState: (init) => {
+      const i = cursor++; if (!(i in values)) values[i] = typeof init === 'function' ? init() : init;
+      return [values[i], (v) => { values[i] = typeof v === 'function' ? v(values[i]) : v; }];
+    },
+    useRef: (init) => {
+      const i = refCursor++;
+      if (!refMap.has(i)) refMap.set(i, { current: typeof init === 'function' ? init() : init });
+      return refMap.get(i);
+    },
+    useCallback: (fn) => fn,
+    useEffect: () => {}, // effects managed by test: initial state from useState defaults
+  };
+  const req = (id) => {
+    if (id === 'react') return react;
+    if (id === '@/data/store') return {
+      useDispatch: () => async (c) => { dispatched.push(c); return currentDispatchPromise; },
+      useFloor: (sel) => sel({ agents: [], cards: [] }),
+      useUnsupported: () => () => null,
+    };
+    return new Proxy({}, { get: (_t, key) => key });
+  };
+  const mod = load(dialogJs, req);
+
+  const render = () => {
+    cursor = 0; refCursor = 0;
+    return mod.NewCardDialog({ open: true, onClose: () => closed++, onCreated: (key) => created.push(key) });
+  };
+  const setTitle = (title) => {
+    const tree = render();
+    nodes(tree).find((n) => n.props?.id === 'nc-title').props.onChange({ target: { value: title } });
+  };
+  const submitForm = () => {
+    // Reset dispatch promise for this submission
+    currentDispatchPromise = new Promise((res) => { resolveDispatch = res; });
+    const tree = render();
+    nodes(tree).find((n) => n.tag === 'form').props.onSubmit({ preventDefault() {}, stopPropagation() {} });
+  };
+  const clickCancel = () => {
+    const tree = render();
+    // Cancel button: ghost variant Button
+    const cancel = nodes(tree).find((n) => n.tag === 'Button' && n.props?.variant === 'ghost' && n.props?.type === 'button');
+    if (cancel) cancel.props.onClick();
+  };
+  return {
+    render, setTitle, submitForm, clickCancel, dispatched, created,
+    closed: () => closed,
+    resolve: (key) => { resolveDispatch(key); },
+  };
+}
+
+// ── NewCardDialog race regressions ───────────────────────────────────────────
+
+test('NewCardDialog: dispatch-returned key is delivered to onCreated', async () => {
+  const h = makeDialogHarness();
+  h.setTitle('My card');
+  h.submitForm();
+  h.resolve('NSC-33');
+  await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.deepEqual(h.created, ['NSC-33'], 'key from dispatch result delivered — not snapshot inference');
+});
+
+test('NewCardDialog: cancel before create resolves does not call onCreated', async () => {
+  const h = makeDialogHarness();
+  h.setTitle('My card');
+  h.submitForm();
+  h.clickCancel(); // sets cancelledRef.current = true
+  h.resolve('NSC-33');
+  await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.deepEqual(h.created, [], 'onCreated suppressed when cancel preceded resolve');
+});
+
+test('removing a chip redirects focus to the new-card button', () => {
+  const h = makePickerHarness(['NSC-10', 'NSC-20'], OPEN_CARDS);
+  h.render(); // establish refMap entry for newBtnRef at index 0
+  let focusCalls = 0;
+  h.setRef(0, { focus: () => focusCalls++ });
+  const rm = nodes(h.render()).find((n) => n.props?.['aria-label'] === 'Remove NSC-10');
+  rm.props.onClick();
+  assert.ok(focusCalls > 0, 'focus called on newBtnRef after chip removal');
+});
+
+test('selecting the last available option redirects focus to the new-card button', () => {
+  const oneCard = [OPEN_CARDS[0]];
+  const h = makePickerHarness([], oneCard); // exactly 1 available option
+  h.render();
+  let focusCalls = 0;
+  h.setRef(0, { focus: () => focusCalls++ });
+  const sel = byTestId(h.render(), 'obj-card-select-o1');
+  sel.props.onChange({ target: { value: oneCard[0].key } });
+  assert.ok(focusCalls > 0, 'focus called on newBtnRef when last dropdown option taken');
 });
