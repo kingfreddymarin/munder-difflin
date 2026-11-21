@@ -46,7 +46,18 @@ export type ElectronBridge = ParamountPreloadAPI & {
   freeflowTranscribe?(arg: { audio: ArrayBuffer | Uint8Array; mimeType?: string; filename?: string }): Promise<{ ok: boolean; text?: string; error?: string }>;
   textSearch?(query: string): Promise<{ ok: boolean; results: Array<{ source: string; excerpt: string }> }>;
   searchMemory?(query: string, wing?: string): Promise<{ ok: boolean; output: string; error?: string }>;
+  // ─── Filesystem viewer/editor (NSC-247) ──────────────────────────────────
+  listDir?(root: string, rel: string): Promise<{ ok: true; entries: DirEntry[]; path: string } | { ok: false; error: string }>;
+  readFile?(root: string, rel: string): Promise<{ ok: true; content: string; path: string; size: number } | { ok: false; error: string }>;
+  writeFile?(root: string, rel: string, content: string): Promise<{ ok: true; path: string } | { ok: false; error: string }>;
 };
+
+export interface DirEntry {
+  name: string;
+  isDir: boolean;
+  size: number;
+  mtime: number;
+}
 
 declare global {
   interface Window {
