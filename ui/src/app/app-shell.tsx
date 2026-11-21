@@ -1,4 +1,4 @@
-import paramountMark from '@/assets/paramount-mark.svg';
+import paramountMark from '@/assets/nasstro-mark.png';
 import * as React from 'react';
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarTrigger, useSidebar } from '@/components/animate-ui/components/radix/sidebar';
 import { ThemeTogglerButton } from '@/components/animate-ui/components/buttons/theme-toggler';
