@@ -1,0 +1,378 @@
+// Council runtime duties that Munder runs from renderer hooks (public MIT
+// useRestoreTeam.ts): remember which agents had a live terminal and bring them
+// back, resumed, on the next launch. Munder's renderer keeps that list in the
+// roster's `restorable`; Council replaced the renderer, so the main process keeps
+// it in <hive>/paramount-runtime.json instead.
+//
+// One runtime per floor: a lock file in the hive root names the owning process.
+// While another live process holds it (a second Council, or a Munder build that
+// honours it), this runtime neither restores nor records, so agents are never
+// started twice. Spawn requests and inbox wake already run in main (index.ts).
+import { lagOp } from './lag-probe';
+import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import { resolveAgentModel } from './paramount-models';
+
+export const RUNTIME_FILE = 'paramount-runtime.json';
+export const LOCK_FILE = '.paramount-runtime.lock';
+export const RESTORE_DELAY_MS = 2500; // Munder's AUTO_RESTORE_DELAY_MS
+export const BEAT_MS = 5000;
+export const RESTORE_CONCURRENCY = 4;
+
+export interface LiveAgent {
+  id: string;
+  name: string;
+  provider: string;
+  cwd: string;
+  role?: string;
+  isGod?: boolean;
+}
+
+export interface RuntimeDeps {
+  /** Hive root, or null while the floor is not set up. */
+  hiveRoot(): string | null;
+  /** Agents that have a live terminal right now (registry joined with live PTYs). */
+  liveAgents(): LiveAgent[];
+  /** True when this agent already has a live terminal. */
+  isLive(agentId: string): boolean;
+  /** True when the registry marks this agent stopped by the human (archived). */
+  isArchived(agentId: string): boolean;
+  isDirectory(path: string): boolean;
+  /** Distinguishes a confirmed missing working directory from a transient access or volume error. */
+  directoryState?(path: string): 'directory' | 'missing' | 'unavailable';
+  /** Start the agent again with its prior session resumed. */
+  respawn(agent: LiveAgent): Promise<{ ok: boolean; error?: string }>;
+  /** Mark the agent archived in the registry (its folder is gone, so it cannot come back). */
+  archive?(agentId: string): void;
+  pid: number;
+  /** True when that process is alive (kill(pid, 0)). */
+  processAlive(pid: number): boolean;
+  log(step: Record<string, unknown>): void;
+  now(): number;
+}
+
+interface RuntimeRecord { schema: 'paramount-runtime-v1'; savedAt: string; agents: LiveAgent[] }
+
+/** The agents recorded as live at the last beat or quit (empty when there is no record). */
+export function readRecord(root: string): LiveAgent[] {
+  try {
+    const raw = JSON.parse(readFileSync(join(root, RUNTIME_FILE), 'utf8')) as Partial<RuntimeRecord>;
+    if (raw.schema !== 'paramount-runtime-v1' || !Array.isArray(raw.agents)) return [];
+    return raw.agents.filter((a): a is LiveAgent => !!a && typeof a.id === 'string' && typeof a.name === 'string'
+      && typeof a.provider === 'string' && typeof a.cwd === 'string');
+  } catch { return []; }
+}
+
+/** A hire whose first start failed is archived, so the next boot does not seed and restore an agent
+ *  the user saw fail (review N6). An agent registered before this start keeps its entry: a failed
+ *  restore or restart is not a reason to archive (NSC-219). True when the entry was archived. */
+export function settleFailedStart(hive: { setArchived(id: string, archived: boolean): void }, agentId: string,
+  start: { registeredBefore: boolean; started: boolean }): boolean {
+  if (start.started || start.registeredBefore) return false;
+  hive.setArchived(agentId, true);
+  return true;
+}
+
+/** Rebase only paths contained in copied roots. External and uncopied paths remain
+ *  unchanged; path boundaries prevent `/old-floorish` matches. */
+export function remapMovedCwds<T extends { cwd?: unknown }>(value: T, oldHome: string, newHome: string, copiedRoots: readonly string[]): T {
+  const oldRoot = oldHome.replace(/[\\/]+$/, '');
+  const cwd = value.cwd;
+  if (typeof cwd !== 'string') return value;
+  const resolved = resolve(cwd);
+  const root = resolve(oldRoot);
+  const copied = copiedRoots.some((copiedRoot) => {
+    const subtree = resolve(copiedRoot);
+    return resolved === subtree || resolved.startsWith(subtree + sep);
+  });
+  if (!copied) return value;
+  return { ...value, cwd: join(resolve(newHome), relative(root, resolved)) };
+}
+
+/** Distinguish deleted workdirs from missing or unmounted macOS volume roots. */
+export function directoryStateForPath(path: string, options: {
+  platform?: string;
+  stat?: (path: string) => { isDirectory(): boolean; dev?: number };
+} = {}): 'directory' | 'missing' | 'unavailable' {
+  const stat = options.stat ?? statSync;
+  const platform = options.platform ?? process.platform;
+  const resolved = resolve(path);
+  let volumeRoot: string | null = null;
+  let volumeDevice: number | undefined;
+  let volumesDevice: number | undefined;
+  if (platform === 'darwin' && (resolved === '/Volumes' || resolved.startsWith('/Volumes/'))) {
+    const first = relative('/Volumes', resolved).split(sep)[0];
+    if (first) {
+      volumeRoot = join('/Volumes', first);
+      try {
+        volumesDevice = stat('/Volumes').dev;
+        const mounted = stat(volumeRoot);
+        // A leftover mountpoint directory on the root disk is not an available volume.
+        if (mounted.dev === undefined || volumesDevice === undefined || mounted.dev === volumesDevice) return 'unavailable';
+        volumeDevice = mounted.dev;
+      } catch { return 'unavailable'; }
+    }
+  }
+  try { return stat(resolved).isDirectory() ? 'directory' : 'unavailable'; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') return 'unavailable';
+    let parent = dirname(resolved);
+    while (parent !== dirname(parent)) {
+      try {
+        const existing = stat(parent);
+        if (!existing.isDirectory()) return 'unavailable';
+        if (volumeRoot && (parent === volumeRoot || parent.startsWith(volumeRoot + sep))
+          && (existing.dev === undefined || existing.dev !== volumeDevice)) return 'unavailable';
+        if (volumeRoot && parent === '/Volumes' && existing.dev !== volumesDevice) return 'unavailable';
+        return 'missing';
+      } catch (parentError) {
+        if ((parentError as NodeJS.ErrnoException)?.code !== 'ENOENT') return 'unavailable';
+        parent = dirname(parent);
+      }
+    }
+    return 'unavailable';
+  }
+}
+
+function writeRecord(root: string, agents: LiveAgent[], now: number): void {
+  const file = join(root, RUNTIME_FILE);
+  const tmp = `${file}.${process.pid}.tmp`;
+  const record: RuntimeRecord = { schema: 'paramount-runtime-v1', savedAt: new Date(now).toISOString(), agents };
+  writeFileSync(tmp, JSON.stringify(record, null, 1) + '\n');
+  renameSync(tmp, file);
+}
+
+/** A temp: an ephemeral worker started from a spawn request (`worker-<request id>`; Munder registers
+ *  them with role 'temp'). A hire whose role is the word "worker" is not one. */
+export function isTemp(_id: string, a: { role?: unknown }): boolean { return a.role === 'temp'; }
+
+/** A floor last run by Munder has no Council record (Munder restores its team from its own renderer
+ *  record), or a record from an earlier Council run that lists only the god. Seed it from the
+ *  registry's live (non-archived), non-temp agents, the set Munder brings back, so the boot step that
+ *  archives orphans leaves them and the runtime restores them (owner use of 63ea664e on the Varium
+ *  floor: dwight, kevin, kelly and jim were archived at boot and only the god came back).
+ *  A record Council wrote can also be stale: Munder ran the floor after it and hired more. Every
+ *  live registry agent missing from the record is added, so those hires come back too. An agent the
+ *  human stopped is archived in the registry and stays out.
+ *  Returns the seeded ids; nothing is written when the record already lists every live agent. */
+export function seedRecordFromRegistry(root: string, registry: { godId?: string | null; agents?: Record<string, unknown> }, now: number): string[] {
+  const godId = registry.godId ?? undefined;
+  const recorded = new Set(readRecord(root).map((a) => a.id));
+  const seeded: LiveAgent[] = [];
+  for (const [id, raw] of Object.entries(registry.agents ?? {})) {
+    if (!raw || typeof raw !== 'object' || recorded.has(id)) continue;
+    const a = raw as { name?: unknown; provider?: unknown; cwd?: unknown; role?: unknown; isGod?: unknown; archived?: unknown };
+    if (a.archived === true || a.isGod === true || id === godId) continue;
+    // Temps (ephemeral workers) are never restored, in Munder or here.
+    if (isTemp(id, a)) continue;
+    if (typeof a.cwd !== 'string' || !a.cwd) continue;
+    seeded.push({ id, name: typeof a.name === 'string' && a.name ? a.name : id, provider: typeof a.provider === 'string' && a.provider ? a.provider : 'claude', cwd: a.cwd,
+      ...(typeof a.role === 'string' && a.role ? { role: a.role } : {}) });
+  }
+  if (!seeded.length) return [];
+  writeRecord(root, [...readRecord(root), ...seeded], now);
+  return seeded.map((a) => a.id);
+}
+
+/** Take or keep the floor's runtime lock. False while another live process holds it. */
+export function acquireLock(root: string, deps: Pick<RuntimeDeps, 'pid' | 'processAlive' | 'now'>): boolean {
+  const file = join(root, LOCK_FILE);
+  try {
+    const held = JSON.parse(readFileSync(file, 'utf8')) as { pid?: unknown };
+    if (typeof held.pid === 'number' && held.pid !== deps.pid && deps.processAlive(held.pid)) return false;
+    if (held.pid === deps.pid) return true;
+  } catch { /* no lock, or unreadable: take it */ }
+  writeFileSync(file, JSON.stringify({ pid: deps.pid, since: new Date(deps.now()).toISOString() }) + '\n');
+  return true;
+}
+
+/** kill(pid, 0): EPERM means alive but owned by another user. */
+export function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
+/** This process claims the floor (the same lock the runtime beat holds), so a
+ *  second runtime never starts a second orchestrator. False while another live
+ *  process holds it. */
+export function claimFloor(root: string, pid = process.pid, alive: (pid: number) => boolean = processAlive): boolean {
+  // A floor whose lock cannot be written behaves as before the lock existed.
+  try { return acquireLock(root, { pid, processAlive: alive, now: () => Date.now() }); } catch { return true; }
+}
+
+export function releaseLock(root: string, pid: number): void {
+  try {
+    const held = JSON.parse(readFileSync(join(root, LOCK_FILE), 'utf8')) as { pid?: unknown };
+    if (held.pid === pid) unlinkSync(join(root, LOCK_FILE));
+  } catch { /* nothing to release */ }
+}
+
+/** Restore the agents recorded as live at the last quit. Skips agents already live or stopped by
+ *  the human. An agent whose folder is gone is archived with a note (review F4: it failed at every
+ *  open and was never archived; an isolated agent's worktree is removed when it stops). One failure
+ *  never stops the rest. */
+export async function restoreAgents(root: string, deps: RuntimeDeps): Promise<{ restored: string[]; skipped: string[]; failed: string[]; archived: string[] }> {
+  // Concurrent beat/manual invocations share a single in-flight restore for this
+  // floor, so neither path can launch the same recorded agents twice.
+  const existing = restoreRuns.get(root);
+  if (existing) return existing;
+  const run = restoreAgentsBounded(root, deps);
+  restoreRuns.set(root, run);
+  try { return await run; }
+  finally { if (restoreRuns.get(root) === run) restoreRuns.delete(root); }
+}
+
+const restoreRuns = new Map<string, Promise<{ restored: string[]; skipped: string[]; failed: string[]; archived: string[] }>>();
+
+async function restoreAgentsBounded(root: string, deps: RuntimeDeps): Promise<{ restored: string[]; skipped: string[]; failed: string[]; archived: string[] }> {
+  const result = { restored: [] as string[], skipped: [] as string[], failed: [] as string[], archived: [] as string[] };
+  const agents = readRecord(root);
+  let next = 0;
+  const worker = async () => {
+    while (true) {
+      const index = next++;
+      if (index >= agents.length) return;
+      const agent = agents[index];
+    // The orchestrator's start and resume belong to the setup/orchestrator path (matrix row 8).
+    if (agent.isGod) { result.skipped[index] = agent.id; continue; }
+    if (deps.isLive(agent.id) || deps.isArchived(agent.id)) { result.skipped[index] = agent.id; continue; }
+    const directoryState = deps.directoryState?.(agent.cwd) ?? (deps.isDirectory(agent.cwd) ? 'directory' : 'missing');
+    if (directoryState !== 'directory') {
+      if (directoryState === 'missing' && deps.archive) {
+        deps.archive(agent.id);
+        result.archived[index] = agent.id;
+        deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'archived', code: 'CWD_MISSING',
+          note: `${agent.name}'s folder ${agent.cwd} is gone, so ${agent.name} was archived instead of restored.` });
+      } else {
+        result.failed[index] = agent.id;
+        deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'failed', code: directoryState === 'missing' ? 'CWD_MISSING' : 'CWD_UNAVAILABLE' });
+      }
+      continue;
+    }
+    try {
+      const res = await deps.respawn(agent);
+      if (res.ok) result.restored[index] = agent.id; else result.failed[index] = agent.id;
+      deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: res.ok ? 'ok' : 'failed', ...(res.ok ? {} : { code: 'SPAWN_FAILED', cause: (res.error ?? '').slice(0, 200) }) });
+    } catch (error) {
+      result.failed[index] = agent.id;
+      deps.log({ kind: 'paramount-runtime', step: 'restore', agentId: agent.id, outcome: 'failed', code: 'SPAWN_THREW', cause: (error instanceof Error ? error.message : String(error)).slice(0, 200) });
+    }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(RESTORE_CONCURRENCY, agents.length) }, worker));
+  for (const key of Object.keys(result) as Array<keyof typeof result>) result[key] = result[key].filter(Boolean);
+  return result;
+}
+
+export interface ParamountRuntime {
+  /** One beat: take the lock, restore once per floor, then record the live set. */
+  beat(): Promise<void>;
+  /** Called on app quit and Switch, before terminals close: record the live set once, then stop
+   *  recording, so terminals closing during shutdown are not mistaken for agents the human stopped. */
+  quit(): void;
+}
+
+export function createParamountRuntime(deps: RuntimeDeps): ParamountRuntime {
+  let restoredFor: string | null = null;
+  let quitting = false;
+  let busy = false;
+  let lockedOut: string | null = null;
+  // Munder keeps an agent restorable when its restore fails and says why; dropping
+  // it would read as "nothing happened". Kept until it is live again or stopped.
+  let unrestored: LiveAgent[] = [];
+  const record = (root: string) => {
+    const live = deps.liveAgents();
+    unrestored = unrestored.filter((a) => !deps.isLive(a.id) && !deps.isArchived(a.id));
+    writeRecord(root, [...live, ...unrestored.filter((a) => !live.some((l) => l.id === a.id))], deps.now());
+  };
+  return {
+    async beat() {
+      const root = deps.hiveRoot();
+      if (!root || quitting || busy || !existsSync(root)) return;
+      busy = true;
+      try {
+        if (!acquireLock(root, deps)) {
+          if (lockedOut !== root) deps.log({ kind: 'paramount-runtime', step: 'lock', outcome: 'held-by-other', code: 'SECOND_RUNTIME' });
+          lockedOut = root;
+          return;
+        }
+        lockedOut = null;
+        if (restoredFor !== root) {
+          restoredFor = root;
+          const recorded = readRecord(root);
+          const r = await restoreAgents(root, deps);
+          unrestored = recorded.filter((a) => r.failed.includes(a.id));
+          deps.log({ kind: 'paramount-runtime', step: 'restore-summary', restored: r.restored.length, skipped: r.skipped.length, failed: r.failed.length, archived: r.archived.length });
+        }
+        if (!quitting) record(root);
+      } finally { busy = false; }
+    },
+    quit() {
+      const root = deps.hiveRoot();
+      // Record who is live before the terminals close (review F3: a hire in the last beat before quit
+      // or Switch was missing from the record). Only once this floor's restore has run here: before
+      // that, or while it runs, the record still names the team to bring back.
+      if (root && !quitting && !busy && restoredFor === root && lockedOut === null) {
+        try { record(root); } catch (e) { deps.log({ kind: 'paramount-runtime', step: 'quit-record', outcome: 'failed', cause: String(e).slice(0, 200) }); }
+      }
+      quitting = true;
+      if (root) releaseLock(root, deps.pid);
+    }
+  };
+}
+
+/** Arm the runtime: first beat after Munder's restore delay, then every BEAT_MS. */
+export function startParamountRuntime(deps: RuntimeDeps, onQuit: (fn: () => void) => void): ParamountRuntime {
+  const runtime = createParamountRuntime(deps);
+  const tick = () => { const doneLag = lagOp('runtime.beat'); runtime.beat().catch((e) => deps.log({ kind: 'paramount-runtime', step: 'beat', outcome: 'failed', cause: String(e).slice(0, 200) })).finally(doneLag); };
+  const first = setTimeout(tick, RESTORE_DELAY_MS);
+  const timer = setInterval(tick, BEAT_MS);
+  onQuit(() => { clearTimeout(first); clearInterval(timer); runtime.quit(); });
+  return runtime;
+}
+
+/** Wiring from index.ts primitives, so registration there is one line. */
+export interface RuntimeHost {
+  hive: { root(): string | null; setArchived(id: string, archived: boolean): void; registry(): { godId?: string | null; agents?: Record<string, { name?: string; provider?: string; cwd?: string; role?: string; isGod?: boolean; archived?: boolean }> } };
+  ptyForAgent(agentId: string): string | undefined;
+  config(): { defaultCommand?: string; autoMode?: boolean; defaultModel?: string; godProvider?: string; godModel?: string };
+  /** Model choices in priority order (per-agent pick, configured default, role tier). */
+  modelChoices(agentId: string, meta: { role?: string; isGod?: boolean }): Array<string | undefined>;
+  /** Model ids the configured catalog offers for an engine. */
+  offeredModels(provider: string): string[];
+  buildLaunch(opts: { requestProvider: string; requestModel?: string; defaultCommand?: string; autoMode: boolean }): { bin: string; args: string[] };
+  spawn(opts: { id: string; cwd: string; command: string; args: string[]; cols: number; rows: number; provider: string; isolate: false; resume: true;
+    hive: { id: string; name: string; provider: string; cwd: string; role?: string } }): Promise<{ ok: boolean; error?: string }>;
+  isDirectory(path: string): boolean;
+  directoryState?(path: string): 'directory' | 'missing' | 'unavailable';
+  log(step: Record<string, unknown>): void;
+  onQuit(fn: () => void): void;
+}
+
+export function registerParamountRuntime(host: RuntimeHost): ParamountRuntime {
+  const agents = () => host.hive.registry().agents ?? {};
+  const deps: RuntimeDeps = {
+    hiveRoot: () => host.hive.root(),
+    // Temps are never restored (Munder parity): left out of the record, so the next open archives them.
+    liveAgents: () => Object.entries(agents())
+      .filter(([id, a]) => !a.archived && !isTemp(id, a) && !!host.ptyForAgent(id) && typeof a.cwd === 'string')
+      .map(([id, a]) => ({ id, name: a.name ?? id, provider: a.provider ?? 'claude', cwd: a.cwd as string,
+        ...(a.role ? { role: a.role } : {}), ...(a.isGod || host.hive.registry().godId === id ? { isGod: true } : {}) })),
+    isLive: (id) => !!host.ptyForAgent(id),
+    isArchived: (id) => agents()[id]?.archived === true,
+    archive: (id) => host.hive.setArchived(id, true),
+    isDirectory: host.isDirectory,
+    ...(host.directoryState ? { directoryState: host.directoryState } : {}),
+    respawn: (agent) => {
+      const config = host.config();
+      const launch = host.buildLaunch({ requestProvider: agent.provider, requestModel: resolveAgentModel(agent.provider, host.modelChoices(agent.id, { role: agent.role }), host.offeredModels),
+        defaultCommand: config.defaultCommand, autoMode: config.autoMode !== false });
+      return host.spawn({ id: agent.id, cwd: agent.cwd, command: launch.bin, args: launch.args, cols: 120, rows: 32, provider: agent.provider,
+        isolate: false, resume: true, hive: { id: agent.id, name: agent.name, provider: agent.provider, cwd: agent.cwd, ...(agent.role ? { role: agent.role } : {}) } });
+    },
+    pid: process.pid,
+    processAlive,
+    log: host.log,
+    now: () => Date.now()
+  };
+  return startParamountRuntime(deps, host.onQuit);
+}

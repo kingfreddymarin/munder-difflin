@@ -129,3 +129,21 @@ test('webhook dispatch appends via atomic addTask, not a stale whole-ledger rewr
   assert.doesNotMatch(fn, /writeTasks\s*\(\[\s*\.\.\.existing/,
     'dispatchWebhookWork must not rebuild a stale whole-ledger snapshot');
 });
+
+test('Board archive persists across a fresh ledger read and an agent rename', (t) => {
+  const hive = floor(t);
+  const { dispatchParamount } = loadTs('src/main/paramount.ts');
+  const original = card('archive-me', { status: 'doing', slack: { channel: 'channel', thread_ts: '123' } });
+  hive.writeTasks([original]);
+  const result = dispatchParamount({ type: 'card.archive', key: original.id }, {
+    board: {}, canMutateBoard: () => true, tasks: () => hive.tasks(),
+    patchTask: (id, patch) => hive.patchTask(id, patch),
+    appendEvent() {}, publish() {},
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(tasks(hive), [{ ...original, boardArchivedAt: result.event.at }]);
+
+  // An authorized agent still works from the ledger and can rename the task.
+  hive.writeTasks([{ ...original, title: 'Agent rename' }]);
+  assert.deepEqual(tasks(hive), [{ ...original, title: 'Agent rename', boardArchivedAt: result.event.at }]);
+});

@@ -6,11 +6,11 @@ import { spawnSync } from 'node:child_process';
 import { ensureKilled, hardKillTree } from './procKill';
 import { expandTilde } from './fs';
 import { buildPtyEnv } from './ptyEnv';
+import { fallbackCommandPath } from './snapshotCommandDiscovery';
 import {
   captureFromLoginShell,
   isSafeCommandName,
-  userShellPath,
-  windowsFallbackCandidates
+  userShellPath
 } from './shellEnv';
 
 /** APPEND the hive's bundled-node dir (`<HIVE_ROOT>/bin/runtime`, which holds a
@@ -75,6 +75,8 @@ interface PtySession {
   /** True after the child has emitted at least one frame. Automation waits for
    *  this before typing, so startup prompts cannot outrun the TUI subscription. */
   hasOutput: boolean;
+  exited: Promise<number | undefined>;
+  resolveExit(code: number | undefined): void;
 }
 
 export interface SpawnOptions {
@@ -86,6 +88,10 @@ export interface SpawnOptions {
   rows?: number;
   /** Extra environment for the child (merged over the resolved shell env). */
   env?: Record<string, string>;
+  /** Explicit per-spawn removals, applied after all environment layering. */
+  envUnset?: string[];
+  /** When false, pass only the portable terminal environment and explicit overrides. */
+  inheritEnv?: boolean;
   /** When set, run this string as a VISIBLE shell script instead of resolving/
    *  spawning `command`. Used by the missing-CLI auto-install path: the script
    *  (a banner + an install command) streams to the same Terminal tab. Routed
@@ -467,8 +473,8 @@ export class PtyManager {
         if (exe) return { path: exe, found: true };
       } catch { /* fall through */ }
       // Common Windows install locations (npm global = %APPDATA%\npm\<cmd>.cmd).
-      const winCandidates = windowsFallbackCandidates(command);
-      for (const c of winCandidates) if (existsSync(c)) return { path: c, found: true };
+      const fallback = fallbackCommandPath(command);
+      if (fallback) return { path: fallback, found: true };
       // Last resort — let node-pty try; will fail with ENOENT if missing.
       return { path: command, found: false };
     }
@@ -480,14 +486,8 @@ export class PtyManager {
       if (path && existsSync(path)) return { path, found: true };
     }
     // Common explicit locations
-    const candidates = [
-      `/opt/homebrew/bin/${command}`,
-      `/usr/local/bin/${command}`,
-      `${process.env.HOME ?? ''}/.local/bin/${command}`,
-      `${process.env.HOME ?? ''}/.claude/local/${command}`,
-      `${process.env.HOME ?? ''}/.volta/bin/${command}`
-    ];
-    for (const c of candidates) if (existsSync(c)) return { path: c, found: true };
+    const fallback = fallbackCommandPath(command);
+    if (fallback) return { path: fallback, found: true };
     // Last resort — let node-pty try; will fail with ENOENT if missing.
     return { path: command, found: false };
   }
@@ -669,7 +669,7 @@ export class PtyManager {
         // Inherited env minus the parent Claude session's identity markers,
         // then the app's defaults and locale, then per-agent values — see
         // ptyEnv.ts for why the strip exists and why it is prefix-based.
-        env: buildPtyEnv(process.env, userPath, opts.env)
+        env: buildPtyEnv(process.env, userPath, opts.env, process.platform, opts.envUnset, opts.inheritEnv)
       });
 
       // Capture THIS session object so the proc's callbacks can tell whether the
@@ -687,9 +687,12 @@ export class PtyManager {
         command: resolved,
         lastOutputAt: Date.now(),
         hasOutput: false,
+        exited: Promise.resolve(undefined),
+        resolveExit: () => {},
         tail: '',
         owner
       };
+      session.exited = new Promise<number | undefined>((resolve) => { session.resolveExit = resolve; });
       this.sessions.set(opts.id, session);
 
       proc.onData((data) => {
@@ -710,6 +713,7 @@ export class PtyManager {
         if (this.sessions.get(opts.id) !== session) return;
         this.safeSend(`pty:exit:${opts.id}`, { exitCode, signal }, session.owner);
         this.sessions.delete(opts.id);
+        session.resolveExit(exitCode);
         // Natural exit must run the same lifecycle teardown as an explicit kill.
         // Guarded so a teardown error can never crash node-pty's exit callback.
         // `signal` is forwarded, not dropped: a provider killed by SIGILL/SIGSEGV
@@ -779,6 +783,7 @@ export class PtyManager {
       s.proc.kill();
       ensureKilled(pid); // verify + sweep the process group so no PID leaks
       this.sessions.delete(id);
+      s.resolveExit(undefined);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -807,6 +812,20 @@ export class PtyManager {
     const s = this.sessions.get(id);
     return s ? Date.now() - s.lastOutputAt : undefined;
   }
+
+  /** Wait up to timeoutMs for this child to exit; allocation alone is not startup success. */
+  async waitForExit(id: string, timeoutMs: number): Promise<{ exited: boolean; exitCode?: number }> {
+    const session = this.sessions.get(id);
+    if (!session) return { exited: true };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      session.exited.then((exitCode) => ({ exited: true as const, exitCode })),
+      new Promise<{ exited: false }>((resolve) => { timer = setTimeout(() => resolve({ exited: false }), Math.max(0, timeoutMs)); })
+    ]);
+    if (timer) clearTimeout(timer);
+    return result;
+  }
+
 
   /** Bulk-kill every PTY for app quit / reset. This is wholesale shutdown, not
    *  individual agent lifecycle, so it suppresses the natural-exit teardown —

@@ -1,46 +1,18 @@
-appId: in.munderdiffl.app
-productName: Munder Difflin
+appId: com.studio.paramount
+productName: Paramount
 copyright: Copyright © 2026 Chaitanya Giri
 
-# Where electron-updater looks for new versions (latest*.yml + assets on GitHub
-# releases). The release workflow still uploads assets itself (--publish never);
-# this block only stamps app-update.yml into the packaged app so the updater
-# knows which repo to poll.
-publish:
-  provider: github
-  owner: chaitanyagiri
-  repo: munder-difflin
+# Paramount shell: a fork of Munder Difflin that ships only the backend (main +
+# preload); the UI is the separate Paramount app, bundled below via
+# extraResources. No update feed (publish: null, so no app-update.yml), no
+# munderdifflin:// scheme, no notarize hook: the mac build is unsigned.
+publish: null
 
-# Bake the update toast's "What's new" list straight into latest*.yml.
-#
-# Without this, electron-updater has nothing to read: parseUpdateInfo yaml-loads
-# the channel file, finds releaseNotes null, and falls back to computeReleaseNotes
-# over GitHub's releases.atom feed. That feed carries GitHub's RENDERED HTML of
-# RELEASE.md, not its markdown, so the digest sees no `##` headings at all and
-# scans for bullets instead. The only line in 53KB that looks like a bullet is
-# `* { box-sizing: border-box; }` inside RELEASE.md's <style> block, so the
-# toast's entire what's-new list was one CSS rule.
-#
-# A present releaseNotes means the feed is never consulted. That is the whole
-# point: the toast is drawn by the ALREADY RUNNING app, so a parser fix reaches
-# only people who have already upgraded, while this is a field every existing
-# client on every old version already reads.
-#
-# Keep this file short and free of HTML. It is sized for a 340px toast (5
-# bullets, 280 chars total), NOT for the release page, which stays RELEASE.md.
+# Kept from upstream: inert while publish is null (no latest*.yml is written),
+# but it stamps the toast's "What's new" list if an update feed is ever turned
+# back on, and test/release-notes.test.cjs guards it.
 releaseInfo:
   releaseNotesFile: build/release-notes.md
-
-# Notarize + staple after signing, but only when APPLE_* creds are in the env
-# (the hook no-ops otherwise, so contributor builds still work). Root-level hook.
-afterSign: build/notarize.cjs
-
-# Register the munderdifflin:// URL scheme (shareable-hires deep link) in the
-# packaged app: CFBundleURLTypes on macOS, registry entries via NSIS on Windows.
-protocols:
-  - name: Munder Difflin
-    schemes:
-      - munderdifflin
 
 # electron-vite emits the app into out/; package exactly that plus what the
 # runtime needs. node-pty is native, so keep it out of the asar.
@@ -49,7 +21,8 @@ directories:
   buildResources: build
 
 files:
-  - out/**
+  - out/main/**
+  - out/preload/**
   - package.json
   # v0.3.4: shipped so the voice get_app_info tool can read release notes.
   - CHANGELOG.md
@@ -60,6 +33,14 @@ files:
 # resources dir (process.resourcesPath). It runs under `node`, NOT inside the
 # asar, so the office worker can invoke `node <resources>/md-slack-reply.cjs`.
 extraResources:
+  # The Paramount UI build (ui/, `npm run build` there).
+  # Served at runtime over paramount://app/ from <resources>/paramount-ui.
+  # Placeholder: electron-builder.config.cjs (the --config every dist script
+  # passes) replaces it with the absolute dir from scripts/paramount-ui-dist.cjs:
+  # default ui/dist, override with PARAMOUNT_UI_DIST. A bare
+  # `electron-builder` (no --config) would skip it and ship no UI.
+  - from: PARAMOUNT_UI_DIST
+    to: paramount-ui
   - from: resources/md-slack-reply.cjs
     to: md-slack-reply.cjs
   # Knowledge Graph agent CLI + its pure-JS core. Agents invoke `node
@@ -88,52 +69,24 @@ npmRebuild: true
 mac:
   category: public.app-category.developer-tools
   icon: build/icon.icns
-  # Declare WHY the app touches the user's folders. macOS shows these strings in
-  # the privacy prompt and, for a signed app, remembers the grant — so the user
-  # is asked ONCE instead of on every agent action.
   extendInfo:
-    NSDocumentsFolderUsageDescription: "Munder Difflin runs your Claude Code agents, which read and write files in the project folders you point them at."
-    NSDesktopFolderUsageDescription: "Munder Difflin's agents may work on projects located on your Desktop."
-    NSDownloadsFolderUsageDescription: "Munder Difflin's agents may work on projects located in your Downloads."
-    NSRemovableVolumesUsageDescription: "Munder Difflin's agents may work on projects located on external volumes."
-    NSNetworkVolumesUsageDescription: "Munder Difflin's agents may work on projects located on network volumes."
-    # The microphone is used by two opt-in, off-by-default voice features: Free
-    # Flow dictation (Groq transcription) and Realtime Michael (live voice chat
-    # with the orchestrator via OpenAI). Mic access only happens while one is on.
-    NSMicrophoneUsageDescription: "Munder Difflin uses your microphone only for its opt-in voice features: Free Flow dictation (transcribed by Groq into the message queue) and talking to Michael in real time (streamed to OpenAI). The mic is off unless you turn one of these on."
-  # Hardened runtime + entitlements so the spawned `claude` agents inherit this
-  # app's TCC responsibility (one grant covers them all) and node-pty can load.
-  hardenedRuntime: true
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
+    NSDocumentsFolderUsageDescription: "Paramount runs your Claude Code agents, which read and write files in the project folders you point them at."
+    NSDesktopFolderUsageDescription: "Paramount's agents may work on projects located on your Desktop."
+    NSDownloadsFolderUsageDescription: "Paramount's agents may work on projects located in your Downloads."
+    NSRemovableVolumesUsageDescription: "Paramount's agents may work on projects located on external volumes."
+    NSNetworkVolumesUsageDescription: "Paramount's agents may work on projects located on network volumes."
+    NSMicrophoneUsageDescription: "Paramount uses your microphone only for its opt-in voice features."
+  # Unsigned: no keychain lookup, no hardened runtime, no notarization.
+  identity: null
+  hardenedRuntime: false
   gatekeeperAssess: false
-  # Disable electron-builder's BUILT-IN notarization. It auto-triggers whenever the
-  # APPLE_* env vars are present and runs inside signApp — a path our afterSign hook's
-  # try/catch can't guard, so a bad-credential failure there hard-fails the whole
-  # release (exactly what bit us). Instead, the root-level `afterSign: build/notarize.cjs`
-  # hook does notarization best-effort: it tries, and on failure ships the signed (un-
-  # notarized) build rather than sinking the cross-platform release. Notarization
-  # resumes automatically once the APPLE_* secrets are valid — no further changes.
   notarize: false
-  # Signing: TCC binds a remembered grant to a STABLE code signature, so a signed
-  # build is asked for folder access ONCE. The "Developer ID Application" cert is
-  # auto-discovered from the login keychain (CSC_IDENTITY_AUTO_DISCOVERY). If no
-  # cert is found, electron-builder warns and produces an unsigned build, so
-  # contributors without an Apple account can still build.
-  #   To sign: install your "Developer ID Application" cert into the keychain.
-  #   (Override with CSC_LINK=<path-to.p12> + CSC_KEY_PASSWORD for CI.)
-  # Notarization happens in the root-level `afterSign` hook (top of this file).
-  # dmg is what humans download; zip is what Squirrel.Mac (electron-updater)
-  # actually updates from — latest-mac.yml points at it. Both universal.
   target:
     - target: dmg
-      arch: [universal]
-    - target: zip
-      arch: [universal]
-  artifactName: Munder-Difflin-${version}-mac-${arch}.${ext}
 
 dmg:
-  title: Munder Difflin ${version}
+  title: Paramount ${version}
+  artifactName: Paramount-${version}-${arch}.dmg
 
 # ---- Windows ----
 win:
@@ -148,11 +101,11 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  artifactName: Munder-Difflin-${version}-win-x64-setup.exe
-  shortcutName: Munder Difflin
+  artifactName: Paramount-${version}-win-x64-setup.exe
+  shortcutName: Paramount
 
 portable:
-  artifactName: Munder-Difflin-${version}-win-x64-portable.exe
+  artifactName: Paramount-${version}-win-x64-portable.exe
 
 # ---- Linux ----
 linux:
@@ -161,4 +114,4 @@ linux:
   target:
     - target: AppImage
       arch: [x64]
-  artifactName: Munder-Difflin-${version}-linux-x86_64.AppImage
+  artifactName: Paramount-${version}-linux-x86_64.AppImage

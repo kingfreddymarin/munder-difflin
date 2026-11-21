@@ -33,8 +33,11 @@ const RELAYS = 30;
 
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-hop-cap-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const hive = new HiveManager(() => home);
+  t.after(async () => {
+    await hive.flushCommits();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
   // hopless-1 runs kimi — no hook bridge, canReceiveInbox:false, so every
   // direct mail to it bounces to god (the hookless path). No PTY, no sidecar,
   // no net: routing exercises the bounce ladder with nothing running but the
@@ -69,11 +72,17 @@ test('a god↔hookless-worker relay loop is bounded and hops climbs to the cap',
   });
 
   const hopsSeen = [];
+  const bounceIds = new Set();
   for (let i = 1; i <= RELAYS; i++) {
     hive.routeOnce();
-    const bounces = hive.inbox('god-1').filter((m) => m.subject.startsWith('[undeliverable'));
-    const bounce = bounces[bounces.length - 1] ?? null;
-    if (bounces.length < i) break; // post-fix: the fuse dropped the relay — loop is bounded
+    // Two files can get the same timestamp, so the last sorted name is not
+    // necessarily the message emitted by this routing tick.
+    const newBounces = hive.inbox('god-1').filter((m) =>
+      m.subject.startsWith('[undeliverable') && !bounceIds.has(m.id));
+    assert.ok(newBounces.length <= 1, 'one relay can create at most one bounce');
+    const [bounce] = newBounces;
+    if (!bounce) break; // the fuse dropped the relay
+    bounceIds.add(bounce.id);
     hopsSeen.push(bounce.hops);
     writeOutbox(outbox('god-1'), `relay-${String(i).padStart(3, '0')}.json`, {
       to: 'hopless-1',

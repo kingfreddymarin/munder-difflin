@@ -1,0 +1,79 @@
+name: Build release candidate
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  dmg:
+    name: Unsigned DMG (macOS arm64)
+    if: github.event_name == 'pull_request' && github.base_ref == 'release'
+    runs-on: macos-14
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+
+      - name: Build Paramount UI
+        working-directory: ui
+        run: |
+          npm run build 2>&1 | tee ../logs/ui-build.log
+          test -f dist/index.html
+
+      - name: Compile Electron app
+        run: npm run build 2>&1 | tee logs/core-build.log
+
+      - name: Package unsigned DMG
+        run: node scripts/paramount-ui-dist.cjs npx electron-builder --config electron-builder.config.cjs --mac dmg --arm64 --publish never 2>&1 | tee logs/package.log
+        env:
+          PARAMOUNT_UI_DIST: ${{ github.workspace }}/ui/dist
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Record source and run identity
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const pkg = require('./package.json');
+          fs.writeFileSync('dist/build-info.json', JSON.stringify({
+            version: pkg.version,
+            repository: process.env.GITHUB_REPOSITORY,
+            builtCommit: process.env.GITHUB_SHA,
+            headCommit: process.env.PR_HEAD_SHA,
+            pullRequest: Number(process.env.PR_NUMBER),
+            runId: process.env.GITHUB_RUN_ID,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT
+          }, null, 2) + '\n');
+          NODE
+
+      - name: Checksums
+        run: |
+          cd dist
+          shasum -a 256 *.dmg | tee SHA256SUMS.txt
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: paramount-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-mac-arm64
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS.txt
+            dist/build-info.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload failed build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: logs/
+          retention-days: 14

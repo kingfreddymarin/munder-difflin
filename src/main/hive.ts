@@ -21,7 +21,7 @@
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
-  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync
+  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, readSync, closeSync
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative } from 'node:path';
 import { homedir } from 'node:os';
@@ -125,6 +125,12 @@ export interface HiveTask {
   dependsOn: string[];
   priority: number;
   createdAt: string;
+  /** Hides the card from the Board while retaining its workflow status and history. */
+  boardArchivedAt?: string;
+  updatedAt?: string;
+  /** Paramount extension links: parent task and owning team, without changing ledger routing. */
+  parentId?: string;
+  teamId?: string;
   /** First-class human feedback: the god appends {q} when a card can only
    *  proceed with the human's input (status goes blocked); the harness UI
    *  fills in {a}. The full history stays on the card forever. */
@@ -141,6 +147,14 @@ export interface HiveTask {
    *  once and never persisted), so a GET status lookup can match by hashing the
    *  presented token. Read-only capability: it never widens routing or exposure. */
   webhook?: { tokenHash: string };
+  /** Board fields (Paramount lane c-board), set by the agent that owns the card:
+   *  free `tags` and a `workspace` the board filters on, an absolute working `dir`
+   *  for "open in Warp / VS Code", and `refs` to the PR, build, run and ADO work
+   *  items the card touches (https URLs; ADO work items hold the evidence). */
+  tags?: string[];
+  workspace?: string;
+  dir?: string;
+  refs?: Array<{ kind: 'pr' | 'build' | 'run' | 'workitem'; system: 'github' | 'ado'; id: string; url: string }>;
 }
 
 export interface AgentMeta {
@@ -203,11 +217,6 @@ export interface SpawnInjection {
 }
 
 const HOP_CAP = 12;
-
-function sleepSync(ms: number): void {
-  const sab = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(sab), 0, 0, ms);
-}
 
 /** Filesystem- and sort-safe timestamp, e.g. 2026-05-30T14-03-11-123Z. */
 function stamp(): string {
@@ -382,6 +391,35 @@ function pruneCrashLogs(dir: string): void {
       try { unlinkSync(join(dir, stale)); } catch { /* already gone, or not ours */ }
     }
   } catch { /* unreadable directory is not worth failing an exit path over */ }
+}
+
+/** Hive changes this close together become one commit. */
+const COMMIT_DEBOUNCE_MS = 750;
+
+/** The last `n` non-empty lines of a text file, read backwards in chunks from its end. */
+export function tailLines(file: string, n: number): string[] {
+  if (n <= 0) return [];
+  const fd = openSync(file, 'r');
+  try {
+    const size = statSync(file).size;
+    const chunk = 64 * 1024;
+    let pos = size;
+    let text = '';
+    let newlines = 0;
+    while (pos > 0 && newlines <= n) {
+      const len = Math.min(chunk, pos);
+      pos -= len;
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, pos);
+      const part = buf.toString('latin1');
+      for (let i = 0; i < part.length; i++) if (part.charCodeAt(i) === 10) newlines++;
+      text = part + text;
+    }
+    // latin1 keeps byte offsets; decode as UTF-8 once, after dropping a possibly partial first line.
+    let body = Buffer.from(text, 'latin1');
+    if (pos > 0) { const nl = body.indexOf(10); body = nl >= 0 ? body.subarray(nl + 1) : Buffer.alloc(0); }
+    return body.toString('utf8').split('\n').filter(Boolean).slice(-n);
+  } finally { closeSync(fd); }
 }
 
 export class HiveManager {
@@ -713,7 +751,14 @@ export class HiveManager {
   async ensureAgent(
     meta: AgentMeta,
     opts: {
+      /** Council account extension: do not copy auth or install hooks into a chosen account home. */
+      preserveAccountHome?: boolean;
+      /** Explicit session id verified by the caller for a restore/rollback on this provider. */
+      sessionId?: string;
+      clearSession?: boolean;
       semanticMemory?: boolean;
+      responseStyleBrief?: string;
+      claudeOutputStyle?: 'off' | 'concise' | 'explanatory' | 'learning';
       knowledgeGraph?: boolean;
       /** ABSOLUTE path to the Knowledge-Graph CLI (`knowledge.env().KG_CLI`), baked
        *  into the agent's prompt instead of a `$KG_CLI` shell reference — `$VAR` is
@@ -765,15 +810,17 @@ export class HiveManager {
     if (!existsSync(memory)) {
       writeFileSync(memory, `# Memory — ${meta.name} (${meta.id})\n\n_Append durable facts, decisions, and context below._\n`, 'utf8');
     }
+    const handoff = join(dir, 'handoff.md');
+    if (!existsSync(handoff)) writeFileSync(handoff, '# Handoff\n\n_One section per piece of work; record State, Next, Files, and Open before stopping._\n', 'utf8');
     ensureMineIgnore(dir); // keep settings.json / cursor / messages out of mempalace's index
     const cursor = join(dir, 'cursor.json');
     if (!existsSync(cursor)) this.writeJson(cursor, { lastProcessed: null });
 
-    // upsert registry — spread the PRIOR entry first so a respawn preserves
-    // fields the spawn `meta` doesn't carry, above all `sessionId`. Without this,
-    // ensureAgent (which runs before the resume lookup in the pty:spawn handler)
-    // would wipe the recorded session id, so `lastSession()` returns undefined and
-    // `--resume` is never attached — i.e. every restart starts a fresh thread.
+    // upsert registry — spread the PRIOR entry first so a same-provider respawn
+    // preserves fields the spawn `meta` doesn't carry, above all `sessionId`.
+    // A provider change must clear the active session pointer: provider session ids
+    // are not portable. The switch flow archives the old pointer separately and
+    // passes it explicitly only when rolling back to its original provider.
     // Validate the working directory at the source so a bad value is visible on
     // the roster (cwdValid) rather than silently spawning into a nonexistent dir.
     // Store the EXPANDED cwd, never the raw `~/…` the user typed — the registry is
@@ -782,6 +829,7 @@ export class HiveManager {
     reg.agents[meta.id] = {
       ...prev,
       ...meta,
+      sessionId: opts.clearSession ? undefined : opts.sessionId ?? (prev && (prev.provider ?? 'claude') !== (meta.provider ?? 'claude') ? undefined : prev?.sessionId),
       capabilities: meta.capabilities ?? prev?.capabilities ?? [],
       role,
       status: 'idle',
@@ -846,7 +894,7 @@ export class HiveManager {
     if (!isHiveAwareProvider(meta.provider)) {
       const preset = providerPreset(meta.provider ?? 'claude');
       const flag = preset.initialPromptFlag;
-      const prompt = this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath);
+      const prompt = this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath, opts.responseStyleBrief, opts.claudeOutputStyle);
       // agy, codex, and grok expose a Claude-style lifecycle-hook surface, so each
       // gets the SAME live status + Stop→inbox-drain Claude does — selected by the
       // preset's `hookBridge`. agy needs a translating shim (its hook stdin/stdout
@@ -870,6 +918,9 @@ export class HiveManager {
         try {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
+            else if (desc.shim === 'codex' && opts.preserveAccountHome) {
+              degraded = 'Selected account home preserved; Codex hook installation and remote daemon are disabled for this account launcher.';
+            }
             else if (desc.shim === 'codex') {
               env.CODEX_HOME = this.installCodexHooks(dir, meta.id);
               // Codex refuses to run hooks from a config dir without persisted
@@ -991,7 +1042,7 @@ export class HiveManager {
     const args: string[] = [];
     if (!claudeProvider) return { args, env };
 
-    args.push('--append-system-prompt', this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath));
+    args.push('--append-system-prompt', this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath, opts.responseStyleBrief, opts.claudeOutputStyle));
 
     // Phase 1 — autonomy: attach lifecycle hooks via --settings (no edits to the
     // user's repo) so the agent reports activity and drains its inbox on Stop.
@@ -1049,6 +1100,24 @@ export class HiveManager {
       this.appendLog({ kind: 'archive', agentId: id, archived });
       this.commit(`hive: ${archived ? 'archive' : 'unarchive'} ${id}`);
     } catch { /* best-effort — never crash a lifecycle handler */ }
+  }
+
+  /** Restore only provider metadata after a failed cross-provider start. Session ids and all durable identity fields stay intact. */
+  setAgentProvider(id: string, provider: string): { ok: boolean; error?: string } {
+    const root = this.root();
+    if (!root) return { ok: false, error: 'hive disabled (no harnessHome)' };
+    try {
+      const reg = this.registry();
+      const agent = reg.agents[id];
+      if (!agent) return { ok: false, error: 'Agent not found' };
+      if (agent.provider === provider) return { ok: true };
+      agent.provider = provider as AgentProvider;
+      agent.lastSeen = Date.now();
+      this.atomicWriteJson(join(root, 'registry.json'), reg);
+      this.appendLog({ kind: 'provider-switch-rollback', agentId: id, provider });
+      this.commit(`hive: restore provider ${id}`);
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
   }
 
   /**
@@ -1533,7 +1602,9 @@ export class HiveManager {
     root: string,
     semanticMemory: boolean,
     knowledgeGraph: boolean,
-    kgCliPath?: string
+    kgCliPath?: string,
+    responseStyleBrief?: string,
+    claudeOutputStyle?: 'off' | 'concise' | 'explanatory' | 'learning'
   ): string {
     // Native-separator path helpers — see the 🪟 note above.
     const inDir = (...parts: string[]): string => join(dir, ...parts);
@@ -1597,10 +1668,11 @@ export class HiveManager {
       `Your private workspace is ${dir}. The shared hive is ${root}. Full protocol: ${inRoot('PROTOCOL.md')}.`,
       '',
       'HIVE PROTOCOL — follow it every task:',
-      `1. At the START of a task, read ${inDir('memory.md')} and EVERY file in ${inDir('inbox')} (messages other agents sent you). After handling an inbox message, move its file into ${inDir('inbox', '.done')}.`,
-      `2. Record durable facts, decisions, and context by appending to ${inDir('memory.md')}.`,
-      `3. To ask another agent for something or share information, write ONE message JSON into ${inDir('outbox')} (schema in PROTOCOL.md). NEVER write into another agent's folder — the orchestrator delivers your outbox.`,
-      '4. At the END of a task, append what you learned to memory.md so future-you remembers.',
+      `1. At the START of a session, read ${inDir('handoff.md')} and the Rules section of ${inDir('memory.md')}. If memory.md has no Rules heading, read it once and move its rules under one. Use md-memory search or open only the needed section for other memory.`,
+      `2. At the START of a task, read every file in ${inDir('inbox')} (messages other agents sent you). After handling an inbox message, move its file into ${inDir('inbox', '.done')}.`,
+      `3. Record durable facts, decisions, and context by appending to ${inDir('memory.md')}; update ${inDir('handoff.md')} before stopping.`,
+      `4. To ask another agent for something or share information, write ONE message JSON into ${inDir('outbox')} (schema in PROTOCOL.md). NEVER write into another agent's folder — the orchestrator delivers your outbox.`,
+      '5. At the END of a task, append what you learned to memory.md so future-you remembers.',
       guardrailsLine,
       memoryLine,
       knowledgeLine,
@@ -1609,6 +1681,8 @@ export class HiveManager {
       runtimeLine,
       slackLine,
       ctxLine,
+      responseStyleBrief ? `RESPONSE STYLE: ${responseStyleBrief}` : '',
+      meta.provider === 'claude' && claudeOutputStyle && claudeOutputStyle !== 'off' ? `CLAUDE OUTPUT STYLE: ${claudeOutputStyle}. Follow this response mode when writing to the human.` : '',
       `Env vars available to you: AGENT_ID, AGENT_NAME, HIVE_ROOT, AGENT_DIR.`
     ].filter(Boolean).join('\n');
   }
@@ -1944,6 +2018,19 @@ export class HiveManager {
     return true;
   }
 
+  /** Add a related set of cards in one ledger write, preserving all cards already on disk. */
+  addTasksBatch(batch: HiveTask[]): boolean {
+    const ledger = this.tasks() as { tasks?: HiveTask[] };
+    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
+    const ids = new Set(tasks.map((task) => task?.id));
+    for (const task of batch) {
+      if (!task?.id || ids.has(task.id)) return false;
+      ids.add(task.id);
+    }
+    this.writeTasks([...tasks, ...batch]);
+    return true;
+  }
+
   /** Patch one card against the latest on-disk ledger, preserving unrelated
    *  cards and fields (notably webhook.tokenHash and Slack thread metadata). */
   patchTask(id: string, patch: Partial<Omit<HiveTask, 'id'>>): boolean {
@@ -2031,49 +2118,38 @@ export class HiveManager {
       return [];
     }
 
-    const seen = new Set<string>();
-    const out: VoiceMessage[] = [];
+    // Unchanged folders give the same cached lists: reuse the merged, sorted result.
+    const lists: VoiceMessage[][] = [];
     for (const owner of owners) {
       const base = this.agentDir(owner);
-      const folders: Array<{ dir: string; direction: 'inbox' | 'outbox'; archived: boolean }> = [
-        { dir: join(base, 'inbox'), direction: 'inbox', archived: false },
-        { dir: join(base, 'outbox'), direction: 'outbox', archived: false }
-      ];
-      if (includeArchived) {
-        folders.push({ dir: join(base, 'inbox', '.done'), direction: 'inbox', archived: true });
-        folders.push({ dir: join(base, 'outbox', '.sent'), direction: 'outbox', archived: true });
-      }
-      for (const f of folders) {
-        for (const m of this.listMessages(f.dir)) {
-          if (!m || typeof m.id !== 'string' || seen.has(m.id)) continue;
-          seen.add(m.id);
-          if (wantId && m.id !== wantId) continue;
-          out.push({
-            id: m.id,
-            conversation: m.conversation,
-            from: m.from,
-            to: m.to,
-            act: m.act,
-            subject: redactSecrets(m.subject),
-            body: redactSecrets(m.body),
-            requires_reply: !!m.requires_reply,
-            direction: f.direction,
-            owner,
-            archived: f.archived,
-            created_at: m.created_at
-          });
-        }
-      }
+      lists.push(this.voiceFolder(join(base, 'inbox'), owner, 'inbox', false), this.voiceFolder(join(base, 'outbox'), owner, 'outbox', false));
+      if (includeArchived) lists.push(this.voiceFolder(join(base, 'inbox', '.done'), owner, 'inbox', true), this.voiceFolder(join(base, 'outbox', '.sent'), owner, 'outbox', true));
     }
-
-    // Newest first by ISO created_at (lexicographic == chronological for ISO-8601).
-    out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
-    if (wantId) return out.slice(0, 1);
+    const memoKey = `${onlyAgent}\0${includeArchived}`;
+    const memo = this.voiceMerged;
+    let merged: VoiceMessage[];
+    if (!wantId && memo && memo.key === memoKey && memo.lists.length === lists.length && memo.lists.every((l, i) => l === lists[i])) {
+      merged = memo.out;
+    } else {
+      const seen = new Set<string>();
+      merged = [];
+      for (const list of lists) for (const v of list) {
+        if (seen.has(v.id)) continue;
+        seen.add(v.id);
+        if (wantId && v.id !== wantId) continue;
+        merged.push(v);
+      }
+      // Newest first by ISO created_at (lexicographic == chronological for ISO-8601).
+      merged.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+      if (!wantId) this.voiceMerged = { key: memoKey, lists, out: merged };
+    }
+    if (wantId) return merged.slice(0, 1).map((v) => ({ ...v }));
     const lim = typeof opts.limit === 'number' && isFinite(opts.limit)
       ? Math.max(1, Math.min(40, Math.round(opts.limit)))
       : 12;
-    return out.slice(0, lim);
+    return merged.slice(0, lim).map((v) => ({ ...v }));
   }
+  private voiceMerged: { key: string; lists: VoiceMessage[][]; out: VoiceMessage[] } | null = null;
   /** Count undrained inbox messages for an agent (cheap — for the fleet snapshot). */
   inboxBacklog(id: string): number {
     const dir = join(this.agentDir(id), 'inbox');
@@ -2546,6 +2622,11 @@ export class HiveManager {
     } catch (e) { console.error('[hive] installGrokHooks failed:', e); }
   }
 
+  fleet(): unknown {
+    const root = this.root();
+    return root ? this.readJson<unknown>(join(root, 'fleet.json'), null) : null;
+  }
+
   /** Write the live fleet snapshot Michael reads (`fleet.json`, gitignored).
    *  Best-effort — called from a timer, must never throw. */
   writeFleetSnapshot(snapshot: unknown): void {
@@ -2591,8 +2672,7 @@ export class HiveManager {
     const root = this.root();
     if (!root) return null;
     try {
-      const raw = readFileSync(join(root, 'fleet.json'), 'utf8');
-      const snap = JSON.parse(raw) as {
+      const snap = this.fleet() as null | {
         ts?: number;
         agents?: Array<{
           id: string; name?: string; role?: string; isGod?: boolean;
@@ -2601,8 +2681,13 @@ export class HiveManager {
           onHold?: boolean;
         }>;
       };
-      const agents = Array.isArray(snap.agents) ? snap.agents : [];
-      if (!agents.length) return null;
+      if (!snap) return null;
+      // A terminal can close between the eight-second fleet snapshots.
+      // Registry archival is immediate and overrides those stale rows.
+      const registry = this.registry();
+      const agents = (Array.isArray(snap.agents) ? snap.agents : [])
+        .filter((agent) => !registry.agents[agent.id]?.archived);
+      if (!agents.length) return '[LIVE ROSTER] 0 ACTIVE agents. This supersedes earlier rosters; closed agents are unavailable.';
 
       const ago = (s: number | null | undefined): string =>
         typeof s !== 'number' ? 'unknown'
@@ -2663,8 +2748,43 @@ export class HiveManager {
   logTail(n = 200): unknown[] {
     const root = this.root();
     if (!root || !existsSync(join(root, 'log.jsonl'))) return [];
-    const lines = readFileSync(join(root, 'log.jsonl'), 'utf8').trim().split('\n').filter(Boolean);
-    return lines.slice(-n).map((l) => { try { return JSON.parse(l); } catch { return { raw: l }; } });
+    // Read from the end only (the floor log grows to many MB; the snapshot polls it every few seconds).
+    const lines = tailLines(join(root, 'log.jsonl'), n);
+    return lines.map((l) => { try { return JSON.parse(l); } catch { return { raw: l }; } });
+  }
+
+  /** One mail folder as voice messages, cached until the folder changes (owner use of 8f574966: the
+   *  Paramount snapshot re-read and re-parsed every message of every agent, archives included, on
+   *  each poll; 5k messages cost about 150 ms of main-thread time per poll). Messages are written by
+   *  rename and moved between folders, so the folder's mtime changes with every add, move or delete.
+   *  No time-based refresh: in the isolated check of d474a5cf a 5-minute backstop re-read 5k
+   *  messages at once (a 276 ms stall). */
+  private readonly voiceCache = new Map<string, { mtimeMs: number; list: VoiceMessage[] }>();
+  private voiceFolder(dir: string, owner: string, direction: 'inbox' | 'outbox', archived: boolean): VoiceMessage[] {
+    let mtimeMs: number;
+    try { mtimeMs = statSync(dir).mtimeMs; } catch { this.voiceCache.delete(dir); return []; }
+    const hit = this.voiceCache.get(dir);
+    if (hit && hit.mtimeMs === mtimeMs) return hit.list;
+    const list: VoiceMessage[] = [];
+    for (const m of this.listMessages(dir)) {
+      if (!m || typeof m.id !== 'string') continue;
+      list.push({
+        id: m.id,
+        conversation: m.conversation,
+        from: m.from,
+        to: m.to,
+        act: m.act,
+        subject: redactSecrets(m.subject),
+        body: redactSecrets(m.body),
+        requires_reply: !!m.requires_reply,
+        direction,
+        owner,
+        archived,
+        created_at: m.created_at
+      });
+    }
+    this.voiceCache.set(dir, { mtimeMs, list });
+    return list;
   }
 
   private listMessages(dir: string): HiveMessage[] {
@@ -2846,14 +2966,14 @@ export class HiveManager {
    * line alone reads as a fix while the repo goes on growing. The ledger stays
    * on disk, so the cost history the app reads is untouched.
    */
-  private untrackCostLedger(root: string): void {
+  private async untrackCostLedger(root: string): Promise<void> {
     if (this.untrackedCostLedger) return;
     this.untrackedCostLedger = true;
     // Probe before mutating: `rm --cached` on a repo that never tracked it
     // would still rewrite the index on every launch, inside the retry path.
-    const tracked = this.git(['ls-files', '--', 'cost-ledger.jsonl'], root);
+    const tracked = await this.gitAsync(['ls-files', '--', 'cost-ledger.jsonl'], root);
     if (!tracked.ok || !tracked.out.trim()) return;
-    this.git(['rm', '--cached', '-q', '--ignore-unmatch', '--', 'cost-ledger.jsonl'], root);
+    await this.gitAsync(['rm', '--cached', '-q', '--ignore-unmatch', '--', 'cost-ledger.jsonl'], root);
     console.warn('[hive] untracked the cost ledger from the hive repo');
   }
 
@@ -2873,7 +2993,7 @@ export class HiveManager {
    * `.codex` path from the index. The files stay on disk, so `codex --resume`
    * is unaffected; only their history stops.
    */
-  private untrackCodexHomes(root: string): void {
+  private async untrackCodexHomes(root: string): Promise<void> {
     if (this.untrackedCodexHomes) return;
     this.untrackedCodexHomes = true;
     const agentsDir = join(root, 'agents');
@@ -2883,29 +3003,73 @@ export class HiveManager {
     } catch { /* best-effort */ }
     // Probe before mutating: `rm --cached` on a clean repo would still rewrite
     // the index on every launch, and this runs inside the commit retry path.
-    const tracked = this.git(['ls-files', '--', 'agents/*/.codex'], root);
+    const tracked = await this.gitAsync(['ls-files', '--', 'agents/*/.codex'], root);
     if (!tracked.ok || !tracked.out.trim()) return;
-    this.git(['rm', '-r', '--cached', '-q', '--ignore-unmatch', '--', 'agents/*/.codex'], root);
+    await this.gitAsync(['rm', '-r', '--cached', '-q', '--ignore-unmatch', '--', 'agents/*/.codex'], root);
     console.warn('[hive] untracked previously-committed Codex homes from the hive repo');
   }
 
-  /** Commit all hive changes. No-op if there is nothing staged. */
+  /** Commit all hive changes. No-op if there is nothing staged.
+   *  Off the main thread (owner use of 8f574966: beach ball): every register, session, archive,
+   *  routed message and task change committed the whole hive with blocking git processes, and a
+   *  team restore made dozens of them. Changes within COMMIT_DEBOUNCE_MS become one commit, git
+   *  runs as a child process, and commits run one at a time. */
   commit(message: string): void {
     const root = this.root();
     if (!root || !existsSync(join(root, '.git'))) return;
-    this.untrackCostLedger(root);
-    this.untrackCodexHomes(root);
+    this.pendingCommits.push({ root, message });
+    if (this.commitTimer) return;
+    this.commitTimer = setTimeout(() => {
+      this.commitTimer = null;
+      const batch = this.pendingCommits.splice(0);
+      for (const r of [...new Set(batch.map((b) => b.root))]) {
+        const messages = batch.filter((b) => b.root === r).map((b) => b.message);
+        const message = messages.length === 1 ? messages[0] : `hive: ${messages.length} changes\n\n${messages.join('\n')}`;
+        this.commitChain = this.commitChain.then(() => this.commitNow(r, message)).catch((e) => console.warn('[hive] commit failed:', e));
+      }
+    }, COMMIT_DEBOUNCE_MS);
+    this.commitTimer.unref?.();
+  }
+  private pendingCommits: Array<{ root: string; message: string }> = [];
+  private commitTimer: ReturnType<typeof setTimeout> | null = null;
+  private commitChain: Promise<void> = Promise.resolve();
+  /** Resolves once every commit requested so far has run (tests, and quit if it ever needs to wait). */
+  async flushCommits(): Promise<void> {
+    if (this.commitTimer) { clearTimeout(this.commitTimer); this.commitTimer = null; }
+    const batch = this.pendingCommits.splice(0);
+    for (const r of [...new Set(batch.map((b) => b.root))]) {
+      const messages = batch.filter((b) => b.root === r).map((b) => b.message);
+      const message = messages.length === 1 ? messages[0] : `hive: ${messages.length} changes\n\n${messages.join('\n')}`;
+      this.commitChain = this.commitChain.then(() => this.commitNow(r, message)).catch((e) => console.warn('[hive] commit failed:', e));
+    }
+    await this.commitChain;
+  }
+  private async commitNow(root: string, message: string): Promise<void> {
+    if (!existsSync(join(root, '.git'))) return;
+    await this.untrackCostLedger(root);
+    await this.untrackCodexHomes(root);
     for (let attempt = 0; attempt < 5; attempt++) {
       this.clearStaleLock(root);
-      const add = this.git(['add', '-A'], root);
-      const commit = this.git(['commit', '-q', '-m', message], root);
+      const add = await this.gitAsync(['add', '-A'], root);
+      const commit = await this.gitAsync(['commit', '-q', '-m', message], root);
       if (commit.ok) return;
       if (/nothing to commit/i.test(commit.out + commit.err)) return;
-      if (!add.ok || /index\.lock/i.test(commit.err)) { sleepSync(50 * (attempt + 1)); continue; }
+      if (!add.ok || /index\.lock/i.test(commit.err)) { await new Promise((r) => setTimeout(r, 50 * (attempt + 1))); continue; }
       console.warn(`[hive] commit gave up after ${attempt + 1} attempts:`, commit.err || commit.out);
       return;
     }
     console.warn('[hive] commit gave up after 5 attempts');
+  }
+  private gitAsync(args: string[], cwd: string): Promise<{ ok: boolean; out: string; err: string }> {
+    return new Promise((done) => {
+      const child = spawn('git', ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'user.name=Hive', '-c', 'user.email=hive@local', ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = ''; let err = '';
+      const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
+      child.stdout?.setEncoding('utf8').on('data', (d: string) => { if (out.length < 1_000_000) out += d; });
+      child.stderr?.setEncoding('utf8').on('data', (d: string) => { if (err.length < 100_000) err += d; });
+      child.on('error', (e) => { clearTimeout(timer); done({ ok: false, out, err: e.message }); });
+      child.on('close', (status) => { clearTimeout(timer); done({ ok: status === 0, out, err }); });
+    });
   }
 
   private clearStaleLock(root: string): void {

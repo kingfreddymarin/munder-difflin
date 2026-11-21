@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { ensureKilled } from './procKill';
 import { quarantineDirsToReap, quarantineStampMs, nextMineDelayMs } from './palaceReap';
+import { probeLoginShellCommand } from './snapshotCommandDiscovery';
 
 /** Non-memory files `mempalace mine` must not ingest: the Claude Code hooks
  *  config (a large JSON blob that swamps the wake-up digest), the cursor, raw
@@ -110,6 +111,25 @@ export function mempalaceDevice(
 }
 const MEMPALACE_DEVICE = mempalaceDevice(process.platform, process.env.MEMPALACE_EMBEDDING_DEVICE);
 
+/** Async startup resolver: unlike `bin()`, this never blocks the main thread. */
+export async function resolveMemoryBin(signal: AbortSignal): Promise<string | null> {
+  const probe = await probeLoginShellCommand('mempalace', signal);
+  if (probe.path && existsSync(probe.path)) return probe.path;
+  const isWin = process.platform === 'win32';
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+  const candidates = isWin
+    ? [
+        join(home, '.local', 'bin', 'mempalace.exe'),
+        join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Python', 'Scripts', 'mempalace.exe')
+      ]
+    : [
+        join(home, '.local', 'bin', 'mempalace'),
+        '/opt/homebrew/bin/mempalace',
+        '/usr/local/bin/mempalace'
+      ];
+  return candidates.find((candidate) => candidate && existsSync(candidate)) ?? null;
+}
+
 export class MemoryManager {
   private binCache: string | null | undefined;
   private mineTimer: NodeJS.Timeout | null = null;
@@ -120,14 +140,23 @@ export class MemoryManager {
    *  quarantined again. A count would be useless: the reaper deletes them. */
   private lastQuarantineTs = 0;
   private initStarted = false;
+  private binProbe: Promise<void> | null = null;
+  private binProbeAbort: AbortController | null = null;
+  private binProbeGeneration = 0;
   /** True while a mineNow() pass is in flight — serializes palace writers. */
   private mining = false;
+  /** Review R3: stop() kills the running miner and ends the pass, so nothing writes to the floor
+   *  after it is released; drain() resolves once the pass has finished. */
+  private stopGen = 0;
+  private miner: ReturnType<typeof spawn> | null = null;
+  private pass: Promise<void> | null = null;
   /** agentId → memory.md mtimeMs at last successful mine (skip unchanged). */
   private lastMined = new Map<string, number>();
 
   constructor(
     private getHome: () => string | null,
-    private getSettings: () => MemorySettings
+    private getSettings: () => MemorySettings,
+    private resolveBin: (signal: AbortSignal) => Promise<string | null> = resolveMemoryBin
   ) {}
 
   palacePath(): string | null {
@@ -138,6 +167,12 @@ export class MemoryManager {
   /** Resolve the mempalace CLI against the user's PATH + common uv/pip spots. */
   bin(): string | null {
     if (this.binCache !== undefined) return this.binCache;
+    // A direct synchronous consumer (search/wake-up) supersedes an outstanding
+    // async probe so its result cannot later overwrite this explicit lookup.
+    this.binProbeGeneration++;
+    this.binProbeAbort?.abort();
+    this.binProbeAbort = null;
+    this.binProbe = null;
     let found: string | null = null;
     const isWin = process.platform === 'win32';
     // 1) Ask the shell/PATH resolver. Windows has no POSIX shell + uses `where`
@@ -174,9 +209,17 @@ export class MemoryManager {
     return found;
   }
   /** Force re-resolution (e.g. after the user installs mempalace). */
-  resetBinCache(): void { this.binCache = undefined; }
+  resetBinCache(): void {
+    this.binProbeGeneration++;
+    this.binProbeAbort?.abort();
+    this.binProbeAbort = null;
+    this.binProbe = null;
+    this.binCache = undefined;
+  }
 
-  available(): boolean { return this.bin() !== null; }
+  /** Passive reads never initiate a synchronous shell lookup. Explicit actions
+   *  that need a path may still call `bin()`; startup/status use the async cache. */
+  available(): boolean { return this.binCache !== undefined && this.binCache !== null; }
   enabled(): boolean { return this.getSettings().enabled; }
   active(): boolean { return this.available() && this.enabled() && this.getHome() !== null; }
   model(): EmbeddingModel { return this.getSettings().model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm'; }
@@ -190,7 +233,7 @@ export class MemoryManager {
       initialized: !!palace && existsSync(palace),
       palacePath: palace,
       model: this.model(),
-      bin: this.bin()
+      bin: this.binCache ?? null
     };
   }
 
@@ -221,8 +264,16 @@ export class MemoryManager {
    *  run `mempalace init`: it ends in an interactive "Mine now? [Y/n]" prompt
    *  that --yes doesn't cover, so a spawned child would hang forever. */
   start(): void {
-    if (!this.active() || this.initStarted) return;
-    if (!this.bin() || !this.getHome() || !this.palacePath()) return;
+    if (this.mineStopped || !this.enabled() || !this.getHome() || !this.palacePath() || this.initStarted) return;
+    if (this.binCache !== undefined) {
+      if (this.binCache) this.activate();
+      return;
+    }
+    void this.discoverBin(false);
+  }
+
+  private activate(): void {
+    if (this.mineStopped || this.initStarted || !this.enabled() || !this.getHome() || !this.palacePath()) return;
     this.initStarted = true;
     // Sweep once at boot, before the first mine. An app updating into this fix
     // arrives at a palace that has been accumulating copies for as long as it
@@ -235,8 +286,17 @@ export class MemoryManager {
 
   stop(): void {
     this.mineStopped = true;
+    this.binProbeGeneration++;
+    this.binProbeAbort?.abort();
+    this.binProbeAbort = null;
     if (this.mineTimer) { clearTimeout(this.mineTimer); this.mineTimer = null; }
+    this.stopGen++;
+    const proc = this.miner;
+    if (proc) { try { proc.kill('SIGTERM'); } catch { /* gone */ } ensureKilled(proc.pid); }
   }
+
+  /** Resolves when no mine pass is running (call after stop()). */
+  drain(): Promise<void> { return this.pass ?? Promise.resolve(); }
 
   /**
    * Re-resolve the CLI, arm the mine loop if it is only now possible, and report.
@@ -255,10 +315,43 @@ export class MemoryManager {
    * `mempalace init`, which ends in an interactive "Mine now? [Y/n]" that `--yes`
    * doesn't cover and that hangs a spawned child.
    */
-  refresh(): MemoryStatus {
-    this.resetBinCache();
-    this.start();
+  async refresh(): Promise<MemoryStatus> {
+    if (!this.mineStopped) await this.discoverBin(true);
     return this.status();
+  }
+
+  private discoverBin(force: boolean): Promise<void> {
+    if (this.mineStopped) return Promise.resolve();
+    if (force) {
+      // Explicit UI refresh may race the startup probe or another poll. Share
+      // the current bounded lookup; a later poll can retry a cached miss.
+      if (this.binProbe) return this.binProbe;
+      this.binProbeGeneration++;
+      this.binProbeAbort?.abort();
+      this.binProbe = null;
+      this.binProbeAbort = null;
+    } else if (this.binCache !== undefined) {
+      if (this.binCache) this.activate();
+      return Promise.resolve();
+    } else if (this.binProbe) return this.binProbe;
+
+    const generation = this.binProbeGeneration;
+    const controller = new AbortController();
+    this.binProbeAbort = controller;
+    const pending = Promise.resolve().then(() => this.resolveBin(controller.signal)).then((bin) => {
+      if (generation !== this.binProbeGeneration || this.mineStopped) return;
+      this.binCache = bin;
+      if (bin) this.activate();
+    }).catch(() => {
+      if (generation === this.binProbeGeneration && !this.mineStopped) this.binCache = null;
+    }).finally(() => {
+      if (generation === this.binProbeGeneration) {
+        this.binProbe = null;
+        this.binProbeAbort = null;
+      }
+    });
+    this.binProbe = pending;
+    return pending;
   }
 
   /** Self-scheduling rather than `setInterval`, so the gap can widen when the
@@ -296,8 +389,12 @@ export class MemoryManager {
     let ids: string[];
     try { ids = readdirSync(agentsDir); } catch { return; }
     this.mining = true;
+    const gen = this.stopGen;
+    let done!: () => void;
+    this.pass = new Promise<void>((r) => { done = r; });
     try {
       for (const id of ids) {
+        if (gen !== this.stopGen || this.getHome() !== home) break; // stopped or the floor was released
         const agentDir = join(agentsDir, id);
         const mem = join(agentDir, 'memory.md');
         if (!existsSync(mem)) continue;
@@ -309,7 +406,10 @@ export class MemoryManager {
       }
     } finally {
       this.mining = false;
+      this.pass = null;
+      done();
     }
+    if (gen !== this.stopGen || this.getHome() !== home) return;
     // Every pass above may have left another copy behind, and whether it did
     // decides how long we wait before the next one.
     const quarantined = this.reapPalace();
@@ -368,6 +468,7 @@ export class MemoryManager {
       const proc = spawn(bin, ['mine', agentDir, '--wing', id, '--agent', id], {
         env: this.childEnv(), stdio: ['ignore', 'ignore', 'pipe']
       });
+      this.miner = proc;
       let err = '';
       proc.stderr?.on('data', (d) => { err += d.toString(); });
       // Hard ceiling: a wedged mine used to hold its PID forever AND leave
@@ -381,13 +482,14 @@ export class MemoryManager {
       timer.unref?.();
       proc.on('close', (code) => {
         clearTimeout(timer);
+        if (this.miner === proc) this.miner = null;
         if (code !== 0) {
           console.error(`[memory] mine ${id} exited ${code}: ${err.slice(-300)}`);
           this.lastMined.delete(id); // let the next tick retry
         }
         resolve();
       });
-      proc.on('error', () => { clearTimeout(timer); this.lastMined.delete(id); resolve(); });
+      proc.on('error', () => { clearTimeout(timer); if (this.miner === proc) this.miner = null; this.lastMined.delete(id); resolve(); });
     });
   }
 

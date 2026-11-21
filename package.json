@@ -1,18 +1,19 @@
 {
-  "name": "munder-difflin",
-  "version": "0.4.6",
+  "name": "paramount",
+  "productName": "Paramount",
+  "version": "0.7.0",
   "private": true,
-  "description": "Clones for you and your team, working 24/7 — a free, local-first multi-agent harness that turns the CLI coding agent you already run into a clone of you, coordinating an office of agents on your machine.",
+  "description": "Clones for you and your team, working 24/7 \u2014 a free, local-first multi-agent harness that turns the CLI coding agent you already run into a clone of you, coordinating an office of agents on your machine.",
   "main": "out/main/index.js",
   "author": "Chaitanya Giri",
   "homepage": "https://munderdiffl.in/",
   "repository": {
     "type": "git",
-    "url": "https://github.com/chaitanyagiri/munder-difflin.git"
+    "url": "https://github.com/kingfreddymarin/nasstro-council.git"
   },
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build && npm run copy:main-assets",
+    "build": "electron-vite build --config electron.backend.config.ts --ignoreConfigWarning && npm run copy:main-assets",
     "copy:main-assets": "node tools/copy-main-assets.cjs",
     "preview": "electron-vite preview",
     "postinstall": "electron-rebuild -f && node tools/ensure-pty-perms.cjs && node tools/patch-node-pty-conpty.cjs",
@@ -21,10 +22,10 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test:focused": "node --test test/*.test.cjs",
     "check:links": "node tools/check-release-links.cjs",
-    "dist": "npm run build && electron-builder",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:linux": "npm run build && electron-builder --linux"
+    "dist": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --config electron-builder.config.cjs",
+    "dist:mac": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --config electron-builder.config.cjs --mac",
+    "dist:win": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --config electron-builder.config.cjs --win",
+    "dist:linux": "npm run build && node scripts/paramount-ui-dist.cjs electron-builder --config electron-builder.config.cjs --linux"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

@@ -1,20 +1,48 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
-import { spawn } from 'node:child_process';
+import { observeAccountOperation } from './account-observability';
+// Paramount identity (name, userData, UI scheme) — must evaluate before any
+// other module reads userData, so it is the first import.
+import { councilBuild, councilVersion, floorProcessHome, isFloorProcess, paramountHome, paramountUiUrl, registerParamountProtocol, sharedDataDir } from './paramountShell';
+import { codexExecutionArgs, useCodexRemoteControl } from '../shared/executionPolicy';
+import { bootFloorPlan, copyFloorMovedState, copyFloorPersistedState, dataFolderRefusal, FloorPersistedStateCopyError, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
+import { mergeAccountProfiles, resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
+import { createFloorOverview, projectFloorRows } from './floor-overview';
+import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
+import { type IpcMainInvokeEvent, app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
+import { spawn, spawnSync } from 'node:child_process';
 import {
-  rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync,
-  unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync, lstatSync,
-  readlinkSync, symlinkSync
+  rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync, appendFileSync,
+  unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync, lstatSync, chmodSync,
+  readlinkSync, symlinkSync, realpathSync
 } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
-import { homedir } from 'node:os';
+import { performance } from 'node:perf_hooks';
+import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
+import { createSideAgents, isSideAgentPty, sideAgentSnapshot } from './side-agent';
+import { createSnapshotCommandDiscovery, fallbackCommandPath, installedSnapshotEngines, probeLoginShellCommand, snapshotCommandTools, snapshotSignInPath } from './snapshotCommandDiscovery';
+import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
+import { createBoardDeps, isBoardOwnerSender } from './paramount-board';
+import { paramountShellDeps } from './paramount-shell';
+import { offeredModelIds, resolveAgentModel } from './paramount-models';
+import { agentModelPick, readAgentModels, saveAgentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
+import { createSwitchTrace, preserveEngineSession, switchEngineTransaction, withAgentLifecycleLock } from './paramount-engine-switch';
+import { readOrg } from './paramount-org';
+import { floorSetupState, type FloorChoice, type FloorSetupDeps } from './paramount-floor-setup';
+import bakedModelCatalog from '../shared/modelCatalog.json';
+import { parseModelCatalog } from '../shared/modelCatalogPayload';
+import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } from './autoModeExpiry';
+import { defaultMunderHive, type AgentSourceRoots } from './agentSources';
+import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
+import { createOrchestratorStartWatch } from './orchestrator-start';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
+import { createClaudeChannelUpdater } from './claude-channel-recovery';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
-  readConfig, writeConfig, setAgentTokenCap, resetConfig, onConfigWritten, ensureHarnessHome, ensureClaudePermissionsAccepted,
+  readConfig, writeConfig, setAutoModeForcedOff, setAgentTokenCap, resetConfig, onConfigWritten, ensureHarnessHome, ensureClaudePermissionsAccepted,
   modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
@@ -27,7 +55,7 @@ import {
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
-import { CircuitBreaker, type BreakerInput } from './breaker';
+import { CircuitBreaker, effectiveCircuitBreaker, type BreakerInput } from './breaker';
 import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
@@ -59,26 +87,41 @@ import { CostLedgerTotals } from './costLifetime';
 import { analytics, isRendererMessageSurface } from './analytics';
 import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
+import { accessFor, withAccess } from './accessMatrix';
+import { probePort } from './portProbe';
+import { createAccountProfileStore } from './account-profiles';
+import { signInAccountKey, resolveSignInAccountHome, createSignInMonitor, type SignInAccount, type SignInEngine } from './engine-signin';
 import * as integrations from './integrations';
-import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
+import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, authTypeNeedsSecret, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
+import { claimFloor, directoryStateForPath, readRecord, registerParamountRuntime, remapMovedCwds, seedRecordFromRegistry, settleFailedStart } from './paramount-runtime';
+import { createFloorGate, FLOOR_LOCK_FILE, floorOwnerName, removeFloorContents, type FloorGateState } from './floor-lock';
+import { textContextMenuTemplate } from './text-context-menu';
 import { ControlRegistry } from './control';
-import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
+import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
+import { agentActivity, type ActivityFacts } from './paramount-activity';
+import { lagOp, startLagProbe } from './lag-probe';
+import { createSnapshotStageTimer, type SnapshotStage } from './paramountSnapshotTiming';
+import { createSnapshotStageCapture } from './snapshotStageCapture';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
-import { fetchHireManifest, readHireManifestFiles } from './hire';
-import { parseHireDeepLink, type HireManifest } from '../shared/hire';
+import { readHireManifestFiles } from './hire';
+import { validateHireManifest, type HireManifest } from '../shared/hire';
+import { saveParamountHirePreset } from './paramountHirePreset';
 import { ClosingTimeController } from './closingTime';
 import {
   argsWithAutoModeFlag,
+  defaultCommandForProvider,
   inferAgentProvider,
   isClaudeProvider,
   nonInteractiveEnvForProvider,
   providerPreset,
   installInfoForProvider,
+  AGENT_PROVIDER_PRESETS,
   type AgentProvider
 } from '../shared/agentProvider';
+import type { ParamountEvent } from '../preload/paramount';
 import { buildMissingCliScript, chooseInstallRung } from './cliInstall';
 import { detectNodeVersion, nodeIsUsable, resolveNodeInstaller } from './nodeInstall';
 import { toolCatalog, type ToolStatus } from '../shared/toolCatalog';
@@ -93,22 +136,33 @@ import {
   withCodexRemoteArgs
 } from '../shared/codexRemote';
 
-const isDev = !!process.env.ELECTRON_RENDERER_URL;
-
 // Keep the main process alive on an unexpected throw/rejection. The harness is a
 // multi-agent supervisor — a single stray throw (e.g. node-pty's ConPTY console
 // helper choking when a fast-exiting agent CLI's console is already gone) must
 // NOT take the whole app and every running agent down with it. Log and continue
 // rather than letting the default handler exit the process.
 // (Restored during the #71 merge — the PR's rebase dropped these handlers.)
-process.on('uncaughtException', (err) => {
-  console.error('[main] uncaughtException (kept alive):', err);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[main] unhandledRejection (kept alive):', reason);
-});
+// Each one also leaves a crash report (crashes/, 0600) and a `crash` line in
+// log.jsonl under one errorId; renderer and child-process deaths do too.
+// `hive` is declared further down: until it exists the report has no root and
+// only the console line is written (the getters swallow the TDZ error).
+const crashCapture = {
+  root: (): string | null => { try { return hive.root(); } catch { return null; } },
+  sink: (event: Record<string, unknown>): void => { try { hive.appendLog(event); } catch { /* not ready */ } },
+  runtime: (): Record<string, unknown> => ({
+    version: app.getVersion(), build: councilBuild(), packaged: app.isPackaged, electron: process.versions.electron,
+    platform: process.platform, arch: process.arch
+  })
+};
+installCrashCapture(crashCapture, process, app);
 
 const ptyManager = new PtyManager();
+const sideAgentPtys = new PtyManager();
+const snapshotCommandDiscovery = createSnapshotCommandDiscovery({
+  probe: probeLoginShellCommand,
+  fallback: fallbackCommandPath,
+  onChange: () => broadcastParamountInvalidation('command-paths')
+});
 
 function runCodexDaemonCommand(
   executable: string,
@@ -227,20 +281,41 @@ async function enableCodexRemoteForSpawn(
 /** Live PTY id → its hive agent id, recorded at spawn. The pty:kill handler only
  *  gets the PTY id, so this lets a closed tab archive the right registry agent. */
 const ptyToAgent = new Map<string, string>();
+/** Account launcher used by a live PTY, so an expired token is attributed to its own home. */
+const ptySignInAccount = new Map<string, SignInAccount>();
+const ptyLaunchIdentity = new Map<string, { provider: string; model?: string; launcher: LauncherPick | null; home?: string }>();
 /** PTY id → the spawn it should auto restart-and-continue into once a first-time
  *  CLI install finishes. The missing-CLI short-circuit runs the engine's installer
  *  in this PTY; when it exits cleanly the exit handler re-runs the SAME spawn (with
  *  install disabled) so the freshly-installed CLI launches in the SAME pty/window —
  *  no user click. Cleared the moment it's consumed, so it can never loop installs. */
 const pendingInstallRelaunch = new Map<string, { opts: AgentSpawnOptions; owner: Electron.WebContents | null; bin: string; rung: string }>();
+// Munder's floor lock (<hive>/.floor-lock): the hive gets its home only while this process
+// holds the floor, so nothing touches a floor Munder (or another Council) has open.
+/** Test launches set COUNCIL_TEST_LABEL (e.g. "Council TEST - isolated"): it becomes the window title and a
+ *  banner on every screen, so a test window is never mistaken for the owner's own app. */
+const TEST_LABEL = (process.env.COUNCIL_TEST_LABEL ?? '').trim().slice(0, 80) || null;
+const floorGate = createFloorGate({ pid: process.pid, userData: app.getPath('userData'), version: `Paramount ${app.getVersion()}` });
 const hive = new HiveManager(
-  () => readConfig().harnessHome,
+  () => floorGate.homeFor(readConfig().harnessHome),
   (channel, payload) => {
     const wc = liveWebContents();
     if (!wc) return false;
-    try { wc.send(channel, payload); return true; } catch { return false; }
+    try {
+      wc.send(channel, payload);
+      if (channel === 'hive:message' || channel === 'hive:agentSpawned' || channel === 'hive:agentArchived') {
+        broadcastParamountInvalidation(channel);
+      }
+      return true;
+    } catch { return false; }
   }
 );
+function broadcastParamountInvalidation(source: string): void {
+  const update = { kind: 'invalidate' as const, at: new Date().toISOString(), source };
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', update);
+  }
+}
 // #7C — operator control state (pause/gate/steer/halt), read by the HookServer
 // when deciding hook returns.
 const control = new ControlRegistry();
@@ -283,7 +358,11 @@ let breakerBeatTimer: ReturnType<typeof setInterval> | null = null;
 telemetry.onApiError((agentId) => breaker.recordError(agentId));
 // Shared roster on disk — created early so HookServer can re-read standing goals
 // on every UserPromptSubmit (Edit Agent saves land here via persistAgents).
-const roster = new RosterStore(() => readConfig().harnessHome);
+/** The floor's home only while this process holds its .floor-lock (review F2): every floor-bound
+ *  service resolves its home through this, so a refused floor gets no roster, memory or reflector
+ *  writes, exactly like the hive. */
+const floorHome = (): string | null => floorGate.homeFor(readConfig().harnessHome);
+const roster = new RosterStore(floorHome);
 function standingGoalFromRoster(agentId: string): string | null {
   const snap = roster.read();
   if (!snap || !Array.isArray(snap.agents)) return null;
@@ -300,6 +379,11 @@ function standingGoalFromRoster(agentId: string): string | null {
 // background window can't leave a worker parked on an unread inbox forever).
 // HookServer feeds it the hook stream so a permission/HITL prompt blocks nudges.
 const workerWake = new WorkerWakeWatchdog();
+// These hires use Paramount's UI, which does not mount Munder's useHive loop.
+const paramountOrchestrators = new Set<string>();
+/** Orchestrators Council just started: an abnormal exit inside the start window is a failed
+ *  start, reported and NOT archived (see orchestrator-start.ts). */
+const orchestratorStart = createOrchestratorStartWatch();
 // HookServer needs BOTH: Oscar's control registry (HITL pause/gate/steer/halt via
 // hook returns) AND Jim's breaker (feed recordToolUse on each PostToolUse).
 const hookServer = new HookServer(
@@ -312,7 +396,7 @@ const hookServer = new HookServer(
   (agentId, event, message) => workerWake.noteHook(agentId, event, message)
 );
 const memory = new MemoryManager(
-  () => readConfig().harnessHome,
+  floorHome,
   () => { const c = readConfig(); return { enabled: c.semanticMemory !== false, model: c.embeddingModel ?? 'minilm' }; }
 );
 // Enterprise Knowledge Graph — file-backed store + agent CLI (default OFF).
@@ -333,7 +417,7 @@ function reflectSettings(): ReflectSettings {
 // Finishes the janitor's missing condense half: bounds each agent's memory.md
 // (Haiku tail-summary, backup→verify→atomic-swap) so it never grows unbounded.
 const reflector = new MemoryReflector(
-  () => readConfig().harnessHome,
+  floorHome,
   () => readConfig().defaultCommand ?? 'claude',
   () => memory.env(),
   reflectSettings,
@@ -389,7 +473,10 @@ const liveWorkers = new Map<string, WorkerRec>();
  *  granted a per-worker capability token at spawn (revoked in teardownPty). */
 const integrationBroker = new IntegrationBroker({
   getRecord: integrations.getRecord,
-  getSecret: integrations.getSecret
+  getSecret: integrations.getSecret,
+  // Paramount access matrix, keyed by agent id (a god-hired worker's pty id is its agent id).
+  access: (workerId, integrationId) => accessFor(readConfig().accessMatrix, ptyToAgent.get(workerId) ?? workerId, integrationId),
+  onDeny: (d) => paramountLog({ kind: 'paramount-access-denied', errorId: d.errorId, agentId: ptyToAgent.get(d.workerId) ?? d.workerId, sourceId: d.integrationId, level: d.level, method: d.method })
 });
 
 /** BYOK backend model-providers whose API keys the non-Claude CLI engines
@@ -440,19 +527,29 @@ const preservedWorktrees = new Map<string, PreservedWorktree>();
  * step is wrapped so a teardown error can never crash the caller (an IPC
  * handler or node-pty's onExit).
  */
-function teardownPty(id: string): void {
+/** Put an orchestrator's archived flag back to what it was before a failed start (the spawn's
+ *  registration cleared it). Every other recorded field is kept by the registration itself. */
+function restoreArchived(agentId: string, archived: boolean): void {
+  try { if (hive.enabled() && hive.registry().agents[agentId]) hive.setArchived(agentId, archived); }
+  catch (e) { console.error('[hive] restore archived failed:', e); }
+}
+
+function teardownPty(id: string, opts: { keepEntry?: boolean; preserveWorktree?: boolean } = {}): void {
   // Ephemeral-worker flag, read BEFORE the cleanup below deletes the entry. All
   // worker deaths (done-release, idle/token reap, manual stop, crash) funnel
   // through here, so this is the one place their floor card gets archived
   // (workers card via the hive:agentSpawned broadcast in processSpawnRequest).
   // pty id == worker id == agent id for workers.
   const wasWorker = liveWorkers.has(id);
+  ptySignInAccount.delete(id);
+  ptyLaunchIdentity.delete(id);
   // 0) Revoke this id's broker capability (if any). Idempotent + harmless for a
   //    non-worker PTY; ensures a dead worker's token can never reach an integration.
   try { integrationBroker.revoke(id); } catch { /* best-effort */ }
   // 1) Archive the agent — retained + flagged; only live-PTY agents are active.
   const agentId = ptyToAgent.get(id);
   if (agentId) {
+    paramountOrchestrators.delete(agentId);
     ptyToAgent.delete(id);
     // Drop watchdog state so a dead agent can't get nudged or leak its grace.
     try { workerWake.forget(agentId, id); } catch { /* best-effort */ }
@@ -466,13 +563,14 @@ function teardownPty(id: string): void {
     // W1 — kill this agent's proxy-bridge sidecar (qwen), if any, so a dead
     // PTY never leaves an orphan loopback listener. No-op for non-proxy agents.
     try { hive.stopProxyBridge(agentId); } catch (e) { console.error('[hive] stopProxyBridge failed:', e); }
-    if (hive.enabled()) {
+    // A failed orchestrator start keeps its registry entry as it was (provider, role, session).
+    if (hive.enabled() && !opts.keepEntry) {
       try { hive.setArchived(agentId, true); } catch (e) { console.error('[hive] setArchived failed:', e); }
     }
   }
   // 2) Remove the isolated worktree, if any. Non-blocking; errors are logged.
   const wtPath = worktreePaths.get(id);
-  if (wtPath) {
+  if (wtPath && !opts.preserveWorktree) {
     const origCwd = worktreeOrigins.get(id) ?? wtPath;
     worktreePaths.delete(id);
     worktreeOrigins.delete(id);
@@ -499,6 +597,7 @@ function teardownPty(id: string): void {
   if (wasWorker) {
     try { liveWebContents()?.send('hive:agentArchived', { id }); } catch { /* window torn down */ }
   }
+  if (agentId) broadcastParamountInvalidation('pty:exit');
   syncKeepAwake();
 }
 
@@ -599,6 +698,10 @@ ptyManager.setExitHandler((id, exitCode, info) => {
   // clean one), so this adds no noise to a normal archive.
   try {
     const dyingAgent = ptyToAgent.get(id);
+    // A sign-in error in a dying agent's output flags its engine in the setup dialog (engine-signin.ts).
+    if (dyingAgent && (exitCode ?? 0) !== 0) {
+      try { engineSignIn.agentExited(String(hive.registry().agents[dyingAgent]?.provider ?? 'claude'), info?.tail, ptySignInAccount.get(id)); } catch { /* best effort */ }
+    }
     if (dyingAgent) {
       hive.recordAgentExit(dyingAgent, {
         exitCode,
@@ -628,7 +731,20 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     // Non-zero exit = install failed; leave its honest manual-fix message on screen.
     analytics.track('agent_install_finished', { provider, rung: pending.rung, outcome: 'install_failed' });
   }
-  teardownPty(id);
+  const exitingAgent = ptyToAgent.get(id);
+  const failedStart = exitingAgent && paramountOrchestrators.has(exitingAgent)
+    ? orchestratorStart.exited(exitingAgent, exitCode, info?.signal) : null;
+  if (failedStart) {
+    try { paramountLog({ kind: 'paramount-error', errorId: newErrorId(), op: 'orchestrator.start', code: 'INTERNAL', agentId: failedStart.agentId, provider: failedStart.provider, resumed: failedStart.resumed, exitCode: failedStart.exitCode, signal: failedStart.signal, message: failedStart.message }); }
+    catch (e) { console.error('[paramount] orchestrator start failure log failed:', e); }
+  }
+  // Terminals stopped by a quit, Switch floor or a floor move keep their registry entry: archiving
+  // them made the runtime skip them on the next open, so a switched or quit floor came back without
+  // its agents (isolated check 2026-11-12). A terminal closed while the app runs is archived as before.
+  teardownPty(id, { keepEntry: !!failedStart || allowQuit });
+  if (failedStart?.priorArchived !== undefined) restoreArchived(failedStart.agentId, failedStart.priorArchived);
+  // A kept entry sends no hive:agentArchived, so tell Council to re-read (the failure banner).
+  if (failedStart) broadcastParamountInvalidation('orchestrator-start-failed');
 });
 
 /** Keep the system from suspending the harness while agents are running.
@@ -907,9 +1023,20 @@ function archiveOrphanedAgents(): void {
   if (!hive.enabled()) return;
   try {
     const reg = hive.registry();
+    // Council's runtime restores the agents it recorded as live at the last quit or Switch floor
+    // (paramount-runtime.ts) and skips archived ones, so those stay as they are for it. Archiving
+    // them here meant no hired agent ever came back (isolated check 2026-11-12, restored 0).
+    const root = hive.root();
+    // A floor last run by Munder: its live team becomes the record first (seedRecordFromRegistry).
+    if (root) {
+      const seeded = seedRecordFromRegistry(root, reg, Date.now());
+      if (seeded.length) console.log('[migration] seeded the runtime record from the registry (floor last run elsewhere):', seeded.join(', '));
+    }
+    const recorded = new Set(root ? readRecord(root).map((a) => a.id) : []);
     for (const [id, a] of Object.entries(reg.agents)) {
       if (a.archived) continue;
       if (id === reg.godId) continue;        // god is never archived
+      if (recorded.has(id)) continue;        // live at the last quit: the runtime restores it
       if (ptyForAgent(id)) continue;         // has a live PTY → genuinely active
       hive.setArchived(id, true);            // stale archived:false orphan → archive
       console.log('[migration] archived orphaned agent (no live PTY):', id);
@@ -1103,6 +1230,33 @@ function lastWorkAt(agentId: string): number {
   return Math.max(...times);
 }
 
+/** Per-agent live activity for Paramount: terminal output recency plus the fleet.json telemetry. */
+function paramountActivity(): ReturnType<typeof agentActivity> {
+  if (!hive.enabled()) return {};
+  const snap = telemetry.snapshot();
+  const usageById = new Map(snap.usage.map((u) => [u.agentId, u]));
+  const facts: Record<string, ActivityFacts> = {};
+  for (const [id, a] of Object.entries(hive.registry().agents)) {
+    if (a.archived) continue;
+    const ptyId = ptyForAgent(id);
+    const u = usageById.get(id);
+    const spans = snap.spans[id] ?? [];
+    facts[id] = {
+      lastOutputAt: ptyId ? ptyManager.lastOutputAt(ptyId) : undefined,
+      tokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined,
+      inputTokens: u?.input,
+      outputTokens: u?.output,
+      cacheReadTokens: u?.cacheRead,
+      cacheCreationTokens: u?.cacheCreation,
+      costUsd: u?.usd,
+      breaker: breaker.levelFor(id),
+      lastTool: spans.length ? spans[spans.length - 1].tool : null,
+      context: hookServer.contextFor(id) ?? null,
+    };
+  }
+  return agentActivity(facts, Date.now(), WORKER_WAKE_IDLE_MS);
+}
+
 /** PTY id owning a given agent id, or undefined. */
 function ptyForAgent(agentId: string): string | undefined {
   for (const [ptyId, a] of ptyToAgent) if (a === agentId) return ptyId;
@@ -1128,31 +1282,7 @@ function looksStuck(windowMs: number): boolean {
 /** Bounded digest for god — paths + counts, never full files (reference-passing,
  *  #6.2). A few hundred tokens at most. */
 function buildHeartbeatDigest(quietMs: number, actionable = 0): string {
-  const reg = hive.registry();
-  const active = Object.entries(reg.agents).filter(([id, a]) => !a.archived && id !== reg.godId);
-  const names = active.map(([, a]) => a.name).join(', ') || '—';
-  const boardHead = hive.board().split('\n').slice(0, 10).join('\n').trim();
-  const log = hive.logTail(8).map((e) => { try { return JSON.stringify(e); } catch { return ''; } }).filter(Boolean).join('\n');
-  const withInbox = active.filter(([id]) => hive.inbox(id).length > 0).map(([, a]) => a.name);
-  // When real agent/human mail is waiting, lead with an explicit call-to-action
-  // instead of the "quiet" line — this beat fired BECAUSE of unread actionable
-  // inbox, not because the floor went quiet, and god must read it now.
-  const header = actionable > 0
-    ? `Floor heartbeat — ${actionable} actionable inbox message(s) awaiting you (worker/human mail). Drain your inbox NOW and act on them.`
-    : `Floor heartbeat — quiet ~${Math.round(quietMs / 60000)}m.`;
-  return [
-    header,
-    `Active agents (${active.length}): ${names}.`,
-    withInbox.length ? `Undrained inbox: ${withInbox.join(', ')}.` : 'No undrained inboxes.',
-    '',
-    'Board (head):',
-    boardHead || '(empty)',
-    '',
-    'Recent log:',
-    log || '(none)',
-    '',
-    'Re-engage anyone stalled or blocked and keep the board accurate — or rest if the work is genuinely done.'
-  ].join('\n');
+  return heartbeatDigest(quietMs, actionable);
 }
 
 /** Senders whose mail is the scheduler's OWN noise (heartbeat beats, ops-standup
@@ -1178,9 +1308,12 @@ function godActionableInboxCount(): number {
  *  type directly into god's PTY here — if he's busy that would jam mid-step. The
  *  inbox message is delivered by the renderer's busy-aware inbox-wake (it nudges
  *  god to read his inbox only once he's idle), so the heartbeat defers around a
- *  working god instead of interrupting him. */
+ *  working god instead of interrupting him. Skip entirely when the orchestrator
+ *  has no live PTY — messages would pile up unread rather than waking anyone. */
 function reengageGod(digest: string): void {
   if (!hive.enabled()) return;
+  const godId = hive.registry().godId;
+  if (!godId || !ptyForAgent(godId)) return;
   hive.send({ to: 'god', act: 'request', subject: 'Heartbeat', body: digest }, 'heartbeat');
 }
 
@@ -1286,6 +1419,7 @@ const costTotals = new CostLedgerTotals();
  *  hive's sibling sessions. PII-free; never throws (called from a timer). */
 function writeFleetSnapshot(): void {
   if (!hive.enabled()) return;
+  const doneLag = lagOp('fleet.snapshot');
   try {
     const reg = hive.registry();
     const snap = telemetry.snapshot();
@@ -1304,9 +1438,17 @@ function writeFleetSnapshot(): void {
         // fall back to the session figure rather than publishing a cold $0.
         const lifetime = costTotals.usdFor(id);
         const sessionUsd = u ? Number(u.usd.toFixed(4)) : 0;
+        const ptyId = ptyForAgent(id);
+        const activity = agentActivity({ [id]: {
+          lastOutputAt: ptyId ? ptyManager.lastOutputAt(ptyId) : undefined,
+          context: hookServer.contextFor(id),
+        } }, now, WORKER_WAKE_IDLE_MS)[id];
+        const status = a.onHold ? 'on hold' : !ptyId ? 'offline' : activity.busy ? 'working' : 'idle';
         return {
           id,
           name: a.name,
+          status,
+          contextPct: activity.contextPct,
           role: a.role ?? (a.isGod ? 'orchestrator' : 'agent'),
           cwd: a.cwd,
           isGod: !!a.isGod,
@@ -1325,7 +1467,7 @@ function writeFleetSnapshot(): void {
     hive.writeFleetSnapshot({ ts: now, agents, hooks: hookServer.health() });
   } catch (e) {
     console.error('[fleet] snapshot failed:', e);
-  }
+  } finally { doneLag(); }
 }
 
 /** Arm the heartbeat with an adaptive, self-rescheduling cadence (recursive
@@ -2193,7 +2335,9 @@ function floorCascade(): WindowBounds | null {
   return clampBounds({ x: b.x + OFFSET, y: b.y + OFFSET, width: b.width, height: b.height });
 }
 
-// ─── Shareable hires: munderdifflin:// deep link + file import ──────────────
+// ─── Shareable hires: file import ───────────────────────────────────────────
+// Paramount never registers or handles munderdifflin:// — those deep links
+// belong to the installed Munder Difflin app.
 // A hire manifest NEVER auto-spawns: it is validated, then handed to the
 // renderer, which pre-fills the Add-Agent modal for human review. See
 // src/shared/hire.ts for the spec + security model.
@@ -2219,54 +2363,19 @@ function deliverHire(manifest: HireManifest): void {
   }
 }
 
-async function handleHireLink(link: string): Promise<void> {
-  const src = parseHireDeepLink(link);
-  if (!src) { console.warn('[hire] ignoring malformed deep link'); return; }
-  const res = await fetchHireManifest(src);
-  if (!res.ok) {
-    console.error('[hire] deep link rejected:', res.error);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('hire:error', { error: res.error });
-    }
-    return;
-  }
-  deliverHire(res.manifest);
-  analytics.trackFeature('hire_install');
-}
-
-// Register the protocol. In dev (electron .) Windows needs the explicit
-// exe+args form or the registration points at electron.exe with no entry.
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient('munderdifflin', process.execPath, [resolve(process.argv[1])]);
-  }
-} else {
-  app.setAsDefaultProtocolClient('munderdifflin');
-}
-
-// Deep links on Windows/Linux arrive as the argv of a SECOND process — take the
-// single-instance lock and forward them to the running instance. (macOS gets
-// the 'open-url' event instead.) The lock also rules out two harnesses fighting
-// over the same hive, which was previously possible but never useful.
+// The single-instance lock rules out two harnesses fighting over the same hive.
 const gotInstanceLock = app.requestSingleInstanceLock();
 if (!gotInstanceLock) {
   allowQuit = true;
   app.quit();
 } else {
-  app.on('second-instance', (_evt, argv) => {
+  app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
-    const link = argv.find((a) => a.startsWith('munderdifflin://'));
-    if (link) void handleHireLink(link);
   });
 }
-
-app.on('open-url', (evt, url) => {
-  evt.preventDefault();
-  void handleHireLink(url);
-});
 
 // IPC: the renderer signals readiness and PULLS anything queued (deep links
 // that arrived before the window/subscription existed, incl. cold starts).
@@ -2295,6 +2404,17 @@ ipcMain.handle('hire:openFile', async () => {
   };
 });
 
+ipcMain.handle('paramount:saveHirePreset', async (evt, raw: unknown) => saveParamountHirePreset(raw, {
+  validate: validateHireManifest,
+  showSaveDialog: async (defaultName) => {
+    const owner = BrowserWindow.fromWebContents(evt.sender);
+    const options = { title: 'Save agent preset', defaultPath: defaultName, filters: [{ name: 'Agent preset', extensions: ['json'] }] };
+    const picked = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+    return { canceled: picked.canceled, filePath: picked.filePath };
+  },
+  writeFile: (path, content) => writeFile(path, content, { encoding: 'utf8', mode: 0o600 }),
+}));
+
 /**
  * Create a window. The PRIMARY window (no opts) restores saved geometry, uses
  * the default session, runs the hive, and keeps the existing app-quit warning.
@@ -2318,7 +2438,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
     ...(geom && geom.x !== undefined && geom.y !== undefined ? { x: geom.x, y: geom.y } : {}),
     minWidth: MIN_WIN.width,
     minHeight: MIN_WIN.height,
-    title: isFloor ? 'Munder Difflin — Floor' : 'Munder Difflin',
+    title: floorWindowTitle(),
     backgroundColor: '#FFF8E7',
     titleBarStyle: 'hiddenInset',
     show: false,
@@ -2344,6 +2464,12 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   // Capture the webContents once: after 'closed' the window is gone, but this
   // reference stays valid as the per-PTY ownership key.
   const wc = win.webContents;
+  if (TEST_LABEL) win.on('page-title-updated', (e) => e.preventDefault()); // keep the test label
+
+  wc.on('context-menu', (_e, params) => {
+    const template = textContextMenuTemplate(params);
+    if (template.length) Menu.buildFromTemplate(template).popup({ window: win });
+  });
 
   allWindows.add(win);
   // Global timer events follow the user — the most-recently-focused window is
@@ -2418,7 +2544,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
       // A floor's close is NOT an app quit — confirm only its OWN terminals,
       // via a self-contained native dialog (no renderer modal). Confirming lets
       // the window close; its PTYs are stopped in the 'closed' handler.
-      const owned = ptyManager.countByOwner(wc);
+      const owned = ptyManager.countByOwner(wc) + sideAgentPtys.countByOwner(wc);
       if (owned > 0) {
         const choice = dialog.showMessageBoxSync(win, {
           type: 'warning',
@@ -2433,11 +2559,12 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
       return;
     }
     // Primary window: existing app-wide quit warning (renderer modal).
-    const count = ptyManager.list().length;
-    if (count === 0) return;
+    const ptyCount = ptyManager.list().length;
+    const sideAgentCount = sideAgentPtys.list().length;
+    if (ptyCount + sideAgentCount === 0) return;
     e.preventDefault();
     win.focus();
-    wc.send('app:closeRequested', { ptyCount: count });
+    wc.send('app:closeRequested', { ptyCount, sideAgentCount });
   });
 
   // The primary is the default PTY sink; floors route purely by per-PTY owner.
@@ -2448,16 +2575,22 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   // navigation must NOT flip readiness off (the renderer only drains on mount,
   // so a later deep link would otherwise queue and sit until a full reload).
   win.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) floorControlsDocument.delete(wc);
     if (details.isMainFrame) rendererReadyForHires = false;
   });
+  wc.on('did-frame-navigate', (_event, _url, _code, _status, isMainFrame, processId, frameId) => {
+    if (isMainFrame) floorControlsDocument.set(wc, { processId, frameId, ready: false });
+  });
+  wc.on('render-process-gone', () => floorControlsDocument.delete(wc));
 
-  if (isDev && process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL);
-  } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'));
-  }
+  // Paramount: the UI is the separate Paramount app, never src/renderer.
+  // Floors run on their own partition, so the scheme is registered per session.
+  registerParamountProtocol(wc.session);
+  win.loadURL(paramountUiUrl());
 
+  wc.on('render-process-gone', () => sideAgents.close(wc));
   win.on('closed', () => {
+    sideAgents.close(wc);
     allWindows.delete(win);
     // A closed floor must not leave its terminals running headless. (Natural
     // onExit teardown — archive + worktree cleanup — still runs per PTY.)
@@ -2480,24 +2613,27 @@ function openFloor(): BrowserWindow | null {
   return createWindow({ floor: true });
 }
 
-/** Build + install the application menu. Only called when multiWindow is on, so
- *  flag-off keeps Electron's default menu (zero behavior change). Uses standard
- *  role-based items so copy/paste/quit/etc. work per-platform, and adds the
- *  "New Floor" item (Cmd/Ctrl+Shift+N). */
+/** Build + install the application menu. Uses standard role-based items so
+ *  copy/paste/quit/etc. work per-platform, and adds "New Floor…" (Cmd/Ctrl+Shift+N),
+ *  which opens the floor picker, and "Switch floor…". */
 function installAppMenu(): void {
   const isMac = process.platform === 'darwin';
+  // Munder 0.5.3+: New Floor asks where to start (the floor picker in this window); the chosen
+  // floor runs as its own process. A second window of the same floor stays on window:newFloor.
   const newFloorItem = {
-    label: 'New Floor',
+    label: 'New Floor…',
     accelerator: 'CmdOrCtrl+Shift+N',
-    click: () => { openFloor(); }
+    click: () => { requestFloorPicker(); }
   };
+  const switchFloorItem = { label: 'Switch floor…', click: () => { void confirmSwitchFloor(); } };
+
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{ role: 'appMenu' as const }] : []),
     {
       label: 'File',
       submenu: isMac
-        ? [newFloorItem, { type: 'separator' as const }, { role: 'close' as const }]
-        : [newFloorItem, { type: 'separator' as const }, { role: 'quit' as const }]
+        ? [newFloorItem, switchFloorItem, { type: 'separator' as const }, { role: 'close' as const }]
+        : [newFloorItem, switchFloorItem, { type: 'separator' as const }, { role: 'quit' as const }]
     },
     // The Edit menu is spelled out rather than `{ role: 'editMenu' }` for one
     // reason: `registerAccelerator: false` on the clipboard items.
@@ -2596,7 +2732,7 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
 
 /** Spawn options shared by the `pty:spawn` IPC handler and the god-triggered
  *  ephemeral-worker watcher. */
-type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean };
+type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; restoreSessionId?: boolean; clearSession?: boolean; requireProvisioning?: boolean; expectedAccountHome?: string; provider?: AgentProvider; noAutoInstall?: boolean; councilLauncher?: LauncherPick | null; suppressLauncherSave?: boolean };
 
 /** Map a `ptyManager.spawn` failure string to the closed `agent_spawn_failed.reason`
  *  enum (analytics.ts). The two known strings come from PtyManager.spawn; anything
@@ -2618,6 +2754,16 @@ ipcMain.handle('pty:spawn', async (evt, opts: AgentSpawnOptions) => {
   return spawnAgentCore(opts, owner);
 });
 
+/** A floor agent (one with hive identity) spawns only while this process holds the floor; a plain
+ *  terminal (no hive identity) stays available, as in Munder with no floor configured. */
+function floorSpawnRefusal(opts: { hive?: unknown }): string | null {
+  if (!opts.hive || !readConfig().harnessHome || floorHome()) return null;
+  const s = floorGate.state();
+  return s.state === 'refused'
+    ? `${s.refusal.owner} (pid ${s.refusal.pid}) has this floor open. No agent was started.`
+    : 'This floor is not open in this app. No agent was started.';
+}
+
 /** Core agent-spawn logic — provider inference, the missing-CLI installer
  *  short-circuit, git-worktree isolation, hive provisioning, model/resume flags,
  *  and the final PTY spawn. Extracted VERBATIM from the `pty:spawn` IPC handler so
@@ -2633,6 +2779,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // with `cwd does not exist`. Expanding BEFORE hive provisioning is what makes the
   // registry store an ABSOLUTE cwd (and `cwdValid: true`). The resolved value is
   // returned to the caller so the renderer records the same absolute path.
+  const refused = floorSpawnRefusal(opts);
+  if (refused) return { ok: false, error: refused };
   opts.cwd = expandTilde(opts.cwd);
   if (opts.hive) opts.hive = { ...opts.hive, cwd: expandTilde(opts.hive.cwd) };
   // Which CLI is this? Explicit wins; else inferred from the binary
@@ -2640,6 +2788,29 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // below. Persist the resolved provider onto opts (+ hive meta) so the registry
   // record and downstream provider-aware steps agree on one value.
   const provider = inferAgentProvider(opts.command, opts.provider ?? opts.hive?.provider);
+  // Council extension gate: absent state leaves the baseline path intact. A saved
+  // account is revalidated BEFORE provisioning, installers or process allocation.
+  const accountFailure = (message: string) => {
+    const errorId = newErrorId();
+    paramountLog({ kind: 'paramount-error', errorId, code: 'INVALID_INPUT', message, agentId: opts.hive?.id });
+    return { ok: false, error: `${message} (error ${errorId})` };
+  };
+  let account: ReturnType<typeof resolveLauncherForSpawn>;
+  try {
+    await launcherDiscovery.warm();
+    account = resolveLauncherForSpawn({ root: hive.root(), agentId: opts.hive?.id, isGod: opts.hive?.isGod === true, isTemp: opts.hive?.role === 'worker', provider, explicit: opts.councilLauncher, isNew: !!opts.hive && !Object.hasOwn(hive.registry().agents, opts.hive.id) }, () => currentAccountDiscovery());
+    if (account) {
+      if (!ptyManager.isCommandAvailable(account.bin)) throw new Error('Selected launcher executable is unavailable. Install its provider and refresh.');
+      const modelArgs = opts.args ?? [];
+      const modelIndex = modelArgs.findIndex((a) => a === '--model' || a === '-m');
+      if (modelIndex >= 0 && !teamModels(paramountModelCatalog(), app.getVersion()).find((e) => e.id === provider)?.models.some((m) => m.id === modelArgs[modelIndex + 1])) throw new Error('Selected model is unsupported by this account launcher provider. Choose a supported model.');
+      opts.command = account.bin;
+      opts.args = [...account.args, ...(opts.args ?? [])];
+      opts.env = { ...(opts.env ?? {}), ...launcherEnvironment(account) };
+      opts.envUnset = [...new Set([...(opts.envUnset ?? []), ...LAUNCHER_AUTH_ENV])];
+      for (const key of LAUNCHER_AUTH_ENV) delete opts.env[key];
+    }
+  } catch (e) { return accountFailure(e instanceof Error ? e.message : 'Account launcher validation failed'); }
   const claudeProvider = isClaudeProvider(provider);
   opts.provider = provider;
   if (opts.hive) opts.hive = { ...opts.hive, provider };
@@ -2730,7 +2901,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   if (opts.isolate === true && await isRepo(opts.cwd)) {
     try {
       const origCwd = opts.cwd;
-      const wtRoot = join(readConfig().harnessHome ?? origCwd, 'worktrees');
+      const wtRoot = join(floorHome() ?? origCwd, 'worktrees');
       // The id is renderer-supplied (validated only as a string). Slugify it so a
       // crafted id can't inject path separators, then assert the resolved path
       // stays under the worktrees root (defends against bare '..' that slugify
@@ -2775,12 +2946,19 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // seedDelivery:'type-into-tui') rather than passed on argv. Surfaced in the spawn
   // result so the renderer types it through the per-pty write-chain. (ondev-b)
   let seedPrompt: string | undefined;
+  // A new hire is registered by ensureAgent below; a failed first start must not leave it behind (N6).
+  const registeredBefore = !!opts.hive && hive.enabled() && !!hive.registry().agents[opts.hive.id];
   if (opts.hive && hive.enabled()) {
     try {
       const inj = await hive.ensureAgent(
         { ...opts.hive, cwd: opts.cwd, provider },
         {
+          preserveAccountHome: !!account,
+          ...(opts.clearSession ? { clearSession: true } : {}),
+          ...(opts.restoreSessionId && opts.resumeSessionId ? { sessionId: opts.resumeSessionId } : {}),
           semanticMemory: memory.active(),
+          responseStyleBrief: readConfig().responseStyleBrief,
+          claudeOutputStyle: readConfig().claudeOutputStyle,
           knowledgeGraph: knowledge.active(),
           // Bake the ABSOLUTE KG CLI path into the agent's prompt. The prompt used
           // to spell it `$KG_CLI`, which is POSIX-only: under cmd.exe/PowerShell it
@@ -2806,10 +2984,12 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // enterprise knowledge store (both no-ops / empty when their flags are off).
       opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env() };
     } catch (e) {
-      // Hive provisioning is best-effort; never block a spawn on it.
+      if (opts.requireProvisioning) return accountFailure('Agent provisioning failed; no replacement process was started.');
+      // Ordinary legacy spawns retain their best-effort provisioning behavior.
       console.error('[hive] ensureAgent failed:', e);
     }
   }
+  if (account) opts.env = { ...(opts.env ?? {}), ...launcherEnvironment(account) };
   // Long-run guardrails + tiering (Lane A #6.4/#6.6). All additive to the args
   // already assembled (incl. the hive injection); an explicit choice always wins.
   // Set when an explicit Add Agent "resume session" id couldn't be located and we
@@ -2842,8 +3022,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // modelForRole resolves it and that wins over the worker-oriented defaultModel.
     if (!args.includes('--model')) {
       const m = opts.hive.isGod
-        ? modelForRole(opts.hive, cfg)
-        : cfg.defaultModel ?? modelForRole(opts.hive, cfg);
+        ? paramountResolveModel(provider, [modelForRole(opts.hive, cfg)])
+        : paramountResolveModel(provider, [paramountModelPick(opts.hive.id), cfg.defaultModel, modelForRole(opts.hive, cfg)]);
       if (m) args.push('--model', m);
     }
     // Name the Remote Control session after the agent (Michael, Jim, Dev1…) so it
@@ -2870,7 +3050,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // session rather than launching a `--resume` against a missing id.
     const explicitSid = typeof opts.resumeSessionId === 'string' ? opts.resumeSessionId.trim() : '';
     const sid = explicitSid || (opts.resume === true ? hive.lastSession(opts.hive.id) : undefined);
-    if (sid && !args.includes('--resume')) {
+    if (account && sid && !launcherSessionExists(account.home, provider, sid)) return accountFailure('Session is unavailable in the selected account. Choose that account explicitly or start a new session.');
+    if (account && sid) { if (!args.includes('--resume')) args.push('--resume', sid); didResume = true; }
+    if (!account && sid && !args.includes('--resume')) {
       if (seedSessionTranscript(opts.cwd, sid)) {
         args.push('--resume', sid);
         didResume = true;
@@ -2915,7 +3097,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // home has both the rollout and the sqlite index).
       const myHome = (opts.env ?? {}).CODEX_HOME;
       const agentsRoot = myHome ? dirname(dirname(myHome)) : '';
-      const ownerHome = agentsRoot ? findCodexHomeForSession(sid, agentsRoot) : null;
+      const ownerHome = account ? (launcherSessionExists(account.home, provider, sid) ? account.home : null) : agentsRoot ? findCodexHomeForSession(sid, agentsRoot) : null;
+      if (account && !ownerHome) return accountFailure('Session is unavailable in the selected account. No replacement process was started.');
       if (!ownerHome) {
         console.warn(`[resume] codex session "${sid}" not found in any agent CODEX_HOME - starting fresh`);
         if (typedSid) resumeNotFound = true;
@@ -2951,7 +3134,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // agent (spawned with --permission-mode bypassPermissions) doesn't stall on an
   // interactive prompt it can't answer and exit code 1. Best-effort, never blocks.
   // Claude-only — other CLIs handle their own permission UX.
-  if (claudeProvider) {
+  if (claudeProvider && !account) {
     try { ensureClaudePermissionsAccepted(opts.cwd); } catch { /* never block spawn */ }
   }
   // Suppress first-run interactive prompts for providers that need it (e.g. Codex
@@ -3016,10 +3199,31 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // Start/enable the daemon under this agent's isolated CODEX_HOME and connect
   // the TUI to it so the thread is visible in ChatGPT mobile. Best-effort: an
   // unavailable/older Codex install still gets a normal local terminal.
-  if (provider === 'codex' && opts.hive?.id) {
+  if (provider === 'codex') opts.args = codexExecutionArgs(opts.args ?? [], readConfig().codexExecutionPolicy);
+  if (provider === 'codex' && opts.hive?.id && !account && useCodexRemoteControl(readConfig().codexRemoteControl, readConfig().codexExecutionPolicy)) {
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
+  if (account) {
+    try {
+      // Validated once, above, against this spawn's single discovery.
+      const frozenPick = { id: account.id, fingerprint: account.fingerprint, ...(account.unrestricted ? { allowUnrestricted: true } : {}) };
+      if (opts.hive && !opts.hive.isGod && hive.root() && !opts.suppressLauncherSave) saveLauncherPick(hive.root()!, 'agent', frozenPick, opts.hive.id);
+    } catch (e) { return accountFailure(e instanceof Error ? e.message : 'The launcher selection could not be saved'); }
+  }
+  const actualHome = provider === 'codex' || provider === 'claude' ? opts.env?.[provider === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'] ?? resolveSignInAccountHome(provider) : undefined;
+  if (opts.expectedAccountHome) {
+    let sameHome = actualHome === opts.expectedAccountHome;
+    try { sameHome = !!actualHome && realpathSync(actualHome) === realpathSync(opts.expectedAccountHome); } catch { /* exact path equality remains valid for unavailable homes */ }
+    if (!sameHome) return accountFailure('The expected account environment changed; no replacement process was started.');
+  }
   const res = ptyManager.spawn(opts, owner);
+  if (!res.ok && opts.hive?.id && settleFailedStart(hive, opts.hive.id, { registeredBefore, started: false })) ptyToAgent.delete(opts.id);
+  if (res.ok && account) ptySignInAccount.set(opts.id, { id: account.id, label: account.label, home: account.home, bin: account.bin, fingerprint: account.fingerprint });
+  if (res.ok) {
+    const modelIndex = (opts.args ?? []).findIndex(arg => arg === '--model' || arg === '-m');
+    ptyLaunchIdentity.set(opts.id, { provider, model: modelIndex >= 0 ? opts.args?.[modelIndex + 1] : undefined,
+      launcher: account ? { id: account.id, fingerprint: account.fingerprint, ...(account.unrestricted ? { allowUnrestricted: true } : {}) } : null, home: actualHome });
+  }
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)
@@ -3032,23 +3236,58 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // record matches what the registry and the PTY actually used.
   return { ...res, cwd: opts.cwd, ...(worktreePath ? { worktreePath } : {}), ...(resumeNotFound ? { resumeNotFound: true } : {}), ...(didResume ? { resumed: true } : {}), ...(seedPrompt ? { seedPrompt } : {}) };
 }
-ipcMain.handle('pty:write', (_evt, id: string, data: string) => {
+const sideAgents = createSideAgents(sideAgentPtys, () => {
+  const floor = floorGate.state();
+  if (allowQuit || floor.state !== 'open' || !hive.enabled()) return null;
+  const registry = hive.registry();
+  const id = registry.godId;
+  if (!id || !Object.hasOwn(registry.agents, id) || !ptyForAgent(id)) return null;
+  return sideAgentSnapshot({
+    floorLabel: basename(floor.floor),
+    orchestratorId: id,
+    orchestratorName: resolveGodName(registry.agents[id].name),
+    capturedAt: new Date().toISOString(),
+    board: hive.board(),
+    ledger: hive.tasks(),
+    fleet: hive.fleet(),
+    log: hive.logTail(120),
+    agentIds: new Set(Object.entries(registry.agents).filter(([, agent]) => !agent.archived).map(([agentId]) => agentId)),
+  });
+}, (owner, disposedPtyId) => {
+  try { if (!owner.isDestroyed()) owner.send('side-agent:changed', disposedPtyId); }
+  catch { /* renderer closed during delivery */ }
+});
+
+ipcMain.handle('side-agent:state', (evt) => sideAgents.state(evt.sender));
+ipcMain.handle('side-agent:act', (evt, action: unknown, provider: unknown) => {
+  if (action === 'stop') return sideAgents.stop(evt.sender);
+  if (action === 'start' || action === 'restart') return sideAgents.launch(evt.sender, provider, action === 'restart');
+  return { ok: false, error: 'Unknown side-agent action.' };
+});
+
+function ptyForSender(sender: Electron.WebContents, id: string): PtyManager | undefined {
+  if (!isSideAgentPty(id)) return ptyManager;
+  if (sideAgents.owns(sender, id)) return sideAgentPtys;
+}
+
+ipcMain.handle('pty:write', (evt, id: string, data: string) => {
   if (typeof id !== 'string' || typeof data !== 'string') return { ok: false, error: 'invalid args' };
-  return ptyManager.write(id, data);
+  return ptyForSender(evt.sender, id)?.write(id, data) ?? { ok: false, error: 'Side agent is no longer running in this window.' };
 });
-ipcMain.handle('pty:resize', (_evt, id: string, cols: number, rows: number) => {
+ipcMain.handle('pty:resize', (evt, id: string, cols: number, rows: number) => {
   if (typeof id !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') return { ok: false, error: 'invalid args' };
-  return ptyManager.resize(id, cols, rows);
+  return ptyForSender(evt.sender, id)?.resize(id, cols, rows) ?? { ok: false, error: 'Side agent is no longer running in this window.' };
 });
-ipcMain.handle('pty:redraw', (_evt, id: string) => {
+ipcMain.handle('pty:redraw', (evt, id: string) => {
   if (typeof id !== 'string') return { ok: false, error: 'invalid id' };
-  return ptyManager.redraw(id);
+  return ptyForSender(evt.sender, id)?.redraw(id) ?? { ok: false, error: 'Side agent is no longer running in this window.' };
 });
 ipcMain.handle('pty:kill', (_evt, id: string) => {
   if (typeof id !== 'string') return { ok: false, error: 'invalid id' };
   // Kill the process, then run the shared lifecycle teardown (archive the agent,
   // remove its isolated worktree, drop the maps). teardownPty is idempotent, so
   // node-pty firing onExit once the child actually dies is a harmless no-op.
+  if (isSideAgentPty(id)) return { ok: false, error: 'Use the Side Agent stop control.' };
   const res = ptyManager.kill(id);
   teardownPty(id);
   return res;
@@ -3198,7 +3437,7 @@ ipcMain.handle('integrations:test', async (_evt, payload: unknown) => {
 
 // ─── IPC: config ────────────────────────────────────────────────────────────
 ipcMain.handle('config:get', (): HarnessConfig => readConfig());
-ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
+function applyConfigUpdate(patch: Partial<HarnessConfig>): HarnessConfig {
   // FIRST RUN: every hive-bound service is started by bootstrapHiveServices(),
   // which runs once at app-ready and early-returns on `!hive.enabled()` — i.e.
   // whenever harnessHome is still null, which is exactly the state a fresh
@@ -3216,8 +3455,11 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
   // relaunch, so bootstrap here on the null → set transition. Gated on the
   // transition so ordinary config writes never re-enter it.
   const hiveWasEnabled = hive.enabled();
+  const homeBefore = readConfig().harnessHome;
   const wasOnboarded = readConfig().onboardingComplete;
-  const next = writeConfig(patch);
+  // A plain YOLO toggle ends any timed window; re-arm so a stale timer never fires.
+  const next = writeConfig(normalizeAutoModePatch(patch));
+  if (touchesAutoModeExpiry(patch)) armAutoModeExpiry();
   // Live opt-in/out from Settings → Privacy (TELEMETRY.md).
   if (typeof patch?.telemetryEnabled === 'boolean') analytics.setEnabled(patch.telemetryEnabled);
   // Activation funnel (v0.4.6): onboarding just finished (false → true) — the top of
@@ -3230,12 +3472,15 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
   // config per tick so it gates immediately; this is for the PROMPT, which is
   // built per spawn, so flipping the toggle reaches god the next time he starts.
   if (typeof patch?.orchestratorMaySpawn === 'boolean') hive.setOrchestratorMaySpawn(patch.orchestratorMaySpawn);
-  if (!hiveWasEnabled && hive.enabled()) {
+  // The hive is enabled only once the floor lock is held, so a new floor is detected from config.
+  if (!hiveWasEnabled && next.harnessHome && (next.harnessHome !== homeBefore || floorGate.state().state !== 'refused')) {
     console.log('[hive] harnessHome configured — bootstrapping hive services');
     try { bootstrapHiveServices(); } catch (e) { console.error('[hive] bootstrap after onboarding:', e); }
   }
   return next;
-});
+}
+// Paramount's setup.complete goes through the same path (paramount-floor-setup.ts).
+ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => applyConfigUpdate(patch));
 ipcMain.handle('config:setAgentTokenCap', (_evt, agentId: unknown, tokenCap: unknown) =>
   setAgentTokenCap(agentId, tokenCap)
 );
@@ -3243,6 +3488,12 @@ ipcMain.handle('config:ensureHome', (_evt, path: unknown) => {
   if (typeof path !== 'string' || path.length === 0) return { ok: false, error: 'invalid path' };
   return ensureHarnessHome(path);
 });
+
+/** cpSync filter for a floor move: the lock, its claim mutex and claim temp files stay behind. */
+function isNotFloorLockPath(src: string): boolean {
+  const name = basename(src);
+  return name !== FLOOR_LOCK_FILE && !name.startsWith(`${FLOOR_LOCK_FILE}.`);
+}
 
 // Change the harnessHome folder. Because every derived path (hive root, palace,
 // sock, agent dirs) resolves lazily through getHome(), the only real work is
@@ -3259,6 +3510,8 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   // and the app would relaunch against a real directory named "~". Same
   // defence-in-depth-at-the-consumer rule as expandTilde's own doc.
   const newHome = resolve(expandTilde(p.newHome));
+  const ownData = dataFolderRefusal(newHome, appDataDirs());
+  if (ownData) return { ok: false, error: ownData };
   const oldRaw = readConfig().harnessHome;
   const oldHome = oldRaw ? resolve(oldRaw) : null;
 
@@ -3271,8 +3524,14 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
     }
   }
 
+  // Review F3: claim the destination floor before anything is written there. A floor another
+  // live app holds is refused untouched; the current floor's claim is kept until its services
+  // and agents have stopped, and is released only right before the relaunch.
+  const destination = floorGate.reserve(newHome);
+  if (destination.state === 'refused') return { ok: false, error: `${destination.refusal.owner} (pid ${destination.refusal.pid}) has that folder's floor open. Quit it, or choose another folder.` };
+  if (destination.state !== 'open') return { ok: false, error: `The destination floor could not be locked: ${destination.state === 'error' ? destination.detail : 'unknown error'}` };
   const ensured = ensureHarnessHome(newHome);
-  if (!ensured.ok) return ensured;
+  if (!ensured.ok) { floorGate.unreserve(); return ensured; }
 
   // Tear down everything bound to the OLD root before copying, so nothing writes
   // mid-copy — a live git commit into hive/.git would otherwise be copied as a
@@ -3288,6 +3547,8 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   try { stopWebhookServer(); } catch (e) { console.error('[changeHome] webhook.stop:', e); }
   try { memory.stop(); } catch (e) { console.error('[changeHome] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[changeHome] reflector.stop:', e); }
+  // Review R3: wait for an in-flight mine or reflection to end before copying or releasing.
+  await Promise.all([memory.drain(), reflector.drain()]).catch((e) => console.error('[changeHome] drain:', e));
 
   if (mode === 'move' && oldHome) {
     try {
@@ -3301,16 +3562,52 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
         // cpSync copies the whole tree incl. .git and is cross-device safe (unlike
         // renameSync, which throws EXDEV across volumes). We COPY, never delete —
         // the old folder stays as a safety net the user removes manually.
-        cpSync(src, join(newHome, sub), { recursive: true, force: true, dereference: false });
+        // Never copy floor ownership: the destination's lock is the one reserved above.
+        cpSync(src, join(newHome, sub), { recursive: true, force: true, dereference: false, filter: isNotFloorLockPath });
       }
+      if (isFloorProcess()) {
+        // Flush the floor's SQLite state before copying its database and WAL.
+        persist.close();
+        copyFloorPersistedState(app.getPath('userData'), floorDataDirFor(sharedDataDir(), newHome));
+        copyFloorMovedState(app.getPath('userData'), floorDataDirFor(sharedDataDir(), newHome));
+      }
+      // Only cwd paths under copied floor metadata are rebased. Arbitrary project
+      // folders beside the metadata remain at their original, still-valid paths.
+      const copiedCwdRoots = ['hive', 'palace', 'roster-backups']
+        .map((sub) => join(oldHome!, sub))
+        .filter((root) => existsSync(root) && existsSync(join(newHome, root.slice(oldHome!.length + 1))));
+      for (const file of [join(newHome, 'hive', 'registry.json'), join(newHome, 'roster.json')]) {
+        try {
+          const state = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+          const remap = (value: unknown): unknown => {
+            if (Array.isArray(value)) return value.map(remap);
+            if (!value || typeof value !== 'object') return value;
+            const record = value as Record<string, unknown>;
+            const next = Object.fromEntries(Object.entries(record).map(([key, item]) => [key, remap(item)]));
+            return typeof next.cwd === 'string' ? remapMovedCwds(next as { cwd: string }, oldHome!, newHome, copiedCwdRoots) : next;
+          };
+          writeFileSync(file, JSON.stringify(remap(state), null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+        } catch (e) { if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e; }
+      }
+      const runtimePath = join(newHome, 'hive', 'paramount-runtime.json');
+      try {
+        const runtime = JSON.parse(readFileSync(runtimePath, 'utf8')) as { agents?: Array<{ cwd?: unknown; [key: string]: unknown }> };
+        if (Array.isArray(runtime.agents)) {
+          runtime.agents = runtime.agents.map((agent) => remapMovedCwds(agent, oldHome!, newHome, copiedCwdRoots));
+          writeFileSync(runtimePath, JSON.stringify(runtime, null, 1) + '\n', { encoding: 'utf8', mode: 0o600 });
+        }
+      } catch (e) { if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e; }
     } catch (e) {
       // Copy failed: recover IN PLACE against the unchanged old home (config never
       // repointed) so the user loses nothing, and surface the error — no relaunch.
+      floorGate.unreserve();
+      if (isFloorProcess()) { try { persist.open(); } catch (openError) { console.error('[changeHome] reopen persistence:', openError); } }
       bootstrapHiveServices();
       const cfg = readConfig();
       if (cfg.slackEnabled && cfg.slackSigningSecret) void startSlackServer();
       reconcileWebhookServer();
-      return { ok: false, error: `Could not copy data: ${e instanceof Error ? e.message : String(e)}` };
+      const message = e instanceof FloorPersistedStateCopyError ? e.message : `Could not copy data: ${e instanceof Error ? e.message : String(e)}`;
+      return { ok: false, error: message };
     }
   }
 
@@ -3318,8 +3615,22 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   // (Identical recovery path to resetAll — relaunch is the clean re-bind.)
   allowQuit = true;
   writeConfig({ harnessHome: newHome });
+  sideAgents.closeAll();
   try { ptyManager.killAll(); } catch (e) { console.error('[changeHome] killAll:', e); }
-  app.relaunch();
+  // Agents and services on the old floor have stopped: release it. The destination stays
+  // reserved for the relaunch (same profile, so the new process takes it over as its own).
+  floorGate.release();
+  // Straight back onto the new folder: the relaunch opens it instead of stopping at the picker.
+  // A floor process restarts as the new home's floor (review F2): its config moves to that home's
+  // data folder, so the same home is never opened under two data folders.
+  const moveTo = { home: newHome, dataDir: floorDataDirFor(sharedDataDir(), newHome) };
+  if (isFloorProcess()) {
+    try {
+      mkdirSync(moveTo.dataDir, { recursive: true });
+      writeFileSync(join(moveTo.dataDir, 'config.json'), JSON.stringify(readConfig(), null, 2), { encoding: 'utf8', mode: 0o600 });
+    } catch (e) { console.error('[changeHome] floor config', e); }
+  }
+  app.relaunch({ args: moveRelaunchArgs(process.argv.slice(1), moveTo) });
   app.exit(0);
   return { ok: true as const }; // unreachable (process exits) — typed for the renderer
 });
@@ -3476,6 +3787,933 @@ ipcMain.handle('roster:read', () => roster.read());
 ipcMain.handle('roster:write', (_evt, snap: unknown) => roster.write(snap));
 
 // ─── IPC: hive (multi-agent coordination) ───────────────────────────────────
+/** Paramount UI preferences that have no existing fork owner. Kept beside the
+ *  hive, written atomically; no account secret or access grant is stored here. */
+function paramountPreferences(): Record<string, unknown> {
+  const root = hive.root();
+  if (!root) return {};
+  const path = join(root, 'paramount-preferences.json');
+  if (!existsSync(path)) return {};
+  const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Paramount preferences are corrupt');
+  return parsed as Record<string, unknown>;
+}
+function saveParamountPreference(key: 'profile' | 'setup' | 'home' | 'chats' | 'objectives' | 'board' | 'signInReminders', value: Record<string, unknown>): void {
+  const root = hive.root();
+  if (!root) throw new Error('hive disabled (no harnessHome)');
+  hive.ensureHive();
+  const path = join(root, 'paramount-preferences.json');
+  const current = paramountPreferences();
+  const next = { ...current, [key]: { ...(current[key] as Record<string, unknown> | undefined), ...value } };
+  const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+  renameSync(tmp, path);
+}
+/** Paramount prerequisite ids that have a vetted installer: the engine CLIs, via the
+ *  same trusted preset commands the missing-CLI auto-install uses. Nothing else. */
+const PARAMOUNT_INSTALLABLE_CLIS: Record<string, AgentProvider> = { claude: 'claude', codex: 'codex', opencode: 'opencode' };
+function paramountPrereqPlan(prereqId: string): ParamountPrereqPlan | null {
+  if (!Object.hasOwn(PARAMOUNT_INSTALLABLE_CLIS, prereqId)) return null;
+  const provider = PARAMOUNT_INSTALLABLE_CLIS[prereqId];
+  const bin = defaultCommandForProvider(provider, prereqId);
+  const npmAvailable = ptyManager.isCommandAvailable('npm') && nodeIsUsable(detectNodeVersion(ptyManager.commandPath('node')));
+  // No network here: a plan never downloads a Node installer, so a machine without
+  // a usable npm gets the native or manual rung.
+  const rung = chooseInstallRung(installInfoForProvider(provider), npmAvailable, null);
+  return { id: prereqId, label: providerPreset(provider).label, installed: ptyManager.isCommandAvailable(bin), kind: rung.kind, command: rung.command };
+}
+function paramountRunPrereqInstall(plan: ParamountPrereqPlan, sender: Electron.WebContents): { ok: boolean; ptyId?: string; error?: string } {
+  const provider = PARAMOUNT_INSTALLABLE_CLIS[plan.id];
+  const bin = defaultCommandForProvider(provider, plan.id);
+  const npmAvailable = ptyManager.isCommandAvailable('npm') && nodeIsUsable(detectNodeVersion(ptyManager.commandPath('node')));
+  const ptyId = `prereq-install-${plan.id}-${randomBytes(4).toString('hex')}`;
+  const res = ptyManager.spawn({ id: ptyId, cwd: homedir(), command: bin, shellScript: buildMissingCliScript(bin, provider, npmAvailable, process.platform, null) }, sender);
+  return res.ok ? { ok: true, ptyId } : { ok: false, error: res.error };
+}
+/** Service prerequisites with a vetted start command (the same constant the Paramount
+ *  prerequisite definition shows). Nothing else can be started from Paramount. */
+const PARAMOUNT_STARTABLE: Record<string, { label: string; bin: string; command: string; port: number }> = {
+  skid: { label: 'Skidbladnir', bin: 'skid', command: 'skid doctor && skid run qwen-3.5-9b "ready"', port: 8000 }
+};
+const lastProbeState = new Map<string, string>();
+const engineSignIn = createSignInMonitor({
+  path: (engine) => snapshotSignInPath(snapshotCommandDiscovery, engine),
+  resolvePath: async (engine) => (await snapshotCommandDiscovery.resolve(engine, true)).path
+});
+function signInAccount(provider: SignInEngine, accountId?: unknown, fingerprint?: unknown): ReturnType<typeof validateLauncher> | null | undefined {
+  if (accountId === undefined && fingerprint === undefined) return undefined;
+  if (typeof accountId !== 'string' || typeof fingerprint !== 'string' || !/^[a-z0-9_-]{1,32}$/i.test(accountId) || !/^[a-f0-9]{64}$/.test(fingerprint)) return null;
+  const discovery = currentAccountDiscovery();
+  const found = discovery.profiles.find((entry) => entry.id === accountId);
+  if (!found || found.provider !== provider || found.fingerprint !== fingerprint) return null;
+  try { return validateLauncher({ id: found.id, fingerprint: found.fingerprint, ...(found.unrestricted ? { allowUnrestricted: true } : {}) }, provider, discovery); }
+  catch { return null; }
+}
+ipcMain.handle('engine-signin:start', (event, input: unknown) => {
+  const request = input && typeof input === 'object' ? input as { provider?: unknown; accountId?: unknown; accountFingerprint?: unknown } : {};
+  if (request.provider !== 'claude' && request.provider !== 'codex') return { ok: false, error: 'Choose Claude Code or Codex.' };
+  const provider = request.provider as SignInEngine;
+  return observeAccountOperation(paramountLog, 'sign-in-start', { provider, accountId: request.accountId }, () => {
+  const account = signInAccount(provider, request.accountId, request.accountFingerprint);
+  if (account === null) return { ok: false, error: 'This account launcher changed or is unavailable. Refresh account choices and select it again.' };
+  const bin = account?.bin ?? ptyManager.commandPath(provider);
+  if (!bin || !ptyManager.isCommandAvailable(bin)) return { ok: false, error: `${provider} CLI is missing. Install it before signing in.` };
+  const accountHome = resolveSignInAccountHome(provider, account ?? undefined);
+  if (account) {
+    try { if (!statSync(accountHome, { throwIfNoEntry: false })?.isDirectory()) return { ok: false, error: `The selected ${account.label} account home is unavailable.` }; }
+    catch { return { ok: false, error: `The selected ${account.label} account home is unavailable.` }; }
+  }
+  const ptyId = `engine-signin-${provider}-${signInAccountKey(provider, account ?? undefined)}`;
+  const existing = ptyManager.list().find((session) => session.id === ptyId);
+  if (existing) return { ok: true, ptyId, cwd: existing.cwd };
+  const env = account ? launcherEnvironment(account) : { [provider === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR']: accountHome };
+  const args = provider === 'codex' ? ['login'] : ['auth', 'login'];
+  const started = ptyManager.spawn({ id: ptyId, cwd: homedir(), command: bin, args, env, envUnset: [...LAUNCHER_AUTH_ENV], cols: 110, rows: 30 }, BrowserWindow.fromWebContents(event.sender)?.webContents ?? null);
+  return started.ok ? { ok: true, ptyId, cwd: homedir() } : { ok: false, error: started.error ?? 'Could not open the sign-in terminal.' };
+  });
+});
+ipcMain.handle('engine-signin:refresh', async (_event, input: unknown) => {
+  const request = input && typeof input === 'object' ? input as { provider?: unknown; accountId?: unknown; accountFingerprint?: unknown } : {};
+  if (request.provider !== 'claude' && request.provider !== 'codex') return { ok: false, error: 'Choose Claude Code or Codex.' };
+  const provider = request.provider as SignInEngine;
+  return observeAccountOperation(paramountLog, 'sign-in-check', { provider, accountId: request.accountId }, async () => {
+  const account = signInAccount(provider, request.accountId, request.accountFingerprint);
+  if (account === null) return { ok: false, error: 'This account launcher changed or is unavailable. Refresh account choices and select it again.' };
+  const status = await engineSignIn.refresh(provider, account ?? undefined);
+  broadcastParamountInvalidation('engine-signin');
+  return { ok: true, status };
+  });
+});
+// The file picker is a one-file access grant for this narrowly scoped update;
+// no home-wide permission or persistent bookmark is saved.
+const claudeChannelTarget = join(homedir(), '.minion-aliases.sh');
+const syntaxCheckClaudeAliases = (text: string): boolean => {
+  const result = spawnSync('/bin/zsh', ['-n'], { input: text, encoding: 'utf8', timeout: 2000, windowsHide: true });
+  return result.status === 0 && !result.error;
+};
+const claudeChannelUpdater = createClaudeChannelUpdater({
+  targetPath: claudeChannelTarget,
+  syntaxCheck: syntaxCheckClaudeAliases,
+  file: {
+    lstat: (path) => lstatSync(path),
+    readFile: (path) => readFileSync(path, 'utf8'),
+    copyFile: (source, target) => copyFileSync(source, target),
+    writeFile: (path, text, mode, exclusive) => writeFileSync(path, text, { encoding: 'utf8', mode, flag: exclusive ? 'wx' : 'w' }),
+    chmod: (path, mode) => chmodSync(path, mode),
+    rename: (source, target) => renameSync(source, target),
+    unlink: (path) => unlinkSync(path),
+  },
+});
+ipcMain.handle('claude-channel:prepare', async () => {
+  const selected = await dialog.showOpenDialog({ title: 'Choose the Claude launcher file to update', defaultPath: claudeChannelTarget,
+    filters: [{ name: 'Claude launcher file', extensions: ['sh'] }], properties: ['openFile'] });
+  if (selected.canceled || selected.filePaths.length !== 1) return { ok: false, canceled: true };
+  return claudeChannelUpdater.prepare(selected.filePaths[0]);
+});
+ipcMain.handle('claude-channel:apply', (_event, input: unknown) => {
+  const planId = input && typeof input === 'object' ? (input as { planId?: unknown }).planId : undefined;
+  return claudeChannelUpdater.apply(planId);
+});
+/** Async probe of a startable service's port, so a daemon started outside the app is
+ *  seen. The result is logged under the caller's correlation id. */
+async function paramountProbeService(prereqId: string, cid: string): Promise<boolean> {
+  if (!Object.hasOwn(PARAMOUNT_STARTABLE, prereqId)) return false;
+  const port = PARAMOUNT_STARTABLE[prereqId].port;
+  const probe = await probePort(port);
+  // Logged when the service's state changes, not on every snapshot poll.
+  const state = probe.ok ? 'open' : `closed:${probe.code ?? ''}`;
+  if (lastProbeState.get(prereqId) !== state) {
+    lastProbeState.set(prereqId, state);
+    paramountLog({ kind: 'paramount-prereq', cid, step: 'port-probe', id: prereqId, port, open: probe.ok, ...(probe.ok ? {} : { code: probe.code }) });
+  }
+  return probe.ok;
+}
+function paramountStartPlan(prereqId: string, portOpen = false): ParamountPrereqStartPlan | null {
+  if (!Object.hasOwn(PARAMOUNT_STARTABLE, prereqId)) return null;
+  const def = PARAMOUNT_STARTABLE[prereqId];
+  // Running = a start terminal this app opened is alive, OR the service port answers
+  // (a daemon started outside the app).
+  const running = portOpen || ptyManager.list().some((p) => p.id.startsWith(`prereq-start-${prereqId}-`));
+  return { id: prereqId, label: def.label, installed: ptyManager.isCommandAvailable(def.bin), running, command: def.command };
+}
+function paramountRunPrereqStart(plan: ParamountPrereqStartPlan, sender: Electron.WebContents): { ok: boolean; ptyId?: string; error?: string } {
+  const def = PARAMOUNT_STARTABLE[plan.id];
+  const ptyId = `prereq-start-${plan.id}-${randomBytes(4).toString('hex')}`;
+  const res = ptyManager.spawn({ id: ptyId, cwd: homedir(), command: def.bin, shellScript: def.command }, sender);
+  return res.ok ? { ok: true, ptyId } : { ok: false, error: res.error };
+}
+/** Timed YOLO: when the persisted expiry passes, autoMode turns off with a log line.
+ *  Armed at boot (so an expiry that passed while the app was closed still fires),
+ *  on resume and after every write that touches autoMode. A failed write forces
+ *  autoMode off in memory and retries with backoff (autoModeExpiry.ts). */
+const autoModeExpiry = createAutoModeExpiry({
+  read: readConfig,
+  write: (patch) => { writeConfig(patch); },
+  forceOff: setAutoModeForcedOff,
+  log: (event) => paramountLog(event),
+  newErrorId
+});
+function armAutoModeExpiry(): void { autoModeExpiry.arm(); }
+/** Connect = enable a registered integration that already holds its credential;
+ *  disconnect = disable it (the stored secret stays). Secrets never pass through here. */
+function paramountSetIntegrationConnected(connectionId: string, connected: boolean): 'ok' | 'not_found' | 'needs_secret' {
+  const record = integrations.getRecord(connectionId);
+  if (!record) return 'not_found';
+  if (connected && authTypeNeedsSecret(record.authType) && !integrations.hasSecret(record.secretRef)) return 'needs_secret';
+  if (record.enabled === connected) return 'ok';
+  const result = integrations.upsertRecord({ ...record, enabled: connected });
+  if (!result.ok) throw new Error(result.error);
+  return 'ok';
+}
+/** Paramount calls log `paramount-op` start/end lines and `paramount-error`
+ *  lines into the hive's log.jsonl; see paramountObservability.ts. */
+const paramountLog: LogSink = (event) => hive.appendLog(event);
+const snapshotStageCapture = createSnapshotStageCapture({
+  directory: join(app.getPath('userData'), 'diagnostics'),
+  appRunId: randomBytes(16).toString('hex'),
+  version: app.getVersion()
+});
+const paramountSnapshotStageTimer = createSnapshotStageTimer({
+  now: () => performance.now(),
+  // Queue only validated timing fields; persistence is asynchronous and best effort.
+  log: (event) => { snapshotStageCapture.record(event); }
+});
+ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', paramountLog, { sender: evt.sender.id }, async (span) => {
+  const time = <T>(stage: SnapshotStage, work: () => T): T =>
+    paramountSnapshotStageTimer.measure(span.cid, stage, work);
+  const cfg = time('config', () => readConfig());
+  const floorSetup = time('floorSetup', () => floorSetupState(paramountFloorSetupDeps(evt.sender)));
+  const hookSocket = time('hookHealth', () => hookServer.health());
+  const orchestratorFailure = time('orchestratorFailure', () => orchestratorStart.failure());
+  const hasOrchestratorFailure = !!orchestratorFailure;
+  const registry = time('registry', () => hive.registry());
+  const tasks = time('tasks', () => hive.tasks());
+  const messages = time('messages', () => hive.voiceMessages({ limit: 500 }));
+  const organization = time('organization', () => {
+    try { return readOrg(hive.root(), Object.keys(hive.registry().agents ?? {})); }
+    catch (error) { paramountLog({ kind: 'paramount-organization', step: 'read-failed', errorId: newErrorId(), message: error instanceof Error ? error.message : 'Team settings are invalid' }); return { version: 1 as const, teams: [], reportsTo: {} }; }
+  });
+  const archivedAgents = time('archivedAgents', () => Object.entries(hive.registry().agents ?? {}).filter(([, agent]) => agent.archived === true).map(([id, agent]) => ({ id, name: agent.name || id })));
+  const log = time('log', () => hive.logTail(500));
+  const rosterSnapshot = time('roster', () => roster.read());
+  // Live busy/idle, last tool, tokens and context per agent: the Team graph's status and 'doing'.
+  const activity = time('activity', () => paramountActivity());
+  const snapshotConfig = time('snapshotConfig', () => ({ notifications: cfg.notifications, codexRemoteControl: cfg.codexRemoteControl === true, codexExecutionPolicy: cfg.codexExecutionPolicy ?? 'inherit', autoMode: cfg.autoMode, autoModeExpiresAt: cfg.autoModeExpiresAt, accessMatrix: cfg.accessMatrix ?? {},
+    defaultModel: cfg.defaultModel, godProvider: cfg.godProvider, orchestratorMaySpawn: cfg.orchestratorMaySpawn,
+    ticketKeyPrefix: cfg.ticketKeyPrefix ?? '',
+    semanticMemory: cfg.semanticMemory, embeddingModel: cfg.embeddingModel, reflectEnabled: cfg.reflectEnabled,
+    maxTurns: cfg.maxTurns, costCapTokens: cfg.costCapTokens, circuitBreaker: effectiveCircuitBreaker(cfg.circuitBreaker),
+    providerBaseUrls: cfg.providerBaseUrls ?? {}, providerDefaultModels: cfg.providerDefaultModels ?? {},
+    responseStyleBrief: cfg.responseStyleBrief ?? '', claudeOutputStyle: cfg.claudeOutputStyle ?? 'off' }));
+  const missions = time('missions', () => cfg.missions ?? []);
+  // Main-process hires do not enter the legacy renderer-owned roster. Project
+  // the live ownership map so Paramount can display their actual terminals.
+  const ptys = time('ptys', () => ptyManager.list().map((pty) => ({ ...pty, agentId: ptyToAgent.get(pty.id) })));
+  const preferences = time('preferences', () => paramountPreferences());
+  const integrationRecords = time('integrations', () => integrations.listRecordsRedacted());
+  const skid = paramountStartPlan('skid', await time('skidProbe', () => paramountProbeService('skid', span.cid)));
+  // What the packaged app needs from outside itself, resolved on the login-shell PATH as spawn does.
+  const tools = time('enginePaths', () => snapshotCommandTools(snapshotCommandDiscovery,
+    cfg.godProvider === 'codex' || Object.values(hive.registry().agents ?? {}).some((agent) => agent.provider === 'codex' && agent.archived !== true)));
+  // Installed engines that are not signed in.
+  const signIn = time('signIn', () => Object.fromEntries([
+    ...installedSnapshotEngines(snapshotCommandDiscovery).map((e) => [e, engineSignIn.status(e)] as const),
+    ...currentAccountDiscovery().profiles.map((profile) => [
+      `${profile.provider}-${profile.id}`,
+      engineSignIn.status(profile.provider as 'claude' | 'codex', profile)
+    ] as const)
+  ]));
+  return {
+    floorSetup, hookSocket,
+    ...(hasOrchestratorFailure ? { orchestratorFailure } : {}),
+    ...(TEST_LABEL ? { testLabel: TEST_LABEL } : {}),
+    registry, tasks, messages, organization, archivedAgents, log, roster: rosterSnapshot, activity,
+    config: snapshotConfig, missions, ptys, preferences, integrations: integrationRecords,
+    prereqs: { skid, tools, signIn }
+  };
+}, { rethrow: true, quiet: true }));
+/** Roots for agents.discover/import, resolved per call so a changed CODEX_HOME
+ *  or Munder config is picked up. Read-only: agentSources.ts never writes. */
+function paramountAgentRoots(): AgentSourceRoots {
+  const munder = defaultMunderHive(app.getPath('appData'));
+  return {
+    claudeHome: join(homedir(), '.claude'),
+    codexHome: process.env.CODEX_HOME?.trim() || join(homedir(), '.codex'),
+    munderHive: munder.hive,
+    ...(munder.warning ? { munderHiveWarning: munder.warning } : {})
+  };
+}
+/** A model picked for this agent in Paramount's Team screen, used at its next start. */
+function paramountModelPick(agentId: string): string | undefined {
+  try { return agentModelPick(hive.root(), agentId); } catch (e) {
+    paramountLog({ kind: 'paramount-error', errorId: newErrorId(), code: 'INTERNAL', message: `agent model picks unreadable; using the default model: ${e instanceof Error ? e.message : String(e)}`, agentId });
+    return undefined;
+  }
+}
+/** paramount:command events go to the floor log and every window. */
+function paramountAppendEvent(event: ParamountEvent): void {
+  const root = hive.root();
+  if (!root) throw new Error('hive disabled (no harnessHome)');
+  appendFileSync(join(root, 'log.jsonl'), JSON.stringify({ ts: Date.now(), kind: 'paramount-command', ...event }) + '\n', { encoding: 'utf8', mode: 0o600 });
+}
+function paramountPublish(event: ParamountEvent): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', event);
+  }
+}
+const floorOverview = createFloorOverview({
+  shared: sharedDataDir(),
+  profile: app.getPath('userData'),
+  home: floorHome,
+  rows: () => {
+    const now = Date.now();
+    return projectFloorRows(hive.registry(), hive.tasks(), (id) => {
+      const pty = ptyForAgent(id);
+      const busy = pty && now - (ptyManager.lastOutputAt(pty) ?? 0) < WORKER_WAKE_IDLE_MS;
+      return { status: !pty ? 'offline' : busy ? 'working' : 'idle', breaker: breaker.levelFor(id) };
+    }, roster.read()?.agents ?? []);
+  },
+  focus: () => {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow();
+    pendingFloorControls.set(win.webContents, ++floorControlsRequestId);
+    deliverFloorControls(win.webContents);
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    return true;
+  }
+});
+
+// The UI subscribes after its first snapshot, which can finish after page load.
+// Retain the request in main until the target's listener has handled it.
+// Between full navigation start and commit, even the current frame is outgoing.
+const floorControlsDocument = new WeakMap<Electron.WebContents, {
+  processId: number;
+  frameId: number;
+  ready: boolean;
+}>();
+const pendingFloorControls = new WeakMap<Electron.WebContents, number>();
+let floorControlsRequestId = 0;
+
+function deliverFloorControls(contents: Electron.WebContents): void {
+  const requestId = pendingFloorControls.get(contents);
+  if (requestId !== undefined && floorControlsDocument.get(contents)?.ready && !contents.isDestroyed()) {
+    contents.send('floor-overview:controls', requestId);
+  }
+}
+
+function canUseFloorOverview(event: Pick<Electron.IpcMainEvent, 'senderFrame'>): boolean {
+  const frame = event.senderFrame;
+  if (!floorHome() || !frame || frame.parent !== null) return false;
+  try {
+    const trusted = new URL(paramountUiUrl());
+    const actual = new URL(frame.url);
+    return actual.protocol === trusted.protocol && actual.host === trusted.host;
+  } catch { return false; }
+}
+
+function floorControlsSenderDocument(event: Electron.IpcMainEvent) {
+  const document = floorControlsDocument.get(event.sender);
+  if (document && event.processId === document.processId && event.frameId === document.frameId &&
+      canUseFloorOverview(event) && event.senderFrame === event.sender.mainFrame) return document;
+  return undefined;
+}
+
+ipcMain.handle('floor-overview:list', (event) => canUseFloorOverview(event) ? floorOverview.list() : []);
+ipcMain.handle('floor-overview:focus', (event, id: unknown) =>
+  canUseFloorOverview(event) && typeof id === 'string' && /^[a-f0-9]{64}$/.test(id) ? floorOverview.focus(id) : false);
+ipcMain.on('floor-overview:controls-ready', (event) => {
+  const document = floorControlsSenderDocument(event);
+  if (!document) return;
+  document.ready = true;
+  deliverFloorControls(event.sender);
+});
+ipcMain.on('floor-overview:controls-handled', (event, requestId: unknown) => {
+  if (floorControlsSenderDocument(event)?.ready && pendingFloorControls.get(event.sender) === requestId) {
+    pendingFloorControls.delete(event.sender);
+  }
+});
+
+// ─── Floors (owner requests 2026-11-12; Munder 0.5.7 parity, floors.ts) ────────
+// The floor is chosen on every launch: the main process claims nothing at boot, and the picker
+// opens a floor in this process (openChosenFloor). With a floor open, New Floor… (Cmd+Shift+N)
+// shows the same picker, and the chosen floor starts as its own app process (openFloorProcess),
+// so several floors run at once. A floor process is started for one home and opens it directly.
+let floorChosen = false;
+let newFloorPicker = false;
+/** The app's data folders a floor may never use (this process's, and the shared main one). */
+const appDataDirs = (): string[] => [...new Set([app.getPath('userData'), sharedDataDir()])];
+function floorContext(): FloorContext {
+  const held = floorGate.state();
+  return { currentHome: held.state === 'open' ? held.floor : null, me: { pid: process.pid, userData: app.getPath('userData'), version: `Paramount ${app.getVersion()}` }, dataDirs: appDataDirs() };
+}
+function probeRecentFloors(): Array<{ path: string } & FloorProbe> {
+  const cfg = readConfig();
+  const ctx = floorContext();
+  return [...new Set([...(cfg.harnessHome ? [cfg.harnessHome] : []), ...(cfg.recentHives ?? [])])].map((path) => ({ path, ...probeFloor(path, ctx) }));
+}
+function floorChoice(): FloorChoice {
+  const pending = !floorChosen;
+  const picker = pending || newFloorPicker;
+  const recents = picker ? probeRecentFloors().map((r) => ({ path: r.path, exists: r.state !== 'missing', state: r.state, ...(r.state === 'held' ? { heldBy: `${floorOwnerName(r.lock)} (pid ${r.lock.pid})` } : {}) })) : [];
+  return { pending, newFloor: !pending && newFloorPicker, last: readConfig().harnessHome ?? null, recents };
+}
+/** Open a floor in this process (the launch picker). The lock comes first: a held floor is refused
+ *  with nothing on it written and the config unchanged; then the folder, the config and the services. */
+function openChosenFloor(home: string): FloorGateState {
+  const target = normaliseHome(home);
+  const data = dataFolderRefusal(target, appDataDirs());
+  if (data) return { state: 'error', floor: target, detail: data };
+  const claimed = floorGate.claim(target);
+  if (claimed.state !== 'open') { broadcastParamountInvalidation('floor-lock'); return claimed; }
+  const made = ensureHarnessHome(target);
+  if (!made.ok) { floorGate.release(); broadcastParamountInvalidation('floor-lock'); return { state: 'error', floor: target, detail: made.error ?? 'The folder could not be created' }; }
+  floorChosen = true;
+  writeConfig({ harnessHome: target }); // also puts it first in recentHives
+  bootstrapHiveServices();
+  applyFloorTitle();
+  broadcastParamountInvalidation('floor-lock');
+  return floorGate.state();
+}
+/** New Floor…: start the chosen floor as its own detached app process with its own data folder. */
+async function openFloorProcess(home: string): Promise<{ ok: true; home: string } | { ok: false; error: string; refusal?: string }> {
+  const v = validateFloorRequest(home, floorContext());
+  if (!v.ok) return { ok: false, error: v.message, refusal: v.refusal };
+  const made = ensureHarnessHome(v.home);
+  if (!made.ok) return { ok: false, error: made.error ?? 'The folder could not be created' };
+  const shared = sharedDataDir();
+  const dataDir = floorDataDirFor(shared, v.home);
+  const plan = floorSpawnPlan({ execPath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged, dataDir, sharedDir: shared, home: v.home });
+  return new Promise((done) => {
+    const token = randomBytes(18).toString('hex');
+    const ack = `PARAMOUNT_FLOOR_OPENED:${token}`;
+    let settled = false;
+    let acknowledged = false;
+    let output = '';
+    let child: ReturnType<typeof spawn> | null = null;
+    const onData = (chunk: Buffer | string) => {
+      if (settled) return;
+      // Examine every complete line before bounding the carry. A valid ready
+      // line can precede an arbitrarily chatty log line in the same OS chunk.
+      const lines = (output + String(chunk)).split(/\r?\n/);
+      output = lines.pop() ?? '';
+      output = output.slice(-256); // only an incomplete line is retained
+      if (settled || !lines.includes(ack)) return;
+      try {
+        // Commit the success effects once, and only while this request is live.
+        acknowledged = true;
+        child?.unref();
+        console.log(`[floor] opened pid ${child?.pid} on ${v.home} (data ${dataDir})`);
+        const cfg = readConfig();
+        writeConfig({ recentHives: [...new Set([...(cfg.recentHives ?? []), v.home])] });
+        broadcastParamountInvalidation('floor-lock');
+        // Close a picker only after the child has acknowledged readiness.
+        if (isFloorProcess() && floorGate.state().state !== 'open') {
+          setTimeout(() => { if (settled && acknowledged) app.quit(); }, 250);
+          allowQuit = true;
+        }
+        newFloorPicker = false;
+        finish({ ok: true, home: v.home });
+      } catch (e) {
+        acknowledged = false;
+        finish({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    };
+    const finish = (result: { ok: true; home: string } | { ok: false; error: string; refusal?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { child?.stdout?.removeListener('data', onData); } catch { /* already closed */ }
+      try { child?.removeListener('error', onError); } catch { /* already closed */ }
+      try { child?.removeListener('exit', onExit); } catch { /* already closed */ }
+      done(result);
+    };
+    const onError = (e: Error) => { if (!settled) finish({ ok: false, error: e.message }); };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (!settled && !acknowledged) finish({ ok: false, error: `The new floor exited before confirming it opened (code ${code ?? 'none'}${signal ? `, signal ${signal}` : ''}).` });
+    };
+    const timer = setTimeout(() => {
+      if (!acknowledged) { try { child?.kill('SIGTERM'); } catch { /* startup is already failing */ } }
+      finish({ ok: false, error: 'The new floor did not confirm that it opened before the startup timeout.' });
+    }, 15000);
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      child = spawn(plan.command, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, PARAMOUNT_FLOOR_OPEN_ACK: token } });
+      child.stdout?.on('data', onData);
+      child.once('spawn', () => {
+        (child?.stdout as NodeJS.ReadStream | null)?.unref();
+      });
+      child.once('error', onError);
+      child.once('exit', onExit);
+    } catch (e) { finish({ ok: false, error: e instanceof Error ? e.message : String(e) }); }
+  });
+}
+/** Switch floor (god-confirmed 2026-11-12, matches Munder's hive switch): stop this floor's agents
+ *  exactly as quit does (the runtime records who was live first, so reopening the floor restores
+ *  them; the floor is released last), then the app starts again at the launch picker. Other floor
+ *  processes keep running. Without an open floor there is nothing to stop: show the picker. */
+function switchFloor(): void {
+  if (floorGate.state().state !== 'open') { floorChosen = false; broadcastParamountInvalidation('floor-lock'); return; }
+  closingTime.cancel();
+  teardownAndQuit({ relaunch: true });
+}
+async function confirmSwitchFloor(): Promise<void> {
+  if (floorGate.state().state !== 'open') { switchFloor(); return; }
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
+  const opts: Electron.MessageBoxOptions = { type: 'question', buttons: ['Stop agents and switch', 'Cancel'], defaultId: 0, cancelId: 1,
+    message: 'Switch floor?', detail: 'Every agent on this floor stops. They start again when you open this floor again. Paramount then asks which floor to open. Floors open in other windows keep running.' };
+  const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+  if (r.response === 0) switchFloor();
+}
+/** New Floor… (menu, Cmd+Shift+N, Settings): show the picker in this window. */
+function requestFloorPicker(open = true): void {
+  if (!floorChosen) return; // the launch picker is already showing
+  newFloorPicker = open;
+  broadcastParamountInvalidation('floor-lock');
+}
+/** Each window says which floor it is: "Paramount — <folder>" (the test label keeps its prefix). */
+function floorWindowTitle(): string {
+  const held = floorGate.state();
+  const name = held.state === 'open' ? basename(held.floor) : null;
+  return [TEST_LABEL ?? 'Paramount', name].filter(Boolean).join(' — ');
+}
+function applyFloorTitle(): void {
+  const title = floorWindowTitle();
+  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.getTitle() !== title) w.setTitle(title);
+}
+// Munder's IPC names, for the preload and scripts; the UI uses floor.open / floor.picker.
+ipcMain.handle('floor:probe', (_evt, paths: unknown) => {
+  const ctx = floorContext();
+  return (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string' && !!p) : []).map((p) => ({ path: p, ...probeFloor(p, ctx) }));
+});
+ipcMain.handle('floor:open', (_evt, arg: unknown) => openFloorProcess(typeof (arg as { harnessHome?: unknown })?.harnessHome === 'string' ? (arg as { harnessHome: string }).harnessHome : ''));
+/** First-run floor setup (paramount-floor-setup.ts): engines from the presets, models from the configured catalog. */
+function paramountFloorSetupDeps(sender: Electron.WebContents): FloorSetupDeps {
+  const team = paramountTeamDeps(sender);
+  return {
+    launcherDiscovery: () => currentAccountDiscovery(),
+    floor: {
+      state: () => floorGate.state(),
+      claim: (home) => floorGate.claim(home),
+      retry: () => { bootstrapHiveServices(); broadcastParamountInvalidation('floor-lock'); return floorGate.state(); },
+      // Back to setup: the refused floor is left exactly as it is.
+      // A set-up profile goes back to the floor picker; during setup, back to setup's folder step.
+      chooseAnother: () => { if (readConfig().onboardingComplete) floorChosen = false; else writeConfig({ onboardingComplete: false }); broadcastParamountInvalidation('floor-lock'); },
+      dataFolderRefusal: (home) => dataFolderRefusal(home, appDataDirs()),
+      choice: floorChoice,
+      open: openChosenFloor,
+      openProcess: openFloorProcess,
+      ownHome: floorProcessHome,
+      picker: requestFloorPicker,
+      switchFloor,
+    },
+    config: () => readConfig(),
+    suggestedHome: () => paramountHome(),
+    engines: () => {
+      const models = new Map(teamModels(team.modelCatalog(), team.appVersion).map((e) => [e.id, e.models]));
+      return AGENT_PROVIDER_PRESETS.filter((p) => p.id !== 'custom').map((p) => ({
+        id: p.id, label: p.label, orchestrator: p.supportsModel && p.canReceiveInbox,
+        installed: team.commandAvailable(p.defaultCommand),
+        models: (models.get(p.id) ?? []).flatMap((m) => (m.id ? [m.id] : []))
+      }));
+    },
+    ensureHome: (path) => ensureHarnessHome(path),
+    // godProvider was validated against AGENT_PROVIDER_PRESETS by dispatchFloorSetup.
+    // Setup opens the floor it created: no chooser in this run.
+    complete: (patch) => { floorChosen = true; applyConfigUpdate({ ...patch, godProvider: patch.godProvider as AgentProvider }); },
+    appendEvent: paramountAppendEvent,
+    publish: paramountPublish
+  };
+}
+/** Account launchers found in the login shell: one cached result, rerun only by
+ *  `launchers.refresh` (setup screen, "Refresh launchers"). Never per snapshot. */
+// The login-shell probe runs off the main thread (owner use of 8f574966: beach ball); warmed at boot.
+const launcherDiscovery = createLauncherDiscoveryCache(discoverLaunchers, discoverLaunchersAsync);
+let accountProfileStore: ReturnType<typeof createAccountProfileStore> | undefined;
+function deviceAccountProfiles() {
+  // The local instance lock guards initialization; catalog mutations additionally
+  // hold a shared-directory lock across independently running floor processes.
+  // app.quit() alone does not abort module evaluation, so explicitly guard losers.
+  if (!gotInstanceLock) throw new Error('Another Paramount instance owns the account catalog.');
+  return accountProfileStore ??= createAccountProfileStore(join(sharedDataDir(), 'account-profiles'));
+}
+function currentAccountDiscovery() {
+  return mergeAccountProfiles(launcherDiscovery.current(), deviceAccountProfiles().list());
+}
+
+function paramountResolveModel(provider: string, choices: Array<string | undefined>): string | undefined {
+  return resolveAgentModel(provider, choices, (engine) => teamModels(paramountModelCatalog(), app.getVersion()).find((e) => e.id === engine)?.models.flatMap((m) => m.id ? [m.id] : []) ?? []);
+}
+function paramountModelCatalog() {
+  try {
+    const cached = JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown };
+    const remote = parseModelCatalog(cached?.catalog);
+    if (remote) return remote;
+  } catch { /* no cached remote copy; the baked one applies */ }
+  return parseModelCatalog(bakedModelCatalog) ?? { version: 1, providers: {} };
+}
+/** Team screen (paramount-team.ts): cards, model catalog and the Add-Agent hire. */
+function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
+  return {
+    hiveRoot: () => hive.root(),
+    addTask: (task) => hive.enabled() && hive.addTask(task as HiveTask),
+    addTasksBatch: (tasks) => hive.enabled() && hive.addTasksBatch(tasks as HiveTask[]),
+    sendAgentMessage: (agentId, subject, body) => { hive.send({ to: agentId, act: 'request', subject, body, requires_reply: false }, 'human'); },
+    modelCatalog: paramountModelCatalog,
+    launcherDiscovery: () => currentAccountDiscovery(),
+    runningIdentity: (agentId) => {
+      const pty = ptyManager.list().find(p => ptyToAgent.get(p.id) === agentId);
+      if (!pty) return undefined;
+      const live = ptyLaunchIdentity.get(pty.id);
+      if (!live) return { provider: hive.registry().agents[agentId]?.provider ?? 'claude', accountSelection: 'unknown' };
+      const profile = ptySignInAccount.get(pty.id);
+      return { provider: live.provider, model: live.model, accountSelection: live.launcher ? 'selected' : 'default',
+        ...(live.launcher ? { launcher: { id: live.launcher.id, fingerprint: live.launcher.fingerprint, label: profile?.label ?? live.launcher.id } } : {}) };
+    },
+    accountProfiles: {
+      list: () => deviceAccountProfiles().inventory(),
+      create: (input) => {
+        const identity: { provider: string; accountId?: string } = { provider: input.provider };
+        return observeAccountOperation(paramountLog, 'profile-create', identity, () => {
+          identity.accountId = deviceAccountProfiles().create(input).id;
+          return deviceAccountProfiles().inventory();
+        });
+      },
+      rename: (id, label) => observeAccountOperation(paramountLog, 'profile-rename', { accountId: id }, () => { deviceAccountProfiles().rename(id, label); return deviceAccountProfiles().inventory(); })
+    },
+    warmLaunchers: async () => { await launcherDiscovery.warm(); },
+    refreshLaunchers: async () => { await launcherDiscovery.refresh(); },
+    claimFloor: () => { const root = hive.root(); return !root || claimFloor(root); },
+    appVersion: app.getVersion(),
+    defaultModel: () => readConfig().defaultModel,
+    setupComplete: () => readConfig().onboardingComplete === true && !!readConfig().harnessHome,
+    orchestratorProvider: () => readConfig().godProvider,
+    orchestratorModel: () => paramountResolveModel(readConfig().godProvider ?? 'claude', [modelForRole({ isGod: true }, readConfig())]),
+    orchestratorId: () => hive.registry().godId ?? undefined,
+    orchestratorStartFailure: () => orchestratorStart.failure(),
+    hasLivePty: (id) => ptyManager.list().some((pty) => ptyToAgent.get(pty.id) === id),
+    ticketKeyPrefix: () => readConfig().ticketKeyPrefix,
+    defaultCommand: () => readConfig().defaultCommand,
+    autoMode: () => !!readConfig().autoMode,
+    // Owner decision 2026-11-12: an empty folder means the floor root for every hire (the gated home:
+    // null only while another app holds the floor), never the first registered repo.
+    defaultCwd: () => floorHome(),
+    isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
+    commandAvailable: (bin) => (isSafeCommandName(bin) || isAbsolute(bin)) && ptyManager.isCommandAvailable(bin),
+    spawnHire: async ({ plan, bin, args, provider, goal, tokenCap, capabilities, isGod, resume, launcher, saveLauncher }, cid) => {
+      const meta: AgentMeta = { id: plan.agentId, name: plan.name, provider: provider as AgentProvider, ...(plan.role ? { role: plan.role } : {}), ...(capabilities ? { capabilities } : {}), ...(isGod ? { isGod: true } : {}), cwd: plan.cwd };
+      // A fallback or an already-saved launcher is used for this start only; saving it would overwrite the
+      // owner's choice (isolated check of b22e04ed: a fallback replaced the orchestrator launcher).
+      if (launcher !== undefined && saveLauncher !== false && hive.root()) {
+        try { saveLauncherPick(hive.root()!, isGod ? 'orchestrator' : 'agent', launcher, plan.agentId); }
+        catch (e) {
+          if (launcher !== null) throw e;
+          paramountLog({ kind: 'paramount-error', cid, errorId: newErrorId(), code: 'INVALID_INPUT', message: 'Launcher storage is unreadable. Starting the explicitly selected provider default without changing saved selections.' });
+        }
+      }
+      // An orchestrator that was already registered keeps its entry exactly as it was if this start
+      // fails (review R4); only a new one is rolled back to stopped.
+      const prior = isGod ? hive.registry().agents[plan.agentId] : undefined;
+      const priorArchived = prior ? prior.archived === true : undefined;
+      const res = await spawnAgentCore({ id: plan.agentId, cwd: plan.cwd, command: bin, args, cols: 120, rows: 32, hive: meta, isolate: plan.isolate, provider: provider as AgentProvider, resume, councilLauncher: launcher }, sender);
+      if (!res.ok) {
+        // Provisioning registers ownership before PTY allocation. A failed
+        // allocation has no exit callback, so roll that registration back to
+        // a stopped (archived) state and permit the next explicit retry.
+        if (isGod) {
+          teardownPty(plan.agentId, { keepEntry: priorArchived !== undefined });
+          if (priorArchived !== undefined) restoreArchived(plan.agentId, priorArchived);
+        }
+        return { ok: false, error: res.error };
+      }
+      if (isGod) {
+        paramountOrchestrators.add(plan.agentId);
+        orchestratorStart.started(plan.agentId, provider, res.resumed === true, priorArchived);
+        // Durable work request + main-owned, busy-aware wake. The CLI receives
+        // its first prompt only after the established boot/idle/HITL guards.
+        hive.send({ to: plan.agentId, act: 'request', subject: 'Start orchestrator', body: [
+          res.seedPrompt,
+          res.resumed ? 'Resume orchestrating this floor.' : 'You are the Paramount orchestrator. Read your memory and pending inbox, then review board.md, tasks.json and fleet.json. Delegate work and keep the team unblocked.'
+        ].filter(Boolean).join('\n\n'), requires_reply: false }, 'system');
+        paramountLog({ kind: 'paramount-orchestrator', cid, step: 'startup-queued', agentId: plan.agentId, resumed: res.resumed === true });
+      }
+      if (tokenCap) setAgentTokenCap(plan.agentId, tokenCap);
+      if (goal) hive.send({ to: plan.agentId, act: 'request', subject: 'Your goal', body: goal, requires_reply: false }, 'human');
+      return { ok: true };
+    },
+    restartAgent: async (agentId, mode) => {
+      const locked = await withAgentLifecycleLock(agentId, async () => {
+      const root = hive.root();
+      if (!root || !hive.enabled()) return { ok: false, error: 'Enable the Hive before restarting an agent.' };
+      if (!claimFloor(root)) return { ok: false, error: 'Another Council or Munder process owns this floor.' };
+      const raw = hive.registry().agents[agentId];
+      if (!raw) return { ok: false, error: 'Agent not found in the Hive registry.' };
+      const isGod = raw.isGod === true;
+      const provider = raw.provider ?? 'claude';
+      const previousArchived = raw.archived === true;
+      const activePty = ptyManager.list().find((pty) => ptyToAgent.get(pty.id) === agentId);
+      const existingWorktree = activePty ? worktreePaths.get(activePty.id) : undefined;
+      const cwd = existingWorktree ?? raw.cwd;
+      let cwdAvailable = false;
+      try { cwdAvailable = !!cwd && statSync(cwd).isDirectory(); } catch { cwdAvailable = false; }
+      if (!cwdAvailable) return { ok: false, error: `The working folder is unavailable: ${cwd || '(empty)'}` };
+      if (mode === 'resume' && !hive.lastSession(agentId)) return { ok: false, error: 'No saved session is available. Choose Start fresh to keep the agent identity and task files.' };
+      if (activePty) {
+        const killed = ptyManager.kill(activePty.id);
+        if (!killed.ok) return { ok: false, error: killed.error ?? 'The live session could not be stopped.' };
+        teardownPty(activePty.id, { keepEntry: true, preserveWorktree: true });
+      }
+      const model = agentModelPick(root, agentId);
+      const launch = buildWorkerLaunch({ requestProvider: provider, requestModel: model, defaultCommand: readConfig().defaultCommand, autoMode: !!readConfig().autoMode });
+      const res = await spawnAgentCore({ id: agentId, cwd, command: launch.bin, args: launch.args, cols: 120, rows: 32,
+        hive: { id: agentId, name: raw.name, provider, ...(raw.role ? { role: raw.role } : {}), cwd, ...(isGod ? { isGod: true } : {}) }, provider: provider as AgentProvider,
+        resume: mode === 'resume', requireResume: mode === 'resume', isolate: false }, sender);
+      if (!res.ok || (mode === 'resume' && !res.resumed)) {
+        if (res.ok) {
+          const failed = ptyManager.kill(agentId);
+          if (failed.ok) teardownPty(agentId, { keepEntry: true, preserveWorktree: true });
+        }
+        restoreArchived(agentId, activePty ? true : previousArchived);
+        return { ok: false, error: res.resumeNotFound ? 'The saved transcript was not found. Start fresh to retain the agent identity and task files.' : res.error ?? 'The saved session could not be resumed.' };
+      }
+      if (isGod) {
+        paramountOrchestrators.add(agentId);
+        orchestratorStart.started(agentId, provider, mode === 'resume' && res.resumed === true, activePty ? true : previousArchived);
+      }
+      try { sender.send('hive:agentSpawned', { id: agentId, name: raw.name, provider, cwd: res.worktreePath ?? cwd, role: raw.role, worktreePath: res.worktreePath }); } catch { /* window closed */ }
+      if (mode === 'fresh' && res.seedPrompt) {
+        try { sender.send('hive:enqueueToAgent', { targetId: agentId, text: res.seedPrompt }); } catch { /* window closed */ }
+      }
+      if (mode === 'fresh' || isGod) hive.send({ to: agentId, act: 'request', subject: isGod ? 'Start orchestrator' : 'Continue your assigned task', body: [
+        isGod ? 'You are the Paramount orchestrator. Read your handoff and Rules, then review board.md, tasks.json and fleet.json. Continue the current floor plan and recover any interrupted assignment.'
+          : `Continue the existing assignment for this agent. Read your handoff at ${join(root, 'agents', agentId, 'handoff.md')}, your Rules in memory.md, the task context named in the handoff, and the current assignment in board.md/tasks.json. Continue from the recorded Next; do not recreate completed work. If the assignment or context is missing, inform god instead of guessing.`
+      ].join('\n\n'), requires_reply: false }, 'system');
+      return { ok: true, resumed: res.resumed === true };
+      });
+      return locked ?? { ok: false, error: 'Another lifecycle operation is already running for this agent.' };
+    },
+    switchAgent: async (agentId, target) => {
+      const trace = createSwitchTrace(event => paramountLog(event), { provider: target.provider, accountId: target.launcher?.id });
+      const locked = await withAgentLifecycleLock(agentId, async () => {
+      const root = hive.root();
+      if (!root || !hive.enabled()) return trace.refuse('hive-unavailable', { ok: false, error: 'Enable the Hive before switching an agent.' });
+      if (!claimFloor(root)) return trace.refuse('floor-owned', { ok: false, error: 'Another Council or Munder process owns this floor.' });
+      const raw = hive.registry().agents[agentId];
+      if (!raw || raw.role === 'temp') return trace.refuse('agent-unavailable', { ok: false, error: 'This agent cannot be switched from its current role.' });
+      const fromProvider = raw.provider ?? 'claude';
+      const isGod = raw.isGod === true || hive.registry().godId === agentId;
+      const previousConfig = { godProvider: readConfig().godProvider, godModel: readConfig().godModel };
+      const launcherScope = isGod ? 'orchestrator' as const : 'agent' as const;
+      trace.setScope(launcherScope);
+      const previousArchived = raw.archived === true;
+      const activePty = ptyManager.list().find((pty) => ptyToAgent.get(pty.id) === agentId);
+      const cwd = (activePty ? worktreePaths.get(activePty.id) : undefined) ?? raw.cwd;
+      if (!cwd || !statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return trace.refuse('folder-unavailable', { ok: false, error: `The working folder is unavailable: ${cwd || '(empty)'}` });
+      const previousModel = readAgentModels(root)[agentId];
+      const liveIdentity = activePty ? ptyLaunchIdentity.get(activePty.id) : undefined;
+      if (activePty && (!liveIdentity || liveIdentity.provider !== fromProvider)) return trace.refuse('running-identity-unknown', { ok: false, error: 'The running account and model identity is unavailable. No session was stopped.' });
+      const previousEffectiveModel = liveIdentity ? liveIdentity.model : previousModel?.model ?? (isGod ? previousConfig.godModel : undefined);
+      if (liveIdentity && target.provider === liveIdentity.provider && (target.model || undefined) === liveIdentity.model && (target.launcher?.id ?? null) === (liveIdentity.launcher?.id ?? null) && (target.launcher?.fingerprint ?? null) === (liveIdentity.launcher?.fingerprint ?? null)) return trace.refuse('already-running', { ok: false, error: 'This provider, account and model are already running.' });
+      let previousLauncher: LauncherPick | null;
+      let savedLauncher: LauncherPick | null;
+      try {
+        const selections = readLauncherState(root);
+        savedLauncher = (isGod ? selections.orchestrator : selections.agents[agentId]) ?? null;
+        previousLauncher = liveIdentity ? liveIdentity.launcher : savedLauncher;
+        if (previousLauncher) {
+          const profile = validateLauncher(previousLauncher, fromProvider, currentAccountDiscovery());
+          if (!statSync(profile.home, { throwIfNoEntry: false })?.isDirectory()) return trace.refuse('current-account-unavailable', { ok: false, error: 'The current account home is unavailable; no session was stopped.' });
+        }
+      } catch (error) { return trace.refuse('current-account-unavailable', { ok: false, error: `Cannot safely preserve the current account selection: ${error instanceof Error ? error.message : String(error)}` }); }
+      let targetLauncher: LauncherPick | null = target.launcher;
+      let targetBin: string;
+      let targetAccount: SignInAccount | undefined;
+      try {
+        if (targetLauncher) {
+          const profile = validateLauncher(targetLauncher, target.provider, currentAccountDiscovery());
+          if (!statSync(profile.home, { throwIfNoEntry: false })?.isDirectory()) return trace.refuse('target-account-unavailable', { ok: false, error: 'The selected account home is unavailable; no session was stopped.' });
+          targetBin = profile.bin;
+          targetAccount = profile;
+        } else targetBin = buildWorkerLaunch({ requestProvider: target.provider, requestModel: target.model || undefined, defaultCommand: readConfig().defaultCommand, autoMode: !!readConfig().autoMode }).bin;
+      } catch (error) { return trace.refuse('target-account-unavailable', { ok: false, error: error instanceof Error ? error.message : 'The selected account is unavailable.' }); }
+      if (!ptyManager.isCommandAvailable(targetBin)) return trace.refuse('cli-unavailable', { ok: false, error: `${targetBin} is not installed or available on PATH.` });
+      if (!targetAccount && (target.provider === 'claude' || target.provider === 'codex')) {
+        targetAccount = { id: `default-${agentId}`, label: 'Provider default', bin: targetBin, home: target.provider === 'codex' ? join(root, 'agents', agentId, '.codex') : resolveSignInAccountHome('claude') };
+      }
+      if (target.provider === 'claude' || target.provider === 'codex') {
+        const auth = await engineSignIn.refresh(target.provider, targetAccount);
+        if (auth.state !== 'signed-in') return trace.refuse(auth.state === 'expired' ? 'auth-expired' : auth.state === 'unknown' ? 'auth-unknown' : 'auth-signed-out', { ok: false, error: 'Sign in to the selected account and check its status before switching. No session was stopped.' });
+      }
+      const previousSession = hive.lastSession(agentId);
+      if (activePty && !previousSession) return trace.refuse('session-missing', { ok: false, error: 'The current session has no saved resume identity yet. No session was stopped; wait for its session to be recorded before switching.' });
+      try { preserveEngineSession(root, agentId, { provider: fromProvider, isGod, at: new Date().toISOString(), ...(previousSession ? { sessionId: previousSession } : {}), ...(previousEffectiveModel ? { model: previousEffectiveModel } : {}), ...(previousLauncher ? { launcherId: previousLauncher.id, launcherFingerprint: previousLauncher.fingerprint } : {}) }); }
+      catch (error) { return trace.refuse('history-unavailable', { ok: false, error: error instanceof Error ? error.message : 'Could not preserve the previous provider session.' }); }
+      trace.emit({ phase: 'preflight', outcome: 'ok' });
+      const spawnFor = async (provider: string, model: string | undefined, launcher: LauncherPick | null, resume: boolean, resumeSessionId?: string, expectedAccountHome?: string) => {
+        const launch = buildWorkerLaunch({ requestProvider: provider, requestModel: model, defaultCommand: readConfig().defaultCommand, autoMode: !!readConfig().autoMode });
+        return spawnAgentCore({ id: agentId, cwd, command: launch.bin, args: launch.args, cols: 120, rows: 32,
+          hive: { id: agentId, name: raw.name, provider: provider as AgentProvider, ...(raw.role ? { role: raw.role } : {}), ...(isGod ? { isGod: true } : {}), cwd },
+          provider: provider as AgentProvider, resume, requireResume: resume, clearSession: !resume, requireProvisioning: true, expectedAccountHome, ...(resumeSessionId ? { resumeSessionId, restoreSessionId: true } : {}), isolate: false, councilLauncher: launcher, suppressLauncherSave: true }, sender);
+      };
+      let targetResult: Awaited<ReturnType<typeof spawnFor>> | undefined;
+      const tx = await switchEngineTransaction({
+        cid: trace.cid,
+        observe: (event) => trace.emit(event),
+        stopCurrent: async () => {
+          if (!activePty) return { ok: true };
+          const stopped = ptyManager.kill(activePty.id);
+          if (!stopped.ok) return { ok: false, error: stopped.error };
+          teardownPty(activePty.id, { keepEntry: true, preserveWorktree: true });
+          return { ok: true };
+        },
+        startTarget: async () => {
+          targetResult = await spawnFor(target.provider, target.model || undefined, targetLauncher, false, undefined, targetAccount?.home);
+          return { ok: targetResult.ok, error: targetResult.error };
+        },
+        targetViable: async () => {
+          const result = targetResult ? await ptyManager.waitForExit(agentId, 300) : { exited: true };
+          return result.exited ? { ok: false, error: `The target provider exited during startup${typeof result.exitCode === 'number' ? ` (exit ${result.exitCode})` : ''}.` } : { ok: true };
+        },
+        persistTarget: async () => {
+          saveAgentModelPick(root, agentId, target.provider, target.model || undefined);
+          saveLauncherPick(root, launcherScope, targetLauncher, agentId);
+          if (isGod) applyConfigUpdate({ godProvider: target.provider as AgentProvider, godModel: target.model || undefined });
+        },
+        stopTarget: async () => {
+          const live = ptyManager.list().find((pty) => ptyToAgent.get(pty.id) === agentId);
+          if (!live) return { ok: true };
+          const stopped = ptyManager.kill(live.id);
+          if (!stopped.ok) return { ok: false, error: stopped.error };
+          teardownPty(live.id, { keepEntry: true, preserveWorktree: true });
+          return { ok: true };
+        },
+        rollback: async () => {
+          const errors: string[] = [];
+          const providerRestore = hive.setAgentProvider(agentId, fromProvider);
+          if (!providerRestore.ok) errors.push(providerRestore.error ?? 'Could not restore the previous provider.');
+          try {
+            if (previousModel) saveAgentModelPick(root, agentId, previousModel.engine, previousModel.model);
+            else saveAgentModelPick(root, agentId, fromProvider, undefined);
+            saveLauncherPick(root, launcherScope, savedLauncher, agentId);
+            if (isGod) applyConfigUpdate(previousConfig);
+          } catch (error) { errors.push(error instanceof Error ? error.message : 'Could not restore previous model/account settings.'); }
+          if (errors.length) return { ok: false, error: errors.join(' ') };
+          if (activePty) {
+            const restored = await spawnFor(fromProvider, previousEffectiveModel, previousLauncher, !!previousSession, previousSession, liveIdentity?.home);
+            if (!restored.ok || (!!previousSession && !restored.resumed)) {
+              hive.setAgentProvider(agentId, fromProvider);
+              restoreArchived(agentId, true);
+              errors.push(restored.error ?? 'The previous session could not be resumed. Its files and history remain available for a fresh start.');
+            } else {
+              if (isGod) { paramountOrchestrators.add(agentId); orchestratorStart.started(agentId, fromProvider, restored.resumed === true, previousArchived); }
+              try { sender.send('hive:agentSpawned', { id: agentId, name: raw.name, provider: fromProvider, cwd, role: raw.role }); } catch { /* window closed */ }
+            }
+          } else {
+            const restored = await hive.ensureAgent({ id: agentId, name: raw.name, provider: fromProvider, ...(raw.role ? { role: raw.role } : {}), ...(isGod ? { isGod: true } : {}), cwd }, { preserveAccountHome: true, clearSession: !previousSession, ...(previousSession ? { sessionId: previousSession } : {}) });
+            void restored;
+            restoreArchived(agentId, previousArchived);
+          }
+          return errors.length ? { ok: false, error: errors.join(' ') } : { ok: true };
+        }
+      });
+      if (tx.ok && isGod) { paramountOrchestrators.add(agentId); orchestratorStart.started(agentId, target.provider, false, previousArchived); }
+      if (!tx.ok) return { ok: false, error: tx.error, rollbackError: tx.rollbackError };
+      try { sender.send('hive:agentSpawned', { id: agentId, name: raw.name, provider: target.provider, cwd, role: raw.role }); } catch { /* window closed */ }
+      hive.send({ to: agentId, act: 'request', subject: isGod ? 'Continue orchestrating after account or provider switch' : 'Continue after account or provider switch', body: [
+        `This is a new ${target.provider} session for your existing agent identity. The prior provider session and its history were retained; its unsaved conversation context was not transferred.`,
+        ...(isGod ? ['You remain the Paramount orchestrator for this floor. Review board.md, tasks.json and fleet.json and resume coordinating existing work.'] : []),
+        `Read your durable rules and memory in ${join(root, 'agents', agentId)}, your handoff, and the existing assignment in board.md and tasks.json. Continue from durable files and report any missing context to god. Do not recreate completed work.`
+      ].join('\n\n'), requires_reply: false }, 'system');
+      return { ok: true };
+      });
+      return locked ?? trace.refuse('lifecycle-busy', { ok: false, error: 'Another lifecycle operation is already running for this agent.' });
+    }
+  };
+}
+function isOwnerRenderer(evt: IpcMainInvokeEvent): boolean {
+  const window = BrowserWindow.fromWebContents(evt.sender);
+  const frame = evt.senderFrame;
+  return isBoardOwnerSender({
+    knownWindow: window !== null && allWindows.has(window),
+    mainFrame: frame !== null && frame === evt.sender.mainFrame,
+    url: frame?.url ?? ''
+  }, paramountUiUrl());
+}
+
+ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramount.dispatch', paramountLog, {
+  sender: evt.sender.id,
+  commandType: command && typeof command === 'object' && typeof (command as { type?: unknown }).type === 'string'
+    ? String((command as { type: string }).type).slice(0, 80) : undefined
+}, async (span) => {
+  // dispatchParamount is synchronous, so the one async fact it needs is fetched first.
+  const startId = command && typeof command === 'object' && (command as { type?: unknown }).type === 'prereq.start' ? (command as { id?: unknown }).id : undefined;
+  const portOpen = typeof startId === 'string' ? await paramountProbeService(startId, span.cid) : false;
+  return dispatchParamount(command, {
+  tasks: () => hive.tasks() as { tasks?: HiveTask[] },
+  patchTask: (id, patch) => hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>),
+  missions: () => readConfig().missions ?? [],
+  saveMissions: (missions) => { writeConfig({ missions }); syncMissions(); },
+  agents: () => hive.registry().agents,
+  renameAgent: (id, name) => hive.renameAgent(id, name),
+  setAgentTokenCap: (id, cap) => { setAgentTokenCap(id, cap); },
+  setNotifications: (on) => { writeConfig({ notifications: on }); },
+  saveSettings: (patch) => {
+    if (patch.circuitBreaker) writeConfig({ circuitBreaker: { ...readConfig().circuitBreaker, ...patch.circuitBreaker } });
+    else if (patch.providerBaseUrls) writeConfig({ providerBaseUrls: { ...readConfig().providerBaseUrls, ...patch.providerBaseUrls } });
+    else if (patch.providerDefaultModels) writeConfig({ providerDefaultModels: { ...readConfig().providerDefaultModels, ...patch.providerDefaultModels } });
+    else writeConfig(patch);
+  },
+  setFloorAutoMode: (on, expiresAt) => { writeConfig({ autoMode: on, autoModeExpiresAt: on ? expiresAt : undefined }); armAutoModeExpiry(); },
+  setAccess: (agentId, sourceId, access) => { writeConfig({ accessMatrix: withAccess(readConfig().accessMatrix, agentId, sourceId, access) }); },
+  prereqStart: { plan: (id) => paramountStartPlan(id, portOpen), run: (plan) => paramountRunPrereqStart(plan, evt.sender) },
+  setIntegrationConnected: paramountSetIntegrationConnected,
+  prereqInstall: { plan: paramountPrereqPlan, run: (plan) => paramountRunPrereqInstall(plan, evt.sender) },
+  logStep: (step) => paramountLog(step),
+  agentSources: { roots: paramountAgentRoots, deliverHire },
+  shell: paramountShellDeps((url) => shell.openExternal(url), (step) => paramountLog(step)),
+  terminal: { messages: (agentId) => hive.voiceMessages({ agentId, limit: 200 }), logStep: (step) => paramountLog(step) },
+  team: paramountTeamDeps(evt.sender),
+  savePreference: saveParamountPreference,
+  // lane b-home-chats: ask replies are mailed as the human; direct questions are looked up by id.
+  send: (msg) => { const sent = hive.send(msg, 'human'); analytics.trackMessageSent('hive'); return { ok: !!sent?.id }; },
+  message: (id) => hive.voiceMessages({ id, limit: 1 })[0] ?? null,
+  godId: () => hive.registry().godId ?? undefined,
+  canMutateBoard: () => hive.enabled() && isOwnerRenderer(evt),
+  board: createBoardDeps({
+    savePreference: (value) => saveParamountPreference('board', { ...value }),
+    isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
+    handlerFor: (url) => app.getApplicationNameForProtocol(url),
+    open: (url) => shell.openExternal(url),
+    onOpenError: (url, error) => paramountLog({ kind: 'paramount-error', errorId: newErrorId(), cid: span.cid, op: 'board.open', code: 'INTERNAL', scheme: url.split(':')[0], message: error instanceof Error ? error.message : String(error) })
+  }),
+  appendEvent: paramountAppendEvent,
+  floorLogAvailable: () => hive.root() !== null,
+  publish: paramountPublish,
+  floorSetup: paramountFloorSetupDeps(evt.sender),
+  diagnostics: ({ logLines, cid }) => buildDiagnostics({
+    root: hive.root(),
+    app: {
+      version: councilVersion(), build: councilBuild(), packaged: app.isPackaged, appPath: app.getAppPath(), exePath: process.execPath,
+      electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node,
+      uptimeSec: Math.round(process.uptime())
+    },
+    os: { platform: process.platform, arch: process.arch, release: osRelease(), type: osType(), totalMemBytes: totalmem(), freeMemBytes: freemem() },
+    // redact() again inside buildDiagnostics; this first pass keeps the
+    // unredacted config from ever being held in the bundle object.
+    config: redact(readConfig()),
+    logLines
+  }, cid),
+  // A real save dialog, so a cancel is reported as canceled rather than saved.
+  saveDiagnostics: async ({ name, text }) => {
+    const owner = BrowserWindow.fromWebContents(evt.sender);
+    const options = { title: 'Export diagnostics', defaultPath: join(app.getPath('downloads'), name), filters: [{ name: 'JSON', extensions: ['json'] }] };
+    const picked = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+    if (picked.canceled || !picked.filePath) return { canceled: true };
+    await writeFile(picked.filePath, text, { encoding: 'utf8', mode: 0o600 });
+    return { canceled: false, path: picked.filePath };
+  }
+}, span);
+}));
 ipcMain.handle('hive:registry', () => hive.registry());
 ipcMain.handle('hive:renameAgent', (_evt, id: unknown, name: unknown) => {
   if (typeof id !== 'string' || typeof name !== 'string') {
@@ -3519,12 +4757,15 @@ ipcMain.handle('hive:addTask', (_evt, task: unknown) => {
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
   return { ok: hive.addTask(task as HiveTask) };
 });
-ipcMain.handle('hive:patchTask', (_evt, id: unknown, patch: unknown) => {
+ipcMain.handle('hive:patchTask', (evt, id: unknown, patch: unknown) => {
+  if (!isOwnerRenderer(evt)) return { ok: false, error: 'Only the floor owner can patch a task from the desktop' };
   if (typeof id !== 'string' || !id || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
     return { ok: false, error: 'invalid task patch' };
   }
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
-  return { ok: hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>) };
+  const ok = hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>);
+  if (ok) broadcastParamountInvalidation('hive:patchTask');
+  return { ok };
 });
 ipcMain.handle('hive:deleteTask', (_evt, id: unknown) => {
   if (typeof id !== 'string' || !id) return { ok: false, error: 'invalid task id' };
@@ -3625,9 +4866,9 @@ ipcMain.handle('skills:reveal', (_evt, path: unknown) => {
  * Finder-launched app) and knows whether the palace is initialised, so it is
  * authoritative and reused rather than re-probed differently here.
  */
-ipcMain.handle('tools:status', (): ToolStatus[] => {
+ipcMain.handle('tools:status', async (): Promise<ToolStatus[]> => {
   const win = process.platform === 'win32';
-  const mem = (() => { try { memory.resetBinCache(); return memory.status(); } catch { return null; } })();
+  const mem = await (async () => { try { return await memory.refresh(); } catch { return null; } })();
   return toolCatalog().map((spec): ToolStatus => {
     const installCommand = win ? spec.install.win32 : spec.install.posix;
     if (spec.id === 'mempalace') {
@@ -3652,11 +4893,11 @@ ipcMain.handle('tools:status', (): ToolStatus[] => {
 });
 
 // ─── IPC: semantic memory (MemPalace CLI) ───────────────────────────────────
-// refresh() = resetBinCache + an idempotent start(). The poll is the one thing
+// refresh() awaits bounded asynchronous discovery. The poll is the one thing
 // that reliably notices mempalace being installed after boot, so it is what arms
 // the mine loop that boot's start() had to skip — otherwise the pill reads
 // "getting ready" until the app is restarted.
-ipcMain.handle('hive:memoryStatus', () => memory.refresh());
+ipcMain.handle('hive:memoryStatus', async () => memory.refresh());
 ipcMain.handle('hive:searchMemory', (_evt, query: unknown, wing: unknown) => {
   if (typeof query !== 'string' || !query.trim()) return { ok: false, output: '', error: 'empty query' };
   return memory.search(query, { wing: typeof wing === 'string' ? wing : undefined });
@@ -3771,10 +5012,14 @@ ipcMain.handle('history:search', (_evt, query: unknown, limit: unknown) =>
   persist.searchHistory(typeof query === 'string' ? query : '', typeof limit === 'number' ? limit : undefined));
 
 // ─── IPC: quit confirmation ─────────────────────────────────────────────────
+/** Run once a quit is certain (not on a before-quit that the quit warning may still cancel). */
+const beforeTeardown: Array<() => void> = [];
 /** Tear the harness down and quit. Shared by the hard "kill all & quit" path
  *  and the closing-time conclusion (after the god confirmed the floor saved). */
-function teardownAndQuit(): void {
+function teardownAndQuit(opts: { relaunch?: boolean } = {}): void {
   allowQuit = true;
+  // First, before any terminal is killed: the runtime records who was live (restored next launch).
+  for (const fn of beforeTeardown) { try { fn(); } catch (e) { console.error('[quit] before teardown:', e); } }
   // Each teardown step is best-effort: a throw here (e.g. a dying child or a
   // half-torn-down socket) must never abort the quit or pop a crash dialog.
   try { clearMissionTimers(); } catch (e) { console.error('[quit] clearMissionTimers:', e); }
@@ -3791,7 +5036,11 @@ function teardownAndQuit(): void {
   try { reflector.stop(); } catch (e) { console.error('[quit] reflector.stop:', e); }
   try { persist.close(); } catch (e) { console.error('[quit] persist.close:', e); }
   try { hive.stopAllProxyBridges(); } catch (e) { console.error('[quit] stopAllProxyBridges:', e); }
+  sideAgents.closeAll();
   try { ptyManager.killAll(); } catch (e) { console.error('[quit] killAll:', e); }
+  // Switch floor: the same quit (will-quit still releases the floor last), then start again at the picker.
+  // Never with the floor or Floor location flags (review F1): a floor process restarts at its picker.
+  if (opts.relaunch) app.relaunch({ args: switchRelaunchArgs(process.argv.slice(1)) });
   app.quit();
 }
 ipcMain.handle('app:confirmClose', () => {
@@ -3850,26 +5099,40 @@ ipcMain.handle('app:resetAll', () => {
   try { memory.stop(); } catch (e) { console.error('[reset] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[reset] reflector.stop:', e); }
   try { persist.close(); } catch (e) { console.error('[reset] persist.close:', e); }
+  sideAgents.closeAll();
   try { ptyManager.killAll(); } catch (e) { console.error('[reset] killAll:', e); }
   try { hive.removeExposedCodexData(); } catch (e) { console.error('[reset] removeExposedCodexData:', e); }
   // Erase the hive (Michael's + every agent's memory, inboxes, tasks, board,
   // git history) and the semantic-memory palace. Only these harness-created
   // subdirs are removed — never the user's whole harnessHome folder.
-  for (const dir of [hive.root(), memory.palacePath()]) {
-    if (!dir) continue;
-    try { rmSync(dir, { recursive: true, force: true }); }
-    catch (e) { console.error('[reset] rm', dir, e); }
-  }
+  // Review R2: this app keeps the floor's lock until its LAST write here. The roster is archived
+  // first (it needs the gated home), then the palace and the hive's contents are removed while
+  // .floor-lock and the kernel claim stay, and only then is the floor released. Deleting the
+  // whole hive used to drop the lock mid-reset, so a successor could claim the floor and lose its
+  // roster to this reset.
   // The roster is the renderer's half of the same state, so it retires with the
   // hive — archived into roster-backups/ rather than deleted, and cleared as the
   // active file so re-selecting this folder later doesn't resurrect agents whose
   // sessions and memory are gone.
   try { roster.archive(); }
   catch (e) { console.error('[reset] roster.archive:', e); }
+  const palace = memory.palacePath();
+  if (palace) {
+    try { rmSync(palace, { recursive: true, force: true }); }
+    catch (e) { console.error('[reset] rm', palace, e); }
+  }
+  const hiveDir = hive.root();
+  if (hiveDir) {
+    try { removeFloorContents(hiveDir); }
+    catch (e) { console.error('[reset] rm', hiveDir, e); }
+  }
   // Back to first-run defaults, then relaunch clean so all in-memory services
   // re-bootstrap from scratch and the renderer lands on onboarding.
+  floorGate.release();
   resetConfig();
-  app.relaunch();
+  // Electron inherits the current argv unless explicit args are supplied. A
+  // floor process must return to the picker instead of reopening its wiped home.
+  app.relaunch({ args: switchRelaunchArgs(process.argv.slice(1)) });
   app.exit(0);
 });
 
@@ -4536,7 +5799,10 @@ registerRealtimeActionIpc({
     try { liveWebContents()?.send('realtime:enqueue', { agentId: id, text }); } catch { /* window gone */ }
   },
   getConfigValue: (key) => (readConfig() as unknown as Record<string, unknown>)[key],
-  patchConfig: (patch) => { writeConfig(patch as Partial<HarnessConfig>); }
+  patchConfig: (patch) => {
+    writeConfig(normalizeAutoModePatch(patch as Partial<HarnessConfig>));
+    if (touchesAutoModeExpiry(patch)) armAutoModeExpiry();
+  }
 });
 
 // rt-12 seam: push detected completions to the live floor; bridge live-flag, queue
@@ -5105,23 +6371,53 @@ ipcMain.handle('workers:stop', (_evt, workerId: string): { ok: boolean; error?: 
 /** Start every hive-bound background service against the current harnessHome.
  *  Called on boot, and again to recover in place if a folder-change copy fails
  *  (config:changeHome tears these down before copying). No-op without a home. */
-function bootstrapHiveServices(): void {
-  if (!hive.enabled()) return;
-  hive.ensureHive();
-  hive.refreshGeneratedDocs();
+function bootstrapHiveServices(): boolean {
+  const startupStages: Array<{ stage: string; durationMs: number }> = [];
+  const stage = <T>(name: string, action: () => T): T => {
+    const started = performance.now();
+    const doneLag = lagOp(`floor-entry:${name}`);
+    try { return action(); }
+    finally { doneLag(); startupStages.push({ stage: name, durationMs: Math.round((performance.now() - started) * 10) / 10 }); }
+  };
+  // The floor lock comes first: no migration, archive, socket bind or commit before it is held.
+  const floor = stage('floor.lock-claim', () => floorGate.claim(readConfig().harnessHome));
+  if (floor.state === 'refused') {
+    console.error(`[floor] ${floor.refusal.owner} (pid ${floor.refusal.pid}) holds ${floor.refusal.floor}; not opening it`);
+    broadcastParamountInvalidation('floor-lock');
+    return false;
+  }
+  if (floor.state === 'error') { console.error('[floor] lock not written:', floor.detail); broadcastParamountInvalidation('floor-lock'); return false; }
+  if (!stage('hive.enabled-check', () => hive.enabled())) return false;
+  stage('hive.ensure', () => hive.ensureHive());
+  stage('hive.generated-docs', () => { hive.refreshGeneratedDocs(); });
+  // One fresh, bounded check per floor entry; never repairs or accepts task cards.
+  stage('hive.board-validation', () => {
+    const root = hive.root();
+    if (!root) return;
+    try {
+      const validator = require('./board-validation.cjs') as {
+        installAndValidateBoard(root: string, assetPath: string, appendLog: (event: Record<string, unknown>) => void): unknown;
+      };
+      validator.installAndValidateBoard(root, join(__dirname, 'board-validation.cjs'), (event) => hive.appendLog(event));
+    } catch {
+      // Missing packaged assets must be visible without preventing floor recovery.
+      hive.appendLog({ kind: 'board-validation', ok: false, error: 'VALIDATION_UNAVAILABLE' });
+    }
+  });
   // Tell the hive what it is running inside, BEFORE anything spawns: the prompt
   // builder reads this, so an agent spawned earlier would never learn it.
-  hive.setRuntimeInfo({ version: app.getVersion(), packaged: app.isPackaged, appPath: app.getAppPath() });
-  hive.setOrchestratorMaySpawn(readConfig().orchestratorMaySpawn === true);
+  stage('hive.runtime-info', () => hive.setRuntimeInfo({ version: app.getVersion(), packaged: app.isPackaged, appPath: app.getAppPath() }));
+  stage('hive.orchestrator-policy', () => hive.setOrchestratorMaySpawn(readConfig().orchestratorMaySpawn === true));
   // An app-start marker in the event log. log.jsonl had twelve event kinds and
   // none of them meant "the app restarted", so a relaunch, and more importantly a
   // switch between a packaged build and a local one, was invisible to every agent
   // reading the feed. That gap cost a multi-hour investigation whose answer was
   // exactly this: a local build inherits the launching shell's umask, a
   // Finder-launched app does not.
-  hive.appendLog({
+  stage('hive.app-start-log', () => hive.appendLog({
     kind: 'app-start',
     version: app.getVersion(),
+    build: councilBuild(),
     packaged: app.isPackaged,
     // WHICH bundle, not just which version. Version plus packaged is not enough
     // to tell two builds apart: a stale copy in /Applications and a fresh one in
@@ -5132,38 +6428,40 @@ function bootstrapHiveServices(): void {
     exePath: process.execPath,
     electron: process.versions.electron,
     platform: process.platform
-  });
-  control.replaceAutoDeliveryPauses(readConfig().autoDeliveryPausedAgents ?? []);
-  archiveOrphanedAgents(); // #57/#58: archive stale archived:false entries with no live PTY
-  hive.startRouter();
-  startEphemeralWorkerWatcher(); // poll HIVE_ROOT/spawn-requests → ephemeral workers
+  }));
+  stage('hive.delivery-pauses', () => control.replaceAutoDeliveryPauses(readConfig().autoDeliveryPausedAgents ?? []));
+  stage('hive.archive-orphans', () => archiveOrphanedAgents()); // #57/#58: archive stale archived:false entries with no live PTY
+  stage('hive.message-router', () => hive.startRouter());
+  stage('hive.worker-watcher', () => startEphemeralWorkerWatcher()); // poll HIVE_ROOT/spawn-requests → ephemeral workers
   // Phase 2: the loopback secret broker. Bind it BEFORE workers spawn so each spawn can
   // be granted a capability token + the broker URL in its env. Loopback-only, idempotent.
-  void integrationBroker.start().then((r) => {
+  stage('hive.integration-broker', () => { void integrationBroker.start().then((r) => {
     if (r.ok) console.log('[broker] integration broker listening on', integrationBroker.url());
     else console.error('[broker] failed to start:', r.error);
-  });
-  ensureDefaultMissions(); // one-time: seed the built-in hourly ops standup
-  syncMissions(); // arm recurring auto-dispatch missions now the router is live
-  syncContextTriggers(); // …and the context trigger's own compact/clear cadences
+  }); });
+  stage('hive.default-missions', () => ensureDefaultMissions()); // one-time: seed the built-in hourly ops standup
+  stage('hive.missions', () => syncMissions()); // arm recurring auto-dispatch missions now the router is live
+  stage('hive.context-triggers', () => syncContextTriggers()); // …and the context trigger's own compact/clear cadences
   // Pair replies to inbound webhook messages in the ledger. Tied to the FEATURE
   // (any endpoint configured), not to the server: an approved message's card can
   // finish long after the operator switched the public surface back off, and its
   // reply still belongs in the history.
-  if ((readConfig().webhookTriggers ?? []).length > 0) startWebhookDoneObserver();
-  hookServer.start();
+  stage('hive.webhook-observer', () => { if ((readConfig().webhookTriggers ?? []).length > 0) startWebhookDoneObserver(); });
+  stage('hive.hook-server', () => hookServer.start());
   // Bind the telemetry collector BEFORE the renderer spawns any agent, then point
   // the hive at it so every subsequent spawn is instrumented. Best-effort — a bind
   // failure just leaves telemetry off (transcript reconciler stays). No breaker.start():
   // the breaker is POLICY-only, ticked by the heartbeat beat (#1, ships disabled).
-  void telemetry.start().then((r) => {
+  stage('hive.telemetry', () => { void telemetry.start().then((r) => {
     if (r.ok && r.endpoint) { hive.setOtelEndpoint(r.endpoint); console.log('[telemetry] collector listening', r.endpoint); }
     else console.error('[telemetry] collector failed to start:', r.error);
-  });
-  memory.start(); // init shared palace + mine loop (no-op without mempalace)
-  reflector.start(); // bound oversized memory.md files on a timer (no-op until threshold)
+  }); });
+  stage('hive.memory', () => memory.start()); // init shared palace + mine loop (no-op without mempalace)
+  stage('hive.reflector', () => reflector.start()); // bound oversized memory.md files on a timer (no-op until threshold)
 
-  armAlwaysOnBeats();
+  stage('hive.background-beats', () => armAlwaysOnBeats());
+  paramountLog({ kind: 'paramount-startup-stages', phase: 'floor-services', durationMs: Math.round(startupStages.reduce((sum, entry) => sum + entry.durationMs, 0) * 10) / 10, stages: startupStages });
+  return true;
 }
 
 /** Cadence of the worker inbox-wake watchdog (#151). Well under the renderer's
@@ -5177,12 +6475,12 @@ let hookHealthTimer: ReturnType<typeof setInterval> | null = null;
 /** Type the renderer's guarded nudge into one worker's PTY — text first, Enter a
  *  tick later (the exact submitToPty pattern: a single-chunk write would land the
  *  "\r" inside the input box and never submit). Best-effort + never throws. */
-function nudgeWorker(ptyId: string, ids: string[] = []): void {
+function nudgeWorker(ptyId: string, ids: string[] = [], orchestrator = false): void {
   // Same text the renderer queues (#187's inboxNudgeText), so the two wake paths
   // produce byte-identical nudges: the queue's one-pending rule recognises either
   // via isInboxNudge, and a watchdog nudge names its ids so the agent can still
   // tell "I filed this last turn" from "woken for nothing".
-  const wrote = ptyManager.write(ptyId, inboxNudgeText(ids));
+  const wrote = ptyManager.write(ptyId, orchestrator ? orchestratorInboxNudge(ids.length) : inboxNudgeText(ids));
   if (!wrote.ok) { console.warn(`[worker-wake] write failed for ${ptyId}: ${wrote.error}`); return; }
   setTimeout(() => {
     try {
@@ -5199,16 +6497,16 @@ function nudgeWorker(ptyId: string, ids: string[] = []): void {
  *  it gathers live-worker facts (PTY quiescence, inbox depth, control flags) and
  *  lets WorkerWakeWatchdog.decide apply the exact renderer guards (idle-only,
  *  post-boot-grace, not paused/halted, no pending HITL, cooldown), then types the
- *  same nudge the renderer would have. God is never a candidate (its heartbeat
- *  path already re-engages it). */
+ *  same nudge the renderer would have. Paramount's main-owned orchestrator
+ *  explicitly opts in because its UI has no legacy inbox-wake loop. */
 function runWorkerWakeBeat(): void {
   if (!hive.enabled()) return;
   const reg = hive.registry();
-  if (!reg?.agents || !reg.godId) return;
+  if (!reg?.agents) return;
   const now = Date.now();
   const facts: WorkerWakeFacts[] = [];
   for (const [agentId, a] of Object.entries(reg.agents)) {
-    if (agentId === reg.godId || a?.archived) continue;
+    if ((agentId === reg.godId && !paramountOrchestrators.has(agentId)) || a?.archived) continue;
     const ptyId = ptyForAgent(agentId);
     if (!ptyId) continue;
     const snap = control.snapshot(agentId);
@@ -5226,6 +6524,7 @@ function runWorkerWakeBeat(): void {
     facts.push({
       agentId,
       isGod: agentId === reg.godId,
+      mainOwnedOrchestrator: paramountOrchestrators.has(agentId),
       ptyId,
       lastOutputAt: ptyManager.lastOutputAt(ptyId) ?? 0,
       inboxIds: mail.map((message) => message.id).filter(Boolean),
@@ -5252,7 +6551,7 @@ function runWorkerWakeBeat(): void {
     const ids = hive.inbox(agentId).map((m) => m.id).filter(Boolean);
     if (!ids.length) { console.log(`[worker-wake] ${agentId} drained before delivery, skipping`); continue; }
     console.log(`[worker-wake] nudging ${agentId} on ${ptyId} (${ids.length} pending)`);
-    nudgeWorker(ptyId, ids);
+    nudgeWorker(ptyId, ids, paramountOrchestrators.has(agentId));
   }
   // A worker sitting on old mail without a nudge is the failure this watchdog
   // exists for — say WHY it is being held, once per cooldown, so the log can
@@ -5282,7 +6581,7 @@ function armAlwaysOnBeats(): void {
   if (breakerBeatTimer) clearInterval(breakerBeatTimer);
   breakerBeatTimer = setInterval(() => { try { runBreakerBeat(300_000); } catch (e) { console.error('[breaker beat]', e); } }, 30_000);
   if (workerWakeTimer) clearInterval(workerWakeTimer);
-  workerWakeTimer = setInterval(() => { try { runWorkerWakeBeat(); } catch (e) { console.error('[worker-wake beat]', e); } }, WORKER_WAKE_POLL_MS);
+  workerWakeTimer = setInterval(() => { const doneLag = lagOp('worker-wake.beat'); try { runWorkerWakeBeat(); } catch (e) { console.error('[worker-wake beat]', e); } finally { doneLag(); } }, WORKER_WAKE_POLL_MS);
   runWorkerWakeBeat(); // catch-up on arm — power-resume re-arms and drains the backlog
   // The hook socket is the whole control plane; a session where it is silently
   // unbound looks exactly like "no workers have spawned yet" (#277). Verify it
@@ -5390,15 +6689,19 @@ app.whenReady().then(() => {
     enabled: readConfig().telemetryEnabled !== false
   });
 
+  // Main-thread lag probe (owner use of 8f574966: beach ball): a stall over 200 ms is logged to the
+  // floor as 'paramount-lag' with the operations running during it.
+  void launcherDiscovery.warm()?.catch(() => { /* a failed probe is reported when launchers are read */ });
+  startLagProbe({ now: () => Date.now(), log: (event) => {
+    snapshotStageCapture.record(event);
+    console.warn(`[lag] ${event.ms} ms during ${event.op}`);
+    try { hive.appendLog(event); } catch { /* no floor yet */ }
+  } });
   // Warm the model catalog cache before any picker opens. The renderer reads
   // the same cache over IPC on load; doing the network hop here means the file
   // is already fresh on disk by the time a modal is opened, and a failure is
   // silent by construction (the baked catalog is the floor).
   void loadModelCatalog(MODEL_CATALOG_CACHE()).catch(() => { /* never fatal */ });
-
-  // A cold-start deep link (Windows/Linux) rides in on OUR argv.
-  const startupHireLink = process.argv.find((a) => a.startsWith('munderdifflin://'));
-  if (startupHireLink) void handleHireLink(startupHireLink);
 
   // Hand every spawned agent the path to the Slack reply discovery file via the
   // inherited env (pty merges process.env). The path is stable whether or not the
@@ -5413,21 +6716,48 @@ app.whenReady().then(() => {
   // `autoUpdate` config flag). Download-in-background + restart-to-apply toast;
   // never restarts on its own. Falls back to a notify-only releases/latest
   // check where native updating isn't possible (win-portable, dev-ish builds).
-  initAutoUpdater(() => liveWebContents());
-  // Bootstrap the hive (if harnessHome is configured) and start the message router.
-  bootstrapHiveServices();
+  // Paramount: no auto-update feed (the publish feed is Munder Difflin's). The
+  // IPC surface is still registered so preload calls resolve instead of throwing.
+  initAutoUpdater(() => liveWebContents(), { feed: false });
+  registerParamountProtocol();
+  // Munder parity: a fresh profile has NO floor until first-run setup finishes
+  // (setup.complete, paramount-floor-setup.ts). paramountHome() is only the
+  // suggested folder, so setup never points at Munder Difflin's hive.
+  // Upgrade: builds before this one set harnessHome at startup without setup, so
+  // such a profile already has a floor. It is set up; never send it back through setup.
+  // Never for a home in the app's own data folder (owner report 2026-11-12): that profile goes back
+  // through setup, which refuses it.
+  { const cfg = readConfig(); if (cfg.harnessHome && !cfg.onboardingComplete && !dataFolderRefusal(cfg.harnessHome, appDataDirs())) writeConfig({ onboardingComplete: true }); }
+  // Owner request 2026-11-12: the main process claims no floor at boot. The picker opens one
+  // (openChosenFloor) and first-run setup opens the floor it creates. A floor process was started
+  // for one home (floor.open in another floor) and opens it now.
+  // A floor process opens its own --floor-home, never another home its config was pointed at (review F2).
+  { const boot = bootFloorPlan(process.argv, readConfig().harnessHome ?? null);
+    if (floorProcessHome() && boot.open) {
+      if (boot.rewriteConfig) writeConfig({ harnessHome: boot.open });
+      floorChosen = true;
+      const opened = bootstrapHiveServices();
+      const ack = process.env.PARAMOUNT_FLOOR_OPEN_ACK;
+      if (opened && ack && /^[a-f0-9]{36}$/.test(ack)) process.stdout.write(`PARAMOUNT_FLOOR_OPENED:${ack}\n`);
+    }
+    else if (boot.open) openChosenFloor(boot.open); }
+  registerParamountRuntime({ hive, ptyForAgent, config: () => readConfig(), modelChoices: (id, meta) => [paramountModelPick(id), readConfig().defaultModel, modelForRole(meta, readConfig())], offeredModels: (provider) => offeredModelIds(provider, [(() => { try { return (JSON.parse(readFileSync(MODEL_CATALOG_CACHE(), 'utf8')) as { catalog?: unknown }).catalog; } catch { return null; } })(), bakedModelCatalog], app.getVersion(), parseModelCatalog, teamModels), buildLaunch: (o) => buildWorkerLaunch(o), spawn: (o) => spawnAgentCore({ ...o, provider: o.provider as AgentProvider, hive: { ...o.hive, provider: o.hive.provider as AgentProvider } }, null), isDirectory: (p) => { try { return statSync(p).isDirectory(); } catch { return false; } }, directoryState: (p) => directoryStateForPath(p), log: (step) => paramountLog(step), onQuit: (fn) => { beforeTeardown.push(fn); app.on('will-quit', fn); keepFloorReleaseLast(); } }); // Munder useRestoreTeam parity (paramount-runtime.ts)
+  // A timed YOLO window that ended while the app was closed turns autoMode off now.
+  armAutoModeExpiry();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a
   // locked/idle/slept Mac stops firing schedules and can wedge PTYs. On wake we
   // re-arm the scheduler (catching up missed missions ONCE) + beats + keep-awake,
   // then health-check terminals. App-lifetime listeners — powerMonitor outlives
   // every window, so there is nothing to tear down on quit.
-  powerMonitor.on('resume', () => onSystemResume('resume'));
+  powerMonitor.on('resume', () => { onSystemResume('resume'); armAutoModeExpiry(); });
   powerMonitor.on('unlock-screen', () => onSystemResume('unlock-screen'));
   powerMonitor.on('suspend', () => { lastSuspendAt = Date.now(); console.log('[power] suspend — system sleeping'); });
   powerMonitor.on('lock-screen', () => { lastSuspendAt = Date.now(); console.log('[power] lock-screen'); });
   // Multi-window floors (opt-in): install the menu carrying "New Floor". When
   // off, the app keeps Electron's default menu — zero behavior change.
-  if (readConfig().multiWindow) installAppMenu();
+  // Always installed: File carries New Floor… (the floor picker).
+  installAppMenu();
+  if (gotInstanceLock) floorOverview.start();
   createWindow();
   // Auto-start the Slack webhook server when configured. Best-effort: a tunnel
   // failure (offline) is logged, not fatal. The tunnel URL is ephemeral and
@@ -5457,12 +6787,13 @@ app.whenReady().then(() => {
 // the red close button. Both routes hit the same warning UX.
 app.on('before-quit', (e) => {
   if (allowQuit) return;
-  const count = ptyManager.list().length;
-  if (count === 0) return;
+  const ptyCount = ptyManager.list().length;
+  const sideAgentCount = sideAgentPtys.list().length;
+  if (ptyCount + sideAgentCount === 0) return;
   e.preventDefault();
   if (mainWindow) {
     mainWindow.focus();
-    mainWindow.webContents.send('app:closeRequested', { ptyCount: count });
+    mainWindow.webContents.send('app:closeRequested', { ptyCount, sideAgentCount });
   }
 });
 
@@ -5473,6 +6804,7 @@ onConfigWritten((config) => {
     if (w.isDestroyed() || w.webContents.isDestroyed()) continue;
     w.webContents.send('config:changed', config);
   }
+  broadcastParamountInvalidation('config:changed');
 });
 
 app.on('window-all-closed', () => {
@@ -5499,6 +6831,20 @@ app.on('window-all-closed', () => {
 // run and the flush has finished or timed out, so an unconditional exit is
 // exactly what's left to do.
 let analyticsFlushed = false;
+// Give the floor back so Munder (or another Council) can open it.
+// The floor lock is released LAST on quit: will-quit listeners run in registration order, and
+// hooks registered later (the runtime's) still need hive.root() to remove their own files.
+// Review R3: floor writers are stopped first (the miner child is killed; an in-flight reflection
+// re-checks before writing), so nothing reaches the floor after it is released, even while the
+// analytics flush below keeps the process alive.
+function releaseFloorOnQuit(): void {
+  try { memory.stop(); } catch (e) { console.error('[quit] memory.stop:', e); }
+  try { reflector.stop(); } catch (e) { console.error('[quit] reflector.stop:', e); }
+  floorGate.release();
+}
+function keepFloorReleaseLast(): void { app.removeListener('will-quit', releaseFloorOnQuit); app.on('will-quit', releaseFloorOnQuit); }
+app.on('will-quit', () => floorOverview.stop());
+app.on('will-quit', releaseFloorOnQuit);
 app.on('will-quit', (e) => {
   if (analyticsFlushed) return;
   analyticsFlushed = true;

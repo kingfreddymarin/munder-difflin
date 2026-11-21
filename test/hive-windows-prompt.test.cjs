@@ -45,6 +45,14 @@ function promptOf(inj) {
   return inj.args[i + 1];
 }
 
+test('response style brief and Claude output style reach the next agent prompt', async (t) => {
+  const { inj } = await floor(t, { injectOpts: { responseStyleBrief: 'Plain, connected answers.', claudeOutputStyle: 'concise' } });
+  assert.match(promptOf(inj), /RESPONSE STYLE: Plain, connected answers\./);
+  assert.match(promptOf(inj), /CLAUDE OUTPUT STYLE: concise/);
+  const off = await floor(t, { injectOpts: { claudeOutputStyle: 'off' } });
+  assert.ok(!promptOf(off.inj).includes('CLAUDE OUTPUT STYLE:'));
+});
+
 test('no POSIX shell variables survive into agent-facing text', async (t) => {
   const { inj } = await floor(t);
   const prompt = promptOf(inj);

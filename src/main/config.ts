@@ -190,6 +190,14 @@ export interface HarnessConfig {
   registeredRepos: string[];
   /** When true, new agents are spawned with --permission-mode bypassPermissions. */
   autoMode: boolean;
+  codexRemoteControl?: boolean;
+  codexExecutionPolicy?: import("../shared/executionPolicy").ExecutionPolicy;
+  /** ISO time at which a timed YOLO window ends and `autoMode` turns off. Checked at
+   *  boot and by a timer, so it survives restart. Unset = no expiry. */
+  autoModeExpiresAt?: string;
+  /** Paramount access matrix: `${agentId}:${sourceId}` -> 'r' | 'none'. An unset cell
+   *  is read-write (today's behaviour). Enforced by the integration broker. */
+  accessMatrix?: Record<string, 'r' | 'none'>;
   /** May the orchestrator ("Michael") spin up agents on its own?
    *
    *  Default FALSE. Spawning an agent is a SPEND decision, so it should not
@@ -204,6 +212,12 @@ export interface HarnessConfig {
   defaultCommand: string;
   /** Default model for newly spawned agents (e.g. 'claude-sonnet-4-6[1m]'); unset = CLI default. */
   defaultModel?: string;
+  /** Prefix for newly created Paramount cards; unset follows the existing ledger. */
+  ticketKeyPrefix?: string;
+  /** Operator's response guidance, applied to newly started hive agents. */
+  responseStyleBrief?: string;
+  /** Additional Claude Code response mode for newly started Claude agents. */
+  claudeOutputStyle?: 'off' | 'concise' | 'explanatory' | 'learning';
   /** Which provider powers the GOD orchestrator ("Michael"). The persona is
    *  constant; only its engine is selectable. Default 'claude'. Eligible providers
    *  are those that can receive inbox (claude/codex/antigravity/qwen). */
@@ -428,11 +442,11 @@ const DEFAULTS: HarnessConfig = {
   orchestratorMaySpawn: false,
   defaultCommand: 'claude',
   godProvider: 'claude',
-  godModel: 'claude-opus-4-8',
-  // Global default model for every agent that hasn't picked one explicitly — wins
-  // over the role-based tiers (modelForRole) in the spawn handler, so all agents
-  // (incl. god) default to Fable 5. A per-agent model choice still overrides it.
-  defaultModel: 'claude-fable-5',
+  // Munder 0.5.7 parity: god and every agent default to Opus 5.5 (its shipped
+  // DEFAULTS). Spawn paths keep a model only when the configured catalog offers it
+  // (paramount-models.ts); a per-agent model choice still overrides it.
+  godModel: 'claude-opus-5-5',
+  defaultModel: 'claude-opus-5-5',
   // Seeded from the MCP catalog so the consent defaults never drift from it
   // (safe-readonly ON, write/secret OFF).
   mcpDefaults: defaultMcpDefaults(),
@@ -585,7 +599,19 @@ function migrateTriggersV1(cfg: HarnessConfig): HarnessConfig {
   }
 }
 
+/** Timed-YOLO fail safe (autoModeExpiry.ts): set when the expiry passed but the
+ *  write turning autoMode off failed. While set every read reports autoMode off;
+ *  the next successful writeConfig (which persists the forced-off value) clears it. */
+let autoModeForcedOff = false;
+export function setAutoModeForcedOff(on: boolean): void { autoModeForcedOff = on; }
+
 export function readConfig(): HarnessConfig {
+  const cfg = readConfigFromDisk();
+  if (autoModeForcedOff) cfg.autoMode = false;
+  return cfg;
+}
+
+function readConfigFromDisk(): HarnessConfig {
   const p = configPath();
   // No file yet = a first run with nothing to migrate; the defaults ARE the
   // post-migration shape. Deliberately does not persist — a bare read must not
@@ -694,7 +720,9 @@ export function writeConfig(patch: Partial<HarnessConfig>): HarnessConfig {
     next.harnessHome = home;
     next.recentHives = recentHives;
   }
-  return persistConfig(next);
+  const saved = persistConfig(next);
+  autoModeForcedOff = false;
+  return saved;
 }
 
 /** Set or clear one agent's token ceiling against the latest config on disk.

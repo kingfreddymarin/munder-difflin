@@ -72,6 +72,22 @@ test('ensureAgent preserves existing generated hive docs', async (t) => {
   assertSentinels(root);
 });
 
+test('new agent workspaces get a durable handoff file and explicit session context instructions', async (t) => {
+  const { hive, root } = floor(t);
+  const injection = await hive.ensureAgent({ id: 'agent-1', name: 'Agent', provider: 'pi', cwd: root });
+  const agentDir = path.join(root, 'agents', 'agent-1');
+  const handoff = path.join(agentDir, 'handoff.md');
+  assert.match(fs.readFileSync(handoff, 'utf8'), /State, Next, Files, and Open/);
+  const prompt = injection.args.join('\n');
+  assert.ok(prompt.includes(handoff));
+  assert.match(prompt, /Rules section of .*memory\.md/);
+  assert.match(prompt, /START of a task, read every file in/);
+
+  fs.writeFileSync(handoff, '## KEEP THIS HANDOFF\n', 'utf8');
+  await hive.ensureAgent({ id: 'agent-1', name: 'Agent', provider: 'pi', cwd: root });
+  assert.equal(fs.readFileSync(handoff, 'utf8'), '## KEEP THIS HANDOFF\n');
+});
+
 test('refreshGeneratedDocs replaces stale generated hive docs', (t) => {
   const { hive, root } = floor(t);
   writeSentinels(root);
@@ -86,19 +102,35 @@ test('refreshGeneratedDocs replaces stale generated hive docs', (t) => {
 
 test('hive-service bootstrap refreshes generated hive docs', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
-  const bootstrapBody = source.match(/function bootstrapHiveServices\(\): void \{([\s\S]*?)^\}/m)?.[1];
+  const ts = require('typescript');
+  const tree = ts.createSourceFile('index.ts', source, ts.ScriptTarget.Latest, true);
+  const bootstrap = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'bootstrapHiveServices');
+  assert.ok(bootstrap, 'bootstrapHiveServices() is missing');
+  // Execute the production prefix, including its real admission guards and doc
+  // callbacks. Stop before unrelated services start; no sockets or real floor.
+  const statements = bootstrap.body.statements;
+  const end = statements.findIndex(node => node.getText(tree).includes("stage('hive.generated-docs'"));
+  assert.ok(end >= 0);
+  const script = ts.transpileModule(`(()=>{${statements.slice(0,end+1).map(n=>n.getText(tree)).join('\n')}})()`, {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  for (const [state, enabled, expected] of [['open',true,['ensure','refresh']], ['open',false,[]], ['refused',true,[]]]) {
+    const calls=[];
+    require('node:vm').runInNewContext(script, {
+      performance:{now:()=>0},lagOp:()=>()=>{},console:{error:()=>{}},broadcastParamountInvalidation:()=>{},
+      readConfig:()=>({harnessHome:'/fixture'}),floorGate:{claim:()=>({state,refusal:{owner:'other',pid:1,floor:'/fixture'}})},
+      hive:{enabled:()=>enabled,ensureHive:()=>calls.push('ensure'),refreshGeneratedDocs:()=>calls.push('refresh')}
+    });
+    assert.deepEqual(calls,expected,'docs refresh once after ensure, only on an admitted floor');
+  }
+  assert.equal(source.match(/hive\.refreshGeneratedDocs\(\);/g)?.length,1);
+});
 
-  assert.ok(bootstrapBody, 'bootstrapHiveServices() is missing');
-  assert.match(
-    bootstrapBody,
-    /hive\.ensureHive\(\);\s*hive\.refreshGeneratedDocs\(\);/,
-    'bootstrapHiveServices() must refresh generated docs after ensuring the hive'
-  );
-  assert.equal(
-    source.match(/hive\.refreshGeneratedDocs\(\);/g)?.length,
-    1,
-    'refreshGeneratedDocs() must have one production caller'
-  );
+test('floor startup records named stage timings for the main-thread lag report', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  assert.match(source, /stage\('floor\.lock-claim'/);
+  assert.match(source, /stage\('hive\.generated-docs'/);
+  assert.match(source, /stage\('hive\.archive-orphans'/);
+  assert.match(source, /kind: 'paramount-startup-stages', phase: 'floor-services'/);
+  assert.match(source, /lagOp\(`floor-entry:\$\{name\}`\)/);
 });
 
 test('ensureHive restores missing generated hive docs', (t) => {

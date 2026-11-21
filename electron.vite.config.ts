@@ -26,6 +26,7 @@ const defineMain = {
 // build, so the sidecar is emitted from a single place for every path.
 function copyMainSidecars() {
   const ASSETS: Array<[string, string]> = [
+    ['src/main/board-validation.cjs', 'out/main/board-validation.cjs'],
     ['src/main/slack-trigger.cjs', 'out/main/slack-trigger.cjs'],
     // Knowledge Graph core: required by knowledge.ts at runtime (pure-JS, no
     // native deps), so it must be emitted next to the main bundle like the
@@ -71,6 +72,9 @@ export default defineConfig({
   renderer: {
     define,
     root: resolve(__dirname, 'src/renderer'),
+    // Paramount shell: the window loads the Paramount Vite app on 5173, so keep
+    // this (unused) renderer's dev server off that port.
+    server: { port: 5180 },
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/renderer/index.html') }

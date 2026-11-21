@@ -1,3 +1,13 @@
+# Paramount
+
+This repository contains the Paramount desktop source: the Electron core at the repository root and the React command center in [`ui/`](ui/). It is forked from [Munder Difflin](https://github.com/HarnessMD/munder-difflin); its original project documentation and attribution follow below.
+
+Current state: the source builds and an unsigned macOS arm64 DMG has been produced locally. Packaged runtime and visual smoke testing, independent review, and the remaining ticket archiving policy are still open. No release has been published.
+
+Automated validation and packaging are separate: development CI typechecks and tests; a PR targeting `release` validates first and then generates the application build. See [Validation and release actions](docs/RELEASE-ACTIONS.md).
+
+## Upstream project documentation
+
 <div align="center">
 
 <img src="./docs/logo.png" alt="Munder Difflin, the agent harness to run an office of your clones" width="180">
@@ -527,3 +537,21 @@ Dunder Mifflin.
 - [Pixi.js](https://pixijs.com/) · [xterm.js](https://xtermjs.org/) · [node-pty](https://github.com/microsoft/node-pty) · [electron-vite](https://electron-vite.org/) · [CodeMirror](https://codemirror.net/) for the libraries this is built on.
 - [Remotion](https://www.remotion.dev/) for the landing page's animated "how it works" clips (`landing-remotion/`).
 - *The Office* (US) for Munder Difflin, Inc.
+
+### Council lifecycle smoke
+
+With existing dependencies (no install), run the actual packaged candidate on macOS:
+
+```sh
+node --experimental-websocket scripts/council-lifecycle-smoke.cjs --build --report evidence-2026-11-12/council-lifecycle.json
+# Or reuse a built app; the source commit is caller-supplied attribution:
+node --experimental-websocket scripts/council-lifecycle-smoke.cjs --app /absolute/path/Paramount.app --source-commit <commit> --report evidence-2026-11-12/council-lifecycle.json
+```
+
+Run `node scripts/council-lifecycle-smoke.cjs --self-test` for offline probe, shell-isolation, hash-sensitivity and fail-closed-report checks. This does not launch the app or establish parity.
+
+Requires Node 20 with `--experimental-websocket` (or Node 22+), Python 3, GUI access and permission to bind loopback ports. `--build` builds backend/UI and packages with the existing Electron distribution, without installing or rebuilding dependencies. No app is installed or pushed. The app gets a disposable profile, HOME, PATH and Studio root; inherited credentials and broker settings are excluded. Provider executables are deterministic local probes that emit native lifecycle hooks and reply only after submitted terminal input. The product's bootstrap, spawn-request, inbox and restore loops are never replaced or called on its behalf. A separate lasting agent is established through public IPC and persisted as the restart fixture; this cannot satisfy the automatic orchestrator/temp checks.
+
+The ordered run checks setup and interrupted setup, floor creation, exactly one orchestrator, a message round-trip, temp request consumption, inbox wake, terminal streaming, quit and restoration without duplicates. Reports contain all 19 acceptance rows as `pass`/`fail` with `coverage: tested|untested`, app content hashes, source attribution, before/after hashes of the real Munder/Paramount/Council profiles, and error IDs plus bounded log excerpts. Untested rows remain failures; a passing subset does not establish full Munder 0.5.7 parity. Prerequisite failures and environment restrictions are reported explicitly. Scratch artifacts remain at the report's `work` path for inspection; remove that directory after review.
+
+For the `8cdff764` baseline, append `--expect-known-bad`. Exit 0 then means the tested rows 8/9/14 actually failed while setup/reopen and isolation passed, including a successfully created restoration fixture. The report still has `pass: false`. An environment failure never counts as known-bad proof. The baseline attempt in `evidence-2026-11-12/council-lifecycle-baseline.json` was blocked by sandbox `listen EPERM` before app launch; the real profiles were unchanged. It must be rerun in an environment that permits CDP before the known-bad proof can be claimed.

@@ -37,11 +37,14 @@ const { ensureHarnessHome, writeConfig, readConfig } = loadTs('src/main/config.t
 const HOME = os.homedir();
 
 test('ensureHarnessHome creates a tilde path on disk (issue #140)', (t) => {
+  const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'md-harness-fixture-'));
+  t.mock.method(os, 'homedir', () => fixtureHome);
+  t.after(() => fs.rmSync(fixtureHome, { recursive: true, force: true }));
   const name = `md-harness-home-${process.pid}`;
-  t.after(() => fs.rmSync(path.join(HOME, name), { recursive: true, force: true }));
+  t.after(() => fs.rmSync(path.join(fixtureHome, name), { recursive: true, force: true }));
   const res = ensureHarnessHome(`~/${name}`);
   assert.equal(res.ok, true, res.error);
-  assert.equal(fs.existsSync(path.join(HOME, name)), true, 'the REAL home dir, not a literal "~" folder');
+  assert.equal(fs.existsSync(path.join(fixtureHome, name)), true, 'the isolated home dir, not a literal "~" folder');
 });
 
 test('writeConfig persists harnessHome EXPANDED, like registeredRepos', () => {

@@ -363,11 +363,18 @@ its first newline.
 - **Copying from a terminal is clean.** The Edit menu was intercepting ⌘C before the terminal saw it.
 - **Agent terminals are UTF-8.** They ran with no locale at all.`;
 
-export function initAutoUpdater(getWebContents: () => WebContents | null): void {
+export function initAutoUpdater(
+  getWebContents: () => WebContents | null,
+  opts: { feed?: boolean } = {}
+): void {
   sendTo = getWebContents;
+  const feed = opts.feed !== false;
+  // feed:false (the Paramount shell) must never reach the Munder release feed.
+  const unsupported = { ok: false, unsupported: true, error: 'updates are not supported in this build' };
 
   // IPC surface is registered unconditionally so the renderer can always call it.
   ipcMain.handle('update:restartAndInstall', async () => {
+    if (!feed) return unsupported;
     // Re-entry guard: a restart is already in flight. Firing quitAndInstall a
     // second time hits a native command Squirrel has already disabled and it
     // throws "The command is disabled and cannot be executed", the recurring
@@ -393,10 +400,12 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
     }
   });
   ipcMain.handle('update:checkNow', async () => {
+    if (!feed) return unsupported;
     if (!app.isPackaged) return { ok: false, error: 'dev build — updates are only checked in packaged apps' };
     return runCheck();
   });
   ipcMain.handle('update:download', async () => {
+    if (!feed) return unsupported;
     if (!app.isPackaged) return { ok: false, error: 'dev build — updates are only downloaded in packaged apps' };
     return runDownload();
   });
@@ -438,6 +447,9 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
   // DevTools paste. The renderer pulls `update:current` on mount, so emitting
   // before the window exists is fine. Same hard gate as `update:simulate`.
   const previewPath = process.env.MD_DROP_PREVIEW;
+  // feed:false (the Paramount shell) registers the IPC surface above and stops:
+  // no release-page fetch, no update polling.
+  if (!feed) return;
   if (!app.isPackaged && previewPath) {
     try {
       const notes = readFileSync(previewPath, 'utf8');

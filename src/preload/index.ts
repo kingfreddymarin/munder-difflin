@@ -1,5 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
+import type { SideAgentAction, SideAgentProvider, SideAgentResult, SideAgentState } from '../shared/sideAgent';
+import type { FloorOverview } from '../shared/floor-overview';
 import type { AgentProvider } from '../shared/agentProvider';
+import type { ParamountCommand, ParamountPreloadAPI, ParamountRawSnapshot, ParamountResult, ParamountUpdate } from './paramount';
 import type { HireManifest } from '../shared/hire';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
@@ -576,6 +579,15 @@ const api = {
   trackMessageSent: (surface: 'terminal' | 'composer'): Promise<void> =>
     ipcRenderer.invoke('analytics:messageSent', surface).then(() => undefined, () => undefined),
 
+  sideAgentState: (): Promise<SideAgentState> => ipcRenderer.invoke('side-agent:state'),
+  sideAgentAct: (action: SideAgentAction, provider?: SideAgentProvider): Promise<SideAgentResult> =>
+    ipcRenderer.invoke('side-agent:act', action, provider),
+  onSideAgentChanged: (cb: (disposedPtyId?: string) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, disposedPtyId?: string) => cb(disposedPtyId);
+    ipcRenderer.on('side-agent:changed', listener);
+    return () => ipcRenderer.removeListener('side-agent:changed', listener);
+  },
+
   // ─── PTY ─────────────────────────────────────────────────────────────────
   /** `cwd` in the result is the TILDE-EXPANDED absolute path main actually spawned
    *  into — the renderer stores that, not the raw `~/…` the user typed. */
@@ -748,6 +760,35 @@ const api = {
     >,
 
   // ─── Hive (multi-agent coordination) ─────────────────────────────────────
+  /** Aggregate fork-native read model. Paramount's UI provider projects it to
+   *  its own Snapshot; existing hive and PTY methods remain available directly. */
+  listFloorViews: (): Promise<FloorOverview[]> => ipcRenderer.invoke('floor-overview:list'),
+  focusFloorView: (id: string): Promise<boolean> => ipcRenderer.invoke('floor-overview:focus', id),
+  onFloorViewControls: (callback: () => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, requestId: number) => {
+      callback();
+      ipcRenderer.send('floor-overview:controls-handled', requestId);
+    };
+    ipcRenderer.on('floor-overview:controls', listener);
+    ipcRenderer.send('floor-overview:controls-ready');
+    return () => ipcRenderer.removeListener('floor-overview:controls', listener);
+  },
+  paramountSnapshot: (): Promise<ParamountRawSnapshot> => ipcRenderer.invoke('paramount:snapshot'),
+  paramountSaveHirePreset: (manifest: unknown) => ipcRenderer.invoke('paramount:saveHirePreset', manifest),
+  /** Validated commands lacking a direct fork preload equivalent. */
+  paramountDispatch: (command: ParamountCommand): Promise<ParamountResult> =>
+    ipcRenderer.invoke('paramount:dispatch', command),
+  startEngineSignIn: (provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string) =>
+    ipcRenderer.invoke('engine-signin:start', { provider, accountId, accountFingerprint }),
+  refreshEngineSignIn: (provider: 'claude' | 'codex', accountId?: string, accountFingerprint?: string) =>
+    ipcRenderer.invoke('engine-signin:refresh', { provider, accountId, accountFingerprint }),
+  prepareClaudeTelegramChannels: () => ipcRenderer.invoke('claude-channel:prepare'),
+  applyClaudeTelegramChannels: (planId: string) => ipcRenderer.invoke('claude-channel:apply', { planId }),
+  onParamountEvent: (cb: (event: ParamountUpdate) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, event: ParamountUpdate) => cb(event);
+    ipcRenderer.on('paramount:event', listener);
+    return () => ipcRenderer.removeListener('paramount:event', listener);
+  },
   hiveRegistry: (): Promise<HiveRegistry> => ipcRenderer.invoke('hive:registry'),
   /** Persist a hire/job role to hive registry.json + identity.md (no respawn). */
   hivePatchAgentRole: (id: string, role: string): Promise<{ ok: boolean; error?: string }> =>
@@ -958,8 +999,8 @@ const api = {
   },
 
   // ─── Quit confirmation ───────────────────────────────────────────────────
-  onCloseRequested: (cb: (info: { ptyCount: number }) => void): (() => void) => {
-    const listener = (_e: IpcRendererEvent, info: { ptyCount: number }) => cb(info);
+  onCloseRequested: (cb: (info: { ptyCount: number; sideAgentCount?: number }) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, info: { ptyCount: number; sideAgentCount?: number }) => cb(info);
     ipcRenderer.on('app:closeRequested', listener);
     return () => ipcRenderer.removeListener('app:closeRequested', listener);
   },
@@ -1426,6 +1467,6 @@ const api = {
   }): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('update:simulate', opts)
 };
 
-contextBridge.exposeInMainWorld('cth', api);
+contextBridge.exposeInMainWorld('cth', api satisfies ParamountPreloadAPI);
 
 export type CthApi = typeof api;

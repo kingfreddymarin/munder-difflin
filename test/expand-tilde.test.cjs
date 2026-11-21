@@ -115,11 +115,18 @@ test('#140: both entry points agree on the same directory', () => {
   assert.equal(expandTilde(typed), normalizeHiveHome(typed).home);
 });
 
-test('statAbs expands bare ~, Windows-style ~\\, and whitespace paths', async () => {
-  const fileBasename = `.md-statabs-${process.pid}`;
-  const inHome = path.join(HOME, fileBasename);
+test('statAbs expands bare ~, Windows-style ~\\, and whitespace paths', async (t) => {
+  const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'md-statabs-home-'));
+  t.mock.method(os, 'homedir', () => fixtureHome);
+  t.after(() => fs.rmSync(fixtureHome, { recursive: true, force: true }));
+  const fileBasename = 'statabs-fixture';
+  const inHome = path.join(fixtureHome, fileBasename);
   fs.writeFileSync(inHome, 'x');
   try {
+    assert.equal(expandTilde('~'), fixtureHome, 'the production expander uses the isolated home');
+    const resHome = await statAbs('~');
+    assert.deepEqual(resHome, { exists: true, isFile: false, path: fixtureHome });
+
     const resSlash = await statAbs(`~/${fileBasename}`);
     assert.equal(resSlash.exists, true);
     assert.equal(resSlash.isFile, true);

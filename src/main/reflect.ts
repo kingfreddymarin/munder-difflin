@@ -115,6 +115,10 @@ export class MemoryReflector {
   /** True while a reflectNow() pass is in flight — serializes the loop (a slow
    *  LLM pass must not overlap the next interval tick), mirroring MemoryManager. */
   private reflecting = false;
+  /** Review R3: a summary in flight when stop() runs, or when the floor is released, must not
+   *  write afterwards. stop() bumps this; condense re-checks it and the home before writing. */
+  private stopGen = 0;
+  private pass: Promise<ReflectResult[]> | null = null;
 
   /**
    * @param getHome      Lazily resolve harnessHome so reflection follows config.
@@ -147,14 +151,25 @@ export class MemoryReflector {
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     this.started = false;
+    this.stopGen++;
   }
+
+  /** Resolves when no reflection pass is running (call after stop()). */
+  drain(): Promise<void> { return (this.pass ?? Promise.resolve([])).then(() => undefined, () => undefined); }
 
   // — scan —
 
   /** Reflect every agent whose memory crossed a threshold (or just `onlyId`),
    *  one at a time. Serialized via `reflecting` so a slow pass can't overlap the
    *  next tick. Returns the per-agent outcomes (used by the manual IPC + tests). */
-  async reflectNow(onlyId?: string): Promise<ReflectResult[]> {
+  reflectNow(onlyId?: string): Promise<ReflectResult[]> {
+    if (this.reflecting) return Promise.resolve([]);
+    const run = this.reflectPass(onlyId);
+    this.pass = run;
+    return run.finally(() => { if (this.pass === run) this.pass = null; });
+  }
+
+  private async reflectPass(onlyId?: string): Promise<ReflectResult[]> {
     const home = this.getHome();
     if (!home) return [];
     if (this.reflecting) return [];
@@ -226,12 +241,18 @@ export class MemoryReflector {
     }
 
     // 2) SUMMARIZE the (condensed + evicted) tail via headless Haiku.
+    const gen = this.stopGen;
     let summary: { condensed: string; hoist: string[] };
     try {
       summary = await this.summarize(home, parsed.condensed, evict, parsed.pinned);
     } catch (e) {
       this.logAbort(id, 'summarize-failed', String(e));
       return { id, condensed: false, reason: 'summarize-failed', oldBytes };
+    }
+    // Stopped while summarizing, or this app no longer holds the floor (another app may now):
+    // write nothing. Everything from here to the swap is synchronous.
+    if (gen !== this.stopGen || this.getHome() !== home) {
+      return { id, condensed: false, reason: 'stopped', oldBytes };
     }
 
     // 3) REBUILD into the 3-region shape.

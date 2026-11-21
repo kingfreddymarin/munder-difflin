@@ -1,42 +1,27 @@
 name: CI
 
+# Development validation only. Release PRs use release.yml so those checks run
+# once, in order, before packaging. Pushes never generate an application build.
 on:
   push:
-    branches: [main, 'release/**']
+    branches: [main, dev, release]
   pull_request:
-    branches: [main, 'release/**']
+    branches-ignore: [release]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   typecheck:
-    name: Typecheck
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Typecheck (node + web)
-        run: npm run typecheck
-      # Release gate: every advertised download link and docs version string must
-      # match package.json. A version left behind in RELEASE.md / docs turns the
-      # download buttons into 404s the moment the next release ships — this catches
-      # it on the release branch, before a tag, instead of on launch day.
-      - name: Release links consistent
-        run: npm run check:links
+    name: 1. Typecheck
+    uses: ./.github/workflows/typecheck.yml
 
-  build:
-    name: Build
-    runs-on: macos-latest
-    # Build exercises the native node-pty rebuild; allowed to fail without blocking.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run build
+  tests:
+    name: 2. Tests
+    needs: [typecheck]
+    uses: ./.github/workflows/tests.yml
