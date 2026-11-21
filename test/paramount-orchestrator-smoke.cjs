@@ -13,9 +13,11 @@ const { spawn } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'paramount-orchestrator-smoke-'));
 const profile = path.join(work, 'appdata');
+const floorHome = path.join(work, 'floor');
 const bin = path.join(work, 'bin');
 fs.mkdirSync(path.join(profile, 'Paramount'), { recursive: true });
 fs.mkdirSync(bin);
+fs.mkdirSync(floorHome);
 const capture = path.join(work, 'fixture-started');
 const inputCapture = path.join(work, 'fixture-input');
 const builtUI = path.join(work, 'ui');
@@ -58,6 +60,7 @@ const fixtureShell = path.join(bin, 'fixture-shell');
 // loading a user's rc files which could replace it with the real CLI.
 fs.writeFileSync(fixtureShell, '#!/bin/sh\nexec /bin/sh -c "$2"\n', { mode: 0o755 });
 fs.writeFileSync(path.join(profile, 'Paramount', 'config.json'), JSON.stringify({
+  harnessHome: floorHome, onboardingComplete: true,
   godProvider: 'claude', godModel: 'claude-opus-4-8', registeredRepos: [],
   autoMode: false, telemetryEnabled: false, semanticMemory: false,
   knowledgeGraph: false, slackEnabled: false, missions: [],
@@ -111,8 +114,15 @@ async function runSideAgentSmoke() {
   const count = async (expected) => assert.equal((await page('window.cth.listPtys()')).length, expected);
   const rosterIds = async () => Object.keys((await page('window.cth.hiveRegistry()')).agents).sort();
   const ledger = () => page('window.cth.paramountSnapshot().then(s => s.tasks)');
+  const floorHive = path.join(floorHome, 'hive');
+  fs.writeFileSync(path.join(floorHive, 'board.md'), '# Fixture plan\n## Decisions\n- Approved browser validation.\n');
+  fs.writeFileSync(path.join(floorHive, 'tasks.json'), JSON.stringify({ tasks: [{
+    id: 'NSC-236', title: 'Fixture context card', status: 'blocked', assignee: 'god',
+    blocker: 'Awaiting replay', priority: 2, dependsOn: [], createdAt: new Date().toISOString()
+  }] }));
   const before = await rosterIds();
   const beforeLedger = await ledger();
+  await until(() => JSON.parse(fs.readFileSync(path.join(floorHive, 'fleet.json'), 'utf8')).agents.some((entry) => entry.id === 'god'), 'orchestrator fleet row');
   await page("location.hash = '#/side-agent'");
   await until(() => click('Start side agent'), 'side agent start');
   const first = await until(async () => { const value = await state(); return value.status === 'running' && value; }, 'first side agent');
@@ -120,7 +130,11 @@ async function runSideAgentSmoke() {
   assert.equal(firstRun.provider, 'opencode');
   assert.equal(firstRun.isolated, true);
   assert.equal(first.context.orchestratorId, 'god');
-  assert.match(firstRun.args.at(-1), /floor orchestrator ID god/);
+  assert.match(firstRun.args.at(-1), /Source: .+ \(god\), floor/);
+  assert.match(firstRun.args.at(-1), /Fixture context card.*assignee: god.*blocker: Awaiting replay/);
+  assert.ok(first.context.roster.some((entry) => entry.id === 'god'));
+  assert.ok(first.context.decisions.includes('Approved browser validation.'));
+  assert.match(first.context.boardSummary, /Fixture plan/);
   assert.notEqual(firstRun.cwd, root);
   await count(1);
   assert.deepEqual(await rosterIds(), before);
@@ -131,13 +145,15 @@ async function runSideAgentSmoke() {
   assert.equal(await click('Open source orchestrator'), true);
   await until(() => page("location.hash === '#/terminal?a=god'"), 'orchestrator link');
   await page("location.hash = '#/side-agent'");
+  fs.writeFileSync(path.join(floorHive, 'board.md'), '# New fixture plan\n');
   await until(() => click('Restart'), 'side agent restart');
   const restarted = await until(async () => {
     const value = await state();
     return value.status === 'running' && value.ptyId !== first.ptyId && value;
   }, 'fresh side agent');
   assert.equal((await page(`window.cth.writePty(${JSON.stringify(first.ptyId)}, 'stale')`)).ok, false);
-  await until(() => starts()[1], 'restarted provider boot');
+  const restartRun = await until(() => starts()[1], 'restarted provider boot');
+  assert.match(restartRun.args.at(-1), /New fixture plan/);
   assert.equal(fs.existsSync(firstRun.home), false);
   await until(() => click('Stop'), 'stop side agent');
   await until(async () => (await state()).status === 'stopped', 'stopped state');
@@ -174,7 +190,7 @@ async function runSideAgentSmoke() {
 async function run() {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const url = `http://127.0.0.1:${server.address().port}/index.html`;
-  child = spawn(process.env.PARAMOUNT_SMOKE_ELECTRON || require('electron'), ['--inspect=0', wrapper], {
+  child = spawn(process.env.PARAMOUNT_SMOKE_ELECTRON || require('electron'), ['--inspect=0', wrapper, '--council-open-floor'], {
     cwd: root, env: { ...process.env, PARAMOUNT_UI_URL: url, SHELL: fixtureShell,
       PATH: bin + path.delimiter + process.env.PATH, PARAMOUNT_SMOKE_CAPTURE: capture, PARAMOUNT_SMOKE_INPUT: inputCapture, NSC236_FIXTURE_SECRET: 'do-not-forward', DO_NOT_TRACK: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],

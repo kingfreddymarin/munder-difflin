@@ -5,16 +5,33 @@ const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { createSideAgents, isSideAgentPty, sideAgentCards } = loadTs('src/main/side-agent.ts');
+const { createSideAgents, isSideAgentPty, sideAgentCards, sideAgentSnapshot } = loadTs('src/main/side-agent.ts');
 const { buildPtyEnv } = loadTs('src/main/ptyEnv.ts');
 
-const fixtureContext = () => ({
-  floorLabel: 'Floor display only',
+const fixtureInput = () => ({
+  floorLabel: 'Fixture floor',
   orchestratorId: 'main-orchestrator',
-  orchestratorName: 'Orchestrator display only',
+  orchestratorName: 'Fixture orchestrator',
   capturedAt: '2026-11-21T08:00:00.000Z',
-  cards: sideAgentCards({ tasks: [{ id: 'NSC-236', status: 'doing', title: 'PRIVATE_CARD_TEXT' }] })
+  board: '# Floor plan\nShip the graph after the browser replay.\n## Decisions\n- Keep provider profiles temporary.\n',
+  ledger: { tasks: [{
+    id: 'NSC-236', status: 'blocked', title: 'Share meaningful context', assignee: 'worker',
+    blocker: 'Waiting for renderer validation', description: 'UNSHARED_DESCRIPTION',
+    webhook: { tokenHash: 'UNSHARED_TOKEN_HASH' }
+  }] },
+  fleet: { agents: [
+    { id: 'other', name: 'Other', status: 'idle' },
+    { id: 'main-orchestrator', name: 'Fixture orchestrator', status: 'working', contextPct: 47.7, tokens: 5000, cwd: '/private/world' },
+    { id: 'worker', name: 'Worker', status: 'on hold', contextPct: 107 }
+  ] },
+  log: [
+    { kind: 'message', from: 'main-orchestrator', act: 'agree', subject: 'Sequence the two merges', delivered: true, body: 'UNSHARED_MESSAGE_BODY' },
+    { kind: 'message', from: 'worker', act: 'agree', subject: 'UNSHARED_WORKER_DECISION' },
+    { kind: 'session', sid: 'UNSHARED_SESSION' }
+  ],
+  agentIds: new Set(['main-orchestrator', 'worker']),
 });
+const fixtureContext = () => sideAgentSnapshot(fixtureInput());
 
 function fixture(t) {
   let onExit;
@@ -55,8 +72,13 @@ test('launch uses a safe, bounded snapshot and a separate OpenCode profile', (t)
   assert.equal(opts.command, 'opencode');
   assert.deepEqual(opts.args.slice(0, 2), ['--standalone', '--prompt']);
   const prompt = opts.args.at(-1);
-  assert.match(prompt, /main-orchestrator.*NSC-236 doing/);
-  assert.doesNotMatch(prompt, /Floor display|Orchestrator display|PRIVATE_CARD_TEXT|\n/);
+  assert.match(prompt, /Fixture orchestrator \(main-orchestrator\), floor Fixture floor/);
+  assert.match(prompt, /Board summary:[\s\S]+Ship the graph after the browser replay/);
+  assert.match(prompt, /NSC-236 blocked: Share meaningful context \| assignee: worker \| blocker: Waiting for renderer validation/);
+  assert.match(prompt, /main-orchestrator \(Fixture orchestrator\): working \| context 48%/);
+  assert.match(prompt, /Recent decisions:[\s\S]+Agreed: Sequence the two merges[\s\S]+Keep provider profiles temporary/);
+  assert.doesNotMatch(prompt, /UNSHARED_|private\/world|context 107%/);
+  assert.deepEqual(state.context.roster.map(({ id, contextPct }) => [id, contextPct]), [['main-orchestrator', 48], ['worker', 100]]);
   const profile = JSON.parse(readFileSync(join(opts.env.XDG_CONFIG_HOME, 'opencode', 'opencode.json')));
   for (const action of ['tool.use', 'mcp.use', 'skill.use', 'plugin.use', 'websearch.use']) {
     assert.ok(profile.policies.some((rule) => rule.action === action && rule.resource === '*' && rule.effect === 'deny'));
@@ -82,10 +104,50 @@ test('rejects malformed and finished cards, deduplicates and caps active referen
     { id: 'NSC-1', status: 'doing' }, { id: 'NSC-1', status: 'blocked' },
     ...Array.from({ length: 20 }, (_, i) => ({ id: `ACTIVE-${i}`, status: 'blocked' }))
   ] });
-  assert.deepEqual(cards[0], { id: 'NSC-1', status: 'blocked' });
-  assert.equal(cards.length, 12);
-  assert.equal(cards.at(-1).id, 'ACTIVE-10');
+  assert.deepEqual(cards[0], { id: 'NSC-1', title: '', status: 'blocked', assignee: undefined, blocker: undefined });
+  assert.equal(cards.length, 10);
+  assert.equal(cards.at(-1).id, 'ACTIVE-8');
+  assert.equal(sideAgentCards({ tasks: [{ id: 'NSC-TODO', status: 'todo', title: 'Pending' }] })[0].title, 'Pending');
   assert.deepEqual(sideAgentCards(null), []);
+});
+
+test('bounds the snapshot and redacts secrets before it reaches either provider', (t) => {
+  const input = fixtureInput();
+  const key = 'sk-synthetic12345678901234567890';
+  input.board = [
+    '# Project', `Decision: ship after test; token=${key}`, '~~~',
+    'UNSHARED_SHELL_COMMAND', '~~~', '## Current status',
+    ...Array.from({ length: 20 }, (_, i) => `Note ${i} ${'x'.repeat(600)}`)
+  ].join('\n');
+  input.ledger.tasks = Array.from({ length: 20 }, (_, i) => ({
+    id: `item-${i}`, title: `Provider password=${key} ${'x'.repeat(600)}`, status: 'blocked',
+    assignee: 'worker', blocker: `Blocked by ${key} ${'x'.repeat(600)}`
+  }));
+  input.fleet.agents.push(...Array.from({ length: 20 }, (_, i) => ({
+    id: `agent-${i}`, name: `${key} ${'x'.repeat(600)}`, status: 'idle', contextPct: -10,
+  })));
+  input.fleet.agents.forEach(({ id }) => input.agentIds.add(id));
+  input.log.push(...Array.from({ length: 8 }, (_, i) => ({
+    kind: 'message', from: 'human', act: 'agree', subject: `Decision ${i}: ${key} ${'x'.repeat(600)}`
+  })));
+  const context = sideAgentSnapshot(input);
+  assert.ok(context.boardSummary.length < 950);
+  assert.match(context.boardSummary, /Project[\s\S]+Note 19/);
+  assert.equal(context.cards.length, 10);
+  assert.equal(context.roster.length, 12);
+  assert.equal(context.roster.at(-1).contextPct, 0);
+  assert.equal(context.decisions.length, 5);
+  assert.match(context.decisions[0], /Decision 7/);
+  const f = fixture(t);
+  f.context(context);
+  for (const [provider, restart] of [['opencode', false], ['claude', true]]) {
+    assert.equal(f.side.launch(f.owner, provider, restart).ok, true);
+    const prompt = f.spawned.get(f.side.state(f.owner).ptyId).opts.args.at(-1);
+    assert.ok(prompt.length < 6500);
+    assert.match(prompt, /\[redacted\]/);
+    assert.ok(!prompt.includes(key));
+    assert.doesNotMatch(prompt, /UNSHARED_SHELL_COMMAND/);
+  }
 });
 
 test('restart takes a fresh snapshot and launch, stop and exit stay window-owned', (t) => {
@@ -97,7 +159,7 @@ test('restart takes a fresh snapshot and launch, stop and exit stay window-owned
   assert.equal(f.side.owns(other, original), false);
   assert.equal(f.side.stop(other).ok, true);
   assert.equal(f.side.launch(f.owner, 'claude', false).ok, false);
-  f.context({ ...fixtureContext(), capturedAt: '2026-11-21T08:30:00.000Z' });
+  f.context(sideAgentSnapshot({ ...fixtureInput(), capturedAt: '2026-11-21T08:30:00.000Z', board: 'Fresh decision for the next session' }));
   assert.equal(f.side.launch(f.owner, 'claude', true).ok, true);
   const replacement = f.side.state(f.owner);
   assert.notEqual(replacement.ptyId, original);
@@ -106,6 +168,7 @@ test('restart takes a fresh snapshot and launch, stop and exit stay window-owned
   assert.equal(f.side.owns(f.owner, original), false);
   const { opts } = f.spawned.get(replacement.ptyId);
   assert.equal(opts.command, 'claude');
+  assert.match(opts.args.at(-1), /Fresh decision for the next session/);
   assert.ok(opts.args.includes('--tools=') && opts.args.includes('--strict-mcp-config'));
   f.exit(original, 1);
   assert.equal(f.side.state(f.owner).status, 'running');

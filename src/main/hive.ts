@@ -2619,6 +2619,11 @@ export class HiveManager {
     } catch (e) { console.error('[hive] installGrokHooks failed:', e); }
   }
 
+  fleet(): unknown {
+    const root = this.root();
+    return root ? this.readJson<unknown>(join(root, 'fleet.json'), null) : null;
+  }
+
   /** Write the live fleet snapshot Michael reads (`fleet.json`, gitignored).
    *  Best-effort — called from a timer, must never throw. */
   writeFleetSnapshot(snapshot: unknown): void {
@@ -2664,8 +2669,7 @@ export class HiveManager {
     const root = this.root();
     if (!root) return null;
     try {
-      const raw = readFileSync(join(root, 'fleet.json'), 'utf8');
-      const snap = JSON.parse(raw) as {
+      const snap = this.fleet() as null | {
         ts?: number;
         agents?: Array<{
           id: string; name?: string; role?: string; isGod?: boolean;
@@ -2674,6 +2678,7 @@ export class HiveManager {
           onHold?: boolean;
         }>;
       };
+      if (!snap) return null;
       // A terminal can close between the eight-second fleet snapshots.
       // Registry archival is immediate and overrides those stale rows.
       const registry = this.registry();

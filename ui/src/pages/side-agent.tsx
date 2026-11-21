@@ -1,11 +1,15 @@
 import * as React from 'react';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { PtyTerminalView } from '@/components/app/terminal/pty-terminal-view';
+import { SIDE_AGENT_TERMINAL_THEMES } from '@/components/app/terminal/terminal-themes';
 import { Screen } from '@/components/app/screen';
 import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { findBridge } from '@/data/bridge';
 import type { SideAgentAction, SideAgentProvider, SideAgentState } from '../../../src/shared/sideAgent';
+
+const outlineButton = 'border-neutral-300 bg-white text-black hover:bg-neutral-100 hover:text-black dark:border-neutral-700 dark:bg-neutral-900 dark:text-white dark:hover:bg-neutral-800 dark:hover:text-white';
+const buttonFocus = 'focus-visible:border-current focus-visible:ring-current/40';
 
 export function SideAgentPage() {
   const bridge = findBridge();
@@ -58,15 +62,15 @@ export function SideAgentPage() {
 
   return (
     <Screen fill className="flex h-full min-h-0 flex-col gap-4 overflow-auto">
-      <section className="space-y-4 rounded-xl border bg-card p-4">
-        <p className="text-sm text-muted-foreground">
-          Ask quick questions in a temporary session outside the floor. Each launch uses a fresh provider profile and may prompt you to sign in.
+      <section className="space-y-4 rounded-xl border border-neutral-300 bg-white p-4 text-black dark:border-neutral-700 dark:bg-neutral-950 dark:text-white">
+        <p className="text-sm text-neutral-600 dark:text-neutral-400">
+          Ask quick questions in a temporary session outside the floor. Each launch loads a fresh floor snapshot and uses a temporary provider profile that may prompt you to sign in.
         </p>
         <div className="flex flex-wrap items-end gap-2">
           <label className="flex flex-col gap-1 text-sm font-medium">
             Provider
             <select
-              className="h-9 rounded-md border bg-background px-3 text-sm"
+              className="h-9 rounded-md border border-neutral-300 bg-white px-3 text-sm focus-visible:outline-current dark:border-neutral-700 dark:bg-neutral-900"
               value={provider}
               disabled={busy || running}
               onChange={(event) => setProvider(event.target.value === 'claude' ? 'claude' : 'opencode')}
@@ -76,32 +80,62 @@ export function SideAgentPage() {
             </select>
           </label>
           {running ? <>
-            <Button variant="outline" disabled={busy} onClick={() => void act('stop')}>Stop</Button>
-            <Button variant="outline" disabled={busy} onClick={() => void act('restart')}>Restart</Button>
-          </> : <Button disabled={busy || !ready} onClick={() => void act('start')}>Start side agent</Button>}
+            <Button className={`${outlineButton} ${buttonFocus}`} variant="outline" disabled={busy} onClick={() => void act('stop')}>Stop</Button>
+            <Button className={`${outlineButton} ${buttonFocus}`} variant="outline" disabled={busy} onClick={() => void act('restart')}>Restart</Button>
+          </> : <Button className={`bg-yellow-300 text-black hover:bg-yellow-400 ${buttonFocus}`} disabled={busy || !ready} onClick={() => void act('start')}>Start side agent</Button>}
         </div>
-        {!bridge?.sideAgentAct && <p role="status" className="text-sm text-muted-foreground">Open this page in the Paramount desktop app to start a session.</p>}
-        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        {!bridge?.sideAgentAct && <p role="status" className="text-sm text-neutral-600 dark:text-neutral-400">Open this page in the Paramount desktop app to start a session.</p>}
+        {error && <p role="alert" className="text-sm text-black dark:text-white">{error}</p>}
         {ended && <p role="status" className="text-sm">
           {abnormal
             ? `The provider exited (${state.signal ? `signal ${state.signal}` : `code ${state.exitCode}`}). Check the CLI installation and sign-in, then try again.`
             : 'The side agent ended.'}
         </p>}
         {state.status === 'stopped' && <p role="status" className="text-sm">Side agent stopped.</p>}
-        {context && <div className="space-y-1 border-t pt-3 text-sm">
+        {context && <div className="space-y-1 border-t border-neutral-300 pt-3 text-sm dark:border-neutral-700">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span>{context.floorLabel} · {context.orchestratorName}</span>
-            <Button size="sm" variant="outline" onClick={() => go(AGENT_VIEW, agentViewParams(context.orchestratorId))}>Open source orchestrator</Button>
+            <Button size="sm" className={`${outlineButton} ${buttonFocus}`} variant="outline" onClick={() => go(AGENT_VIEW, agentViewParams(context.orchestratorId))}>Open source orchestrator</Button>
           </div>
-          <p className="text-muted-foreground">
-            Board snapshot at {new Date(context.capturedAt).toLocaleString()}.
-            {' '}{context.cards.length > 0 ? context.cards.map(({ id, status }) => `${id} (${status})`).join(', ') : 'No active card references shared.'}
+          <p className="text-neutral-600 dark:text-neutral-400">
+            Floor snapshot at {new Date(context.capturedAt).toLocaleString()}.
           </p>
-          <p className="text-muted-foreground">For more context, open the orchestrator or paste a relevant excerpt into the session.</p>
+          <details className="space-y-2">
+            <summary className="cursor-pointer font-medium">View shared context</summary>
+            <div className="max-h-64 space-y-3 overflow-auto">
+              {context.boardSummary && <div>
+                <h3 className="font-medium">Board summary</h3>
+                <p className="whitespace-pre-line">{context.boardSummary}</p>
+              </div>}
+              {context.cards.length > 0 && <div>
+                <h3 className="font-medium">Open cards</h3>
+                <ul className="list-disc pl-5">
+                  {context.cards.map(({ id, title, status, assignee, blocker }) => <li key={id}>
+                    {`${id} (${status})`}{title && ` · ${title}`}{assignee && ` · Assigned to ${assignee}`}{blocker && ` · Blocker: ${blocker}`}
+                  </li>)}
+                </ul>
+              </div>}
+              {context.roster.length > 0 && <div>
+                <h3 className="font-medium">Live roster</h3>
+                <ul className="list-disc pl-5">
+                  {context.roster.map(({ id, name, status, contextPct }) => <li key={id}>
+                    {name ? `${name} (${id})` : id}{` · ${status}`}{contextPct !== null && ` · Context ${contextPct}%`}
+                  </li>)}
+                </ul>
+              </div>}
+              {context.decisions.length > 0 && <div>
+                <h3 className="font-medium">Recent decisions</h3>
+                <ul className="list-disc pl-5">
+                  {context.decisions.map((decision) => <li key={decision}>{decision}</li>)}
+                </ul>
+              </div>}
+              {!context.boardSummary && !context.cards.length && !context.roster.length && !context.decisions.length && <p>No floor notes, open cards, roster, or decisions were available at capture time.</p>}
+            </div>
+          </details>
         </div>}
       </section>
-      {running && <div className="min-h-[360px] flex-1 overflow-hidden rounded-xl border">
-        <PtyTerminalView key={state.ptyId} ptyId={state.ptyId} label="Side agent terminal" />
+      {running && <div className="min-h-[360px] flex-1 overflow-hidden rounded-xl border border-neutral-300 dark:border-neutral-700">
+        <PtyTerminalView key={state.ptyId} ptyId={state.ptyId} label="Side agent terminal" palettes={SIDE_AGENT_TERMINAL_THEMES} />
       </div>}
     </Screen>
   );

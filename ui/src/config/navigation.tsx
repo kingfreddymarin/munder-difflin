@@ -3,7 +3,7 @@ import { LayoutDashboard } from '@/components/animate-ui/icons/layout-dashboard'
 import { Kanban } from '@/components/animate-ui/icons/kanban';
 import { Users } from '@/components/animate-ui/icons/users';
 import { Terminal } from '@/components/animate-ui/icons/terminal';
-import { MessagesSquare } from 'lucide-react';
+import { MessageSquare } from '@/components/animate-ui/icons/message-square';
 import { Activity } from '@/components/animate-ui/icons/activity';
 import { Settings } from '@/components/animate-ui/icons/settings';
 
@@ -14,7 +14,7 @@ export const mainNav: { id: RouteId; label: string; icon: React.ComponentType<{ 
   // reachable by link (notifications, messages) but is not primary navigation.
   { id: 'home', label: 'Home', icon: LayoutDashboard },
   { id: 'terminal', label: 'Terminal', icon: Terminal },
-  { id: 'side-agent', label: 'Side Agent', icon: MessagesSquare },
+  { id: 'side-agent', label: 'Side Agent', icon: MessageSquare },
   { id: 'board', label: 'Board', icon: Kanban },
   { id: 'team', label: 'Team', icon: Users },
   { id: 'health', label: 'Health', icon: Activity },

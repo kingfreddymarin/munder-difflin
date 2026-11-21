@@ -20,7 +20,7 @@ import { performance } from 'node:perf_hooks';
 import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
-import { createSideAgents, isSideAgentPty, sideAgentCards } from './side-agent';
+import { createSideAgents, isSideAgentPty, sideAgentSnapshot } from './side-agent';
 import { createSnapshotCommandDiscovery, fallbackCommandPath, installedSnapshotEngines, probeLoginShellCommand, snapshotCommandTools, snapshotSignInPath } from './snapshotCommandDiscovery';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
 import { createBoardDeps } from './paramount-board';
@@ -1437,9 +1437,17 @@ function writeFleetSnapshot(): void {
         // fall back to the session figure rather than publishing a cold $0.
         const lifetime = costTotals.usdFor(id);
         const sessionUsd = u ? Number(u.usd.toFixed(4)) : 0;
+        const ptyId = ptyForAgent(id);
+        const activity = agentActivity({ [id]: {
+          lastOutputAt: ptyId ? ptyManager.lastOutputAt(ptyId) : undefined,
+          context: hookServer.contextFor(id),
+        } }, now, WORKER_WAKE_IDLE_MS)[id];
+        const status = a.onHold ? 'on hold' : !ptyId ? 'offline' : activity.busy ? 'working' : 'idle';
         return {
           id,
           name: a.name,
+          status,
+          contextPct: activity.contextPct,
           role: a.role ?? (a.isGod ? 'orchestrator' : 'agent'),
           cwd: a.cwd,
           isGod: !!a.isGod,
@@ -3228,13 +3236,17 @@ const sideAgents = createSideAgents(sideAgentPtys, () => {
   const registry = hive.registry();
   const id = registry.godId;
   if (!id || !Object.hasOwn(registry.agents, id) || !ptyForAgent(id)) return null;
-  return {
+  return sideAgentSnapshot({
     floorLabel: basename(floor.floor),
     orchestratorId: id,
     orchestratorName: resolveGodName(registry.agents[id].name),
     capturedAt: new Date().toISOString(),
-    cards: sideAgentCards(hive.tasks())
-  };
+    board: hive.board(),
+    ledger: hive.tasks(),
+    fleet: hive.fleet(),
+    log: hive.logTail(120),
+    agentIds: new Set(Object.entries(registry.agents).filter(([, agent]) => !agent.archived).map(([agentId]) => agentId)),
+  });
 }, (owner, disposedPtyId) => {
   try { if (!owner.isDestroyed()) owner.send('side-agent:changed', disposedPtyId); }
   catch { /* renderer closed during delivery */ }
