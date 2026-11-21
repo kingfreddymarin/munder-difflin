@@ -112,4 +112,14 @@ test('card.update ignores a missing parent, a self parent and a cycle', () => {
     const snap = familySnap();
     assert.equal(applyEvent(snap, ev({ type: 'card.update', key, patch: { parentId } })), snap, `${key} → ${parentId}`);
   }
+
+test('a Board dispatch receipt moves only the selected card to its new owner', () => {
+  const target = { key: 'NSC-1', agentId: 'jim', status: 'blocked', description: 'Wait for the build.' };
+  const other = { key: 'NSC-2', agentId: 'jim', status: 'todo' };
+  const next = applyEvent({ cards: [target, other] }, {
+    id: 'message-1', at: '2026-11-21', actor: 'you',
+    command: { type: 'card.dispatch', key: target.key, agentId: 'pam', expectedAssignee: 'jim' }
+  });
+  assert.deepEqual(next.cards[0], { ...target, agentId: 'pam' });
+  assert.equal(next.cards[1], other);
 });

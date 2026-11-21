@@ -630,3 +630,33 @@ test('an archived god is absent from both the agents and every reportsTo edge', 
   const live = await createElectronProvider().snapshot();
   assert.deepEqual(live.agents.filter((a) => a.id !== 'god').map((a) => a.reportsTo), ['god', 'god'], 'a live god is still the default root');
 });
+
+test('Board dispatch projects eligible recipients and forwards the selected card and agent unchanged', async () => {
+  const native = nativeSnapshot();
+  Object.assign(native.registry.agents, { pam: { name: 'Pam' }, archived: { name: 'Archived', archived: true }, prep: { name: 'Prep' } });
+  native.boardDispatchAgents = ['pam', 'archived'];
+  const desktop = bridge(native);
+  globalThis.window = { cth: desktop };
+  const provider = createElectronProvider();
+  const snapshot = await provider.snapshot();
+  assert.deepEqual(snapshot.agents.filter((agent) => agent.acceptsBoardTasks).map((agent) => agent.id), ['pam']);
+
+  const command = { type: 'card.dispatch', key: 'T-1', agentId: 'pam', expectedAssignee: 'god' };
+  const event = { id: 'dispatch-message-id', at: '2026-11-21T00:00:00Z', actor: 'you', command };
+  let calls = 0, refreshes = 0;
+  const events = [];
+  provider.subscribe((received) => events.push(received));
+  provider.onRefresh(() => refreshes++);
+  desktop.paramountDispatch = async (received) => {
+    calls++;
+    assert.deepEqual(received, command);
+    if (calls === 1) return { ok: false, code: 'NOT_FOUND', errorId: 'missing-inbox', message: 'The inbox is unavailable.', correlationId: '1' };
+    desktop.emit(event);
+    return { ok: true, event };
+  };
+  await assert.rejects(provider.dispatch(command), { code: 'NOT_FOUND', errorId: 'missing-inbox' });
+  assert.deepEqual(events, []);
+  assert.deepEqual(await provider.dispatch(command), event);
+  assert.deepEqual(events, [event]);
+  assert.equal(refreshes, 1);
+});

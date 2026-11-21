@@ -117,6 +117,17 @@ export interface HumanQA {
   dismissedAt?: string;
 }
 
+interface BoardDispatchReceipt {
+  agentId: string;
+  messageId: string;
+  at: string;
+  delivered: boolean;
+}
+
+export type BoardDispatchResult =
+  | { ok: true; receipt: BoardDispatchReceipt; reused: boolean }
+  | { ok: false; code: 'CONFLICT' | 'NOT_FOUND' | 'UNCERTAIN_STATE'; message: string };
+
 export interface HiveTask {
   id: string;
   title: string;
@@ -129,6 +140,8 @@ export interface HiveTask {
   /** Hides the card from the Board while retaining its workflow status and history. */
   boardArchivedAt?: string;
   updatedAt?: string;
+  /** Latest Board request, persisted before routing so interrupted sends can be reconciled. */
+  boardDispatch?: BoardDispatchReceipt | null;
   /** Paramount extension links: parent task and owning team, without changing ledger routing. */
   parentId?: string;
   teamId?: string;
@@ -1776,9 +1789,12 @@ export class HiveManager {
     return msg;
   }
 
-  private routeMessage(msg: HiveMessage): void {
+  private routeMessage(msg: HiveMessage, boardDispatch = false): string[] {
     const reg = this.registry();
     const godId = reg.godId ?? 'god';
+    // The Board only offers direct inbox delivery. It must never relay a work
+    // order to someone other than the agent the operator chose.
+    if (boardDispatch && !this.canDispatchBoardTaskTo(msg.to, reg)) return [];
     // The hive has no separate human-approval queue — approvals are native to
     // each agent's Claude Code session (and approvable remotely). A message aimed
     // at "human" is handled by the god/orchestrator, the human's proxy here.
@@ -1868,15 +1884,16 @@ export class HiveManager {
       // message and the mail simply ceased to exist. Record the drop beside the
       // hop-cap one and bounce to god, mirroring the undeliverable bounces above.
       this.appendLog({ kind: 'drop', reason: 'no-inbox', from: msg.from, to: t, id: msg.id });
-      if (t !== godId) {
+      if (t !== godId && !boardDispatch) {
         this.bounceToGod(msg, godId, `[undeliverable — no agent "${t}" on this floor; check the id against the roster] ${msg.subject}`);
       }
     }
     this.appendLog({ kind: 'message', from: msg.from, to: msg.to, act: msg.act, subject: msg.subject, id: msg.id, delivered });
-    this.emitMessage(msg, targets);
+    this.emitMessage(msg, boardDispatch ? delivered : targets);
     // Main-process observer (e.g. the closing-time controller watching for the
     // team's ACKs and the god's COMPLETE). Best-effort, never breaks routing.
     try { this.routedObserver?.(msg, targets); } catch { /* observer error */ }
+    return delivered;
   }
 
   /** Observer invoked for EVERY routed message with its resolved targets.
@@ -2029,7 +2046,7 @@ export class HiveManager {
     const path = join(root, 'tasks.json');
     const current = this.readJson<{ tasks?: unknown }>(path, { tasks: [] });
     const merged = mergeTaskLedger(current?.tasks, tasks);
-    this.writeJson(path, { tasks: merged });
+    this.atomicWriteJson(path, { ...current, tasks: merged });
     this.appendLog({ kind: 'tasks', count: merged.length });
     this.commit(`hive: tasks (${merged.length})`);
   }
@@ -2069,6 +2086,80 @@ export class HiveManager {
     next[index] = { ...tasks[index], ...patch, id };
     this.writeTasks(next);
     return true;
+  }
+
+  private canDispatchBoardTaskTo(id: string, registry: Registry): boolean {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id) || ['human', 'broadcast'].includes(id)
+      || (id === 'god' && registry.godId !== id) || !Object.hasOwn(registry.agents, id)) return false;
+    const agent = registry.agents[id];
+    if (agent.archived || agent.isAssistant) return false;
+    if (id === registry.godId) return true;
+    const bridge = bridgeOf(agent.provider);
+    return canReceiveInbox(agent.provider) && !(bridge?.kind === 'proxy' && bridge.inboxDelivery === 'terminal');
+  }
+
+  boardDispatchAgents(registry = this.registry()): string[] {
+    return Object.keys(registry.agents).filter((id) => this.canDispatchBoardTaskTo(id, registry));
+  }
+
+  dispatchBoardTask(id: string, agentId: string, expectedAssignee: string | null): BoardDispatchResult {
+    const readTask = () => {
+      const cards = (this.tasks() as { tasks?: HiveTask[] } | null)?.tasks;
+      return Array.isArray(cards) ? cards.find((card) => card?.id === id) : undefined;
+    };
+    const task = readTask();
+    if (!task) return { ok: false, code: 'NOT_FOUND', message: 'This task is no longer on the Board.' };
+    const previous = task.boardDispatch;
+    if (previous?.delivered && previous.agentId === agentId && task.assignee === agentId) {
+      return { ok: true, receipt: previous, reused: true };
+    }
+    if (task.status === 'done') return { ok: false, code: 'CONFLICT', message: 'This task is already done.' };
+    if ((task.assignee || null) !== expectedAssignee) {
+      return { ok: false, code: 'CONFLICT', message: 'The assignee changed. Refresh the Board before sending.' };
+    }
+
+    const uncertain = (): BoardDispatchResult => ({
+      ok: false, code: 'UNCERTAIN_STATE',
+      message: 'The previous send could not be confirmed. Check delivery before sending this task again.'
+    });
+    const complete = (receipt: BoardDispatchReceipt): BoardDispatchResult => {
+      const current = readTask();
+      if (!current || current.status === 'done' || (current.assignee || null) !== expectedAssignee
+        || current.boardDispatch?.messageId !== receipt.messageId) return uncertain();
+      const delivered = { ...receipt, delivered: true };
+      if (!this.patchTask(id, { assignee: agentId, boardDispatch: delivered })) return uncertain();
+      return { ok: true, receipt: delivered, reused: false };
+    };
+
+    if (previous && !previous.delivered) {
+      // The operator may retry after an interruption between inbox delivery and
+      // the final ledger write. Recover from the original delivery, with no resend.
+      if (previous.agentId !== agentId || !/^[A-Za-z0-9-]+$/.test(previous.messageId)
+        || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(agentId)) return uncertain();
+      const inbox = join(this.agentDir(agentId), 'inbox');
+      const file = `${previous.messageId}.json`;
+      if (!existsSync(join(inbox, file)) && !existsSync(join(inbox, '.done', file))) return uncertain();
+      return complete(previous);
+    }
+    if (!this.canDispatchBoardTaskTo(agentId, this.registry())) {
+      return { ok: false, code: 'NOT_FOUND', message: 'Choose an agent on this floor that accepts Board tasks.' };
+    }
+    const msg = this.normalize({
+      to: agentId,
+      act: 'request',
+      conversation: `task:${id}`,
+      subject: `Board task ${id}: ${task.title}`,
+      body: [`You received Board task ${id}. Check the card in tasks.json for its current assignee, status, and dependencies before working.`, task.description].filter(Boolean).join('\n\n'),
+    }, 'human');
+    const pending = { agentId, messageId: msg.id, at: msg.created_at, delivered: false };
+    if (!this.patchTask(id, { boardDispatch: pending })) {
+      return { ok: false, code: 'NOT_FOUND', message: 'This task is no longer on the Board.' };
+    }
+    if (!this.routeMessage(msg, true).includes(agentId)) {
+      if (!this.patchTask(id, { boardDispatch: previous ?? null })) return uncertain();
+      return { ok: false, code: 'NOT_FOUND', message: 'The agent’s inbox is unavailable. The task was not sent.' };
+    }
+    return complete(pending);
   }
 
   /** Delete only the named card from the latest on-disk ledger. */

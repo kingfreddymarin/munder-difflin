@@ -24,7 +24,7 @@ import { PtyManager, type SpawnOptions } from './pty';
 import { createSideAgents, isSideAgentPty, sideAgentSnapshot } from './side-agent';
 import { createSnapshotCommandDiscovery, fallbackCommandPath, installedSnapshotEngines, probeLoginShellCommand, snapshotCommandTools, snapshotSignInPath } from './snapshotCommandDiscovery';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
-import { createBoardDeps, isBoardOwnerSender } from './paramount-board';
+import { createBoardDeps, isBoardDispatchSender, isBoardOwnerSender } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
 import { offeredModelIds, resolveAgentModel } from './paramount-models';
 import { agentModelPick, readAgentModels, saveAgentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
@@ -4028,6 +4028,7 @@ ipcMain.handle('paramount:snapshot', (evt) => traced('paramount.snapshot', param
     ...(hasOrchestratorFailure ? { orchestratorFailure } : {}),
     ...(TEST_LABEL ? { testLabel: TEST_LABEL } : {}),
     registry, tasks, messages, organization, archivedAgents, log, roster: rosterSnapshot, activity,
+    boardDispatchAgents: hive.boardDispatchAgents(registry),
     config: snapshotConfig, missions, ptys, preferences, integrations: integrationRecords,
     prereqs: { skid, tools, signIn }
   };
@@ -4645,6 +4646,13 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   commandType: command && typeof command === 'object' && typeof (command as { type?: unknown }).type === 'string'
     ? String((command as { type: string }).type).slice(0, 80) : undefined
 }, async (span) => {
+  if (command && typeof command === 'object' && (command as { type?: unknown }).type === 'card.dispatch') {
+    const owner = BrowserWindow.fromWebContents(evt.sender);
+    const frame = evt.senderFrame;
+    if (!isBoardDispatchSender(!!owner && allWindows.has(owner) && frame === evt.sender.mainFrame, frame?.url ?? '', paramountUiUrl())) {
+      return span.fail('INVALID_INPUT', 'Sending Board tasks requires the Paramount window.');
+    }
+  }
   // dispatchParamount is synchronous, so the one async fact it needs is fetched first.
   const startId = command && typeof command === 'object' && (command as { type?: unknown }).type === 'prereq.start' ? (command as { id?: unknown }).id : undefined;
   const portOpen = typeof startId === 'string' ? await paramountProbeService(startId, span.cid) : false;
@@ -4680,6 +4688,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   godId: () => hive.registry().godId ?? undefined,
   canMutateBoard: () => hive.enabled() && isOwnerRenderer(evt),
   board: createBoardDeps({
+    dispatchTask: (key, agentId, expectedAssignee) => hive.dispatchBoardTask(key, agentId, expectedAssignee),
     savePreference: (value) => saveParamountPreference('board', { ...value }),
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
     handlerFor: (url) => app.getApplicationNameForProtocol(url),
