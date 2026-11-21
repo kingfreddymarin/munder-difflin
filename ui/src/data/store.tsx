@@ -158,6 +158,12 @@ export function useDispatch() {
   return useStore().dispatch;
 }
 
+/** Returns a stable getter for the current snapshot. Safe to call inside event handlers
+ *  before React has re-rendered; use useFloor for reactive reads in render. */
+export function useGetSnapshot(): () => Snapshot | null {
+  return useStore().get;
+}
+
 export function useAgent(id: string | undefined) {
   return useFloor((s) => s.agents.find((a) => a.id === id));
 }

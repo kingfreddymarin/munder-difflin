@@ -82,7 +82,7 @@ export function HomePage() {
         return (
           <Tile key={id} title="Main objectives" hint={objectives.length ? undefined : 'none set'} className={cls}
             actions={!editingObjectives && <Button size="sm" variant="ghost" onClick={() => setEditingObjectives(true)}>{objectives.length ? 'Edit' : 'Set objectives'}</Button>}>
-            {editingObjectives ? <ObjectivesEditor objectives={objectives} agents={agents} onDone={() => setEditingObjectives(false)} /> : <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
+            {editingObjectives ? <ObjectivesEditor objectives={objectives} agents={agents} openCards={cards.filter((c) => c.status !== 'done')} onDone={() => setEditingObjectives(false)} /> : <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
               {objectives.length === 0 && <span className="text-muted-foreground text-sm">No objectives for this floor yet.</span>}
               {objectives.map((o) => {
                 const own = cards.filter((c) => o.cardKeys.includes(c.key));
