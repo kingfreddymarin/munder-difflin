@@ -1,0 +1,2 @@
+Usage limit reached
+Your claude.ai plan has a usage limit that resets every 5 hours. Run /status to see your current usage.

@@ -13,6 +13,7 @@ import { HookSocketBanner, OrchestratorFailureBanner } from './hook-socket-banne
 import { SetupGate } from './setup-gate';
 import { cn } from '@/lib/utils';
 import { AgentAvatar } from '@/components/app/agent-avatar';
+import { agentStatusColour } from '@/components/app/agent-status-colour';
 import { AGENT_VIEW, agentViewParams, terminalRoster } from './agent-view';
 import { findBridge } from '@/data/bridge';
 import { disposeTerminal, prewarmTerminals } from '@/components/app/terminal/terminal-pool';
@@ -49,15 +50,29 @@ function SidebarAgents() {
       <SidebarGroupLabel>Agents</SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          {roster.map(({ agent, live }) => (
-            <SidebarMenuItem key={agent.id}>
-              <SidebarMenuButton isActive={current === agent.id} tooltip={`${agent.name}${live ? '' : ' (not running)'}`} onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}>
-                <AgentAvatar agent={agent} size="sm" tooltip={false} />
-                <span className={cn('truncate', !live && 'text-muted-foreground')}>{agent.name}</span>
-                <span aria-label={live ? 'live terminal' : 'not running'} className={cn('ml-auto size-1.5 shrink-0 rounded-full', live ? 'bg-emerald-500' : 'bg-muted-foreground/40')} />
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
+          {roster.map(({ agent, live }) => {
+            const colour = live ? agentStatusColour(agent) : null;
+            return (
+              <SidebarMenuItem key={agent.id}>
+                <SidebarMenuButton
+                  isActive={current === agent.id}
+                  tooltip={`${agent.name}${live ? '' : ' (not running)'}`}
+                  onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}
+                  onContextMenu={(e) => { e.preventDefault(); go('team', { agent: agent.id }); }}
+                >
+                  <AgentAvatar agent={agent} size="sm" tooltip={false} />
+                  <span className={cn('truncate', !live && 'text-muted-foreground')}>{agent.name}</span>
+                  <span
+                    aria-label={colour ? agent.status : 'not running'}
+                    className={cn('ml-auto size-1.5 shrink-0 rounded-full',
+                      colour ? colour.dot : 'bg-muted-foreground/40',
+                      colour?.blink && 'motion-safe:animate-pulse',
+                    )}
+                  />
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            );
+          })}
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
