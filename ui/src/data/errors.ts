@@ -35,7 +35,7 @@ export class BackendError extends Error {
   }
 }
 
-const CODES: readonly ErrorCode[] = ['INVALID_COMMAND', 'INVALID_INPUT', 'NOT_FOUND', 'CONFLICT', 'UNSUPPORTED', 'UNCERTAIN_STATE', 'INTERNAL', 'DISCONNECTED'];
+const CODES: readonly ErrorCode[] = ['INVALID_COMMAND', 'INVALID_INPUT', 'NOT_FOUND', 'CONFLICT', 'UNSUPPORTED', 'UNCERTAIN_STATE', 'INTERNAL', 'FORBIDDEN', 'DISCONNECTED'];
 
 function localId() {
   const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID().slice(0, 8) : Math.random().toString(16).slice(2, 10);

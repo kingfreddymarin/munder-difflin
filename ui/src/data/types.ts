@@ -106,6 +106,7 @@ export interface Card {
   key: string;
   title: string;
   status: CardStatus;
+  boardArchivedAt?: string;
   priority: 'P1' | 'P2' | 'P3' | '';
   agentId: string;
   created: string;

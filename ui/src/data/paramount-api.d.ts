@@ -10,6 +10,7 @@ export type ParamountCardStatus = 'backlog' | 'todo' | 'doing' | 'blocked' | 're
 export type ParamountAccess = 'rw' | 'r' | 'none';
 
 export type ParamountCommand =
+  | ParamountBoardCommand
   | { type: 'chat.send'; chatId: string; text: string }
   | { type: 'question.answer'; messageId: string; option: string }
   | { type: 'notification.act'; notificationId: string; action: string }
@@ -83,7 +84,7 @@ export type ParamountUpdate = ParamountEvent | {
 /** Stable failure codes; branch on these, not on message text. */
 export type ParamountErrorCode =
   | 'INVALID_COMMAND' | 'INVALID_INPUT' | 'NOT_FOUND' | 'CONFLICT'
-  | 'UNSUPPORTED' | 'UNCERTAIN_STATE' | 'INTERNAL';
+  | 'UNSUPPORTED' | 'UNCERTAIN_STATE' | 'INTERNAL' | 'FORBIDDEN';
 /** Every failure carries an errorId. The same id is on a `paramount-error`
  *  line in log.jsonl with the stack and context; show it to the user. */
 export interface ParamountFailure {
@@ -277,11 +278,14 @@ export interface ParamountBoardPreferences {
   columns: ParamountCardStatus[];
 }
 export type ParamountOpenApp = 'warp' | 'vscode';
+export type ParamountCardPatch = Partial<{ title: string; description: string; priority: 1 | 2 | 3; assignee: string }>;
 /** Board commands, handled by src/main/paramount-board.ts. Send them through `paramountDispatch`. */
 export type ParamountBoardCommand =
   | { type: 'board.columns'; order: ParamountCardStatus[] }
   | { type: 'card.open'; key: string; app: ParamountOpenApp }
-  | { type: 'card.link'; key: string; url: string };
+  | { type: 'card.link'; key: string; url: string }
+  | { type: 'card.update'; key: string; patch: ParamountCardPatch }
+  | { type: 'card.archive'; key: string };
 
 // lane d-team
 /** Team-screen commands, sent through `paramountDispatch` like any other command. */

@@ -271,6 +271,7 @@ export function createElectronProvider(): ElectronProvider {
       const cards: Card[] = tasks.map((task) => ({
         key: string(task.id), title: string(task.title, 'Untitled task'),
         status: ['todo', 'doing', 'blocked', 'done'].includes(string(task.status)) ? string(task.status) as Card['status'] : 'todo',
+        boardArchivedAt: string(task.boardArchivedAt) || undefined,
         priority: task.priority === 1 ? 'P1' : task.priority === 2 ? 'P2' : task.priority === 3 ? 'P3' : '',
         agentId: string(task.assignee), created: date(task.createdAt), createdBy: string(task.createdBy), updated: date(task.updatedAt ?? task.createdAt),
         description: string(task.description), dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.filter((id): id is string => typeof id === 'string').join(', ') : '', parentId: string(task.parentId) || undefined, teamId: string(task.teamId) || undefined,
@@ -370,7 +371,9 @@ export function createElectronProvider(): ElectronProvider {
           }
           if (!result?.ok) throw BackendError.local('INTERNAL', (result as { error?: string } | undefined)?.error || 'The core answered without a result.', operation);
           const card = (result as OkResult).card;
-          const event = { ...result.event, command: card && command.type === 'card.create' ? { ...command, key: card.key } : command } as FloorEvent;
+          const applied = command.type === 'card.update' ? result.event.command
+            : card && command.type === 'card.create' ? { ...command, key: card.key } : command;
+          const event = { ...result.event, command: applied } as FloorEvent;
           emit(event);
           if (['card.create', 'setup.complete', 'orchestrator.ensure', 'launchers.refresh', 'floor.retry', 'floor.choose-another', 'floor.open', 'floor.picker'].includes(command.type)) refresh();
           return event;

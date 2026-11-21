@@ -1,14 +1,11 @@
-// Board commands for the Paramount UI (lane c-board): the human's column order,
-// opening a card's working directory in Warp or VS Code, and opening a link the
-// card carries. Registered with one line in paramount.ts; every failure goes
-// through `span.fail`, so it carries an errorId and code and is logged.
+// Board commands for the Paramount UI. Failures carry an errorId and code.
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
-import type { ParamountBoardCommand, ParamountBoardPreferences, ParamountCardRef, ParamountCardStatus, ParamountCommand, ParamountErrorCode, ParamountEvent, ParamountOpenApp, ParamountResult } from '../preload/paramount';
+import type { ParamountBoardCommand, ParamountBoardPreferences, ParamountCardPatch, ParamountCardRef, ParamountCardStatus, ParamountCommand, ParamountErrorCode, ParamountEvent, ParamountOpenApp, ParamountResult } from '../preload/paramount';
 import type { ParamountDeps } from './paramount';
 import type { Span } from './paramountObservability';
 
-export const BOARD_COMMANDS = ['board.columns', 'card.open', 'card.link'] as const;
+export const BOARD_COMMANDS = ['board.columns', 'card.open', 'card.link', 'card.update', 'card.archive'] as const;
 const STATUSES: readonly ParamountCardStatus[] = ['backlog', 'todo', 'doing', 'blocked', 'review', 'done'];
 const OPEN_APPS: readonly ParamountOpenApp[] = ['warp', 'vscode'];
 const REF_KINDS: readonly ParamountCardRef['kind'][] = ['pr', 'build', 'run', 'workitem'];
@@ -69,6 +66,40 @@ function onlyKeys(command: Record<string, unknown>, allowed: string[]): boolean 
 function key(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 200 && !/[\r\n\0]/.test(value);
 }
+export function isBoardOwnerSender(sender: { knownWindow: boolean; mainFrame: boolean; url: string }, uiUrl: string): boolean {
+  if (!sender.knownWindow || !sender.mainFrame) return false;
+  try {
+    const actual = new URL(sender.url);
+    const expected = new URL(uiUrl);
+    return actual.protocol === expected.protocol && actual.host === expected.host && actual.pathname === expected.pathname
+      && actual.username === expected.username && actual.password === expected.password;
+  } catch {
+    return false;
+  }
+}
+
+function cardPatch(value: unknown, agents: () => Record<string, unknown>): ParamountCardPatch | null {
+  if (!object(value) || !onlyKeys(value, ['title', 'description', 'assignee', 'priority']) || !Object.keys(value).length) return null;
+  const patch: ParamountCardPatch = {};
+  if ('title' in value) {
+    if (!key(value.title) || !value.title.trim()) return null;
+    patch.title = value.title.trim();
+  }
+  if ('description' in value) {
+    if (typeof value.description !== 'string' || value.description.length > 10_000 || value.description.includes('\0')) return null;
+    patch.description = value.description;
+  }
+  if ('assignee' in value) {
+    if (value.assignee !== '' && (!key(value.assignee) || !Object.hasOwn(agents(), value.assignee))) return null;
+    patch.assignee = value.assignee;
+  }
+  if ('priority' in value) {
+    if (value.priority !== 1 && value.priority !== 2 && value.priority !== 3) return null;
+    patch.priority = value.priority;
+  }
+  return patch;
+}
+
 export function httpsUrl(value: unknown): value is string {
   if (typeof value !== 'string' || value.length > 2048) return false;
   try {
@@ -93,6 +124,11 @@ export function dispatchBoard(command: Record<string, unknown>, deps: ParamountD
   if (!board) return fail('UNSUPPORTED', 'Board commands are not available in this build');
   const task = () => (deps.tasks().tasks ?? []).find((item) => item?.id === command.key) as Record<string, unknown> | undefined;
   let writeAttempted = false;
+  let applied = command;
+  let at = new Date().toISOString();
+  const cardMutation = command.type === 'card.update' || command.type === 'card.archive';
+  if (cardMutation && !deps.canMutateBoard?.()) return fail('FORBIDDEN', 'Only the floor owner can edit or archive cards from the Board');
+
   try {
     switch (command.type) {
       case 'board.columns': {
@@ -132,15 +168,41 @@ export function dispatchBoard(command: Record<string, unknown>, deps: ParamountD
         board.openUrl(command.url as string);
         break;
       }
+      case 'card.update': {
+        const patch = cardPatch(command.patch, deps.agents);
+        if (!onlyKeys(command, ['type', 'key', 'patch']) || !key(command.key) || !patch) {
+          return fail('INVALID_INPUT', 'Provide a valid title, description, priority or assignee');
+        }
+        const card = task();
+        if (!card || card.boardArchivedAt) return fail('NOT_FOUND', `No active Board card ${command.key}`);
+        applied = { type: command.type, key: command.key, patch };
+        writeAttempted = true;
+        if (!deps.patchTask(command.key, { ...patch, updatedAt: at })) return fail('CONFLICT', 'Card changed; refresh the Board');
+        break;
+      }
+      case 'card.archive': {
+        if (!onlyKeys(command, ['type', 'key']) || !key(command.key)) return fail('INVALID_INPUT', 'Provide a card key');
+        const card = task();
+        if (!card) return fail('NOT_FOUND', `No card ${command.key}`);
+        if (typeof card.boardArchivedAt === 'string' && card.boardArchivedAt) {
+          // Reconcile a retry to the original archive date without a second write or audit.
+          at = card.boardArchivedAt;
+          return { ok: true, event: { id: randomUUID(), at, actor: 'you', command: { type: 'card.archive', key: command.key }, correlationId: span.cid } };
+        }
+        writeAttempted = true;
+        if (!deps.patchTask(command.key, { boardArchivedAt: at })) return fail('CONFLICT', 'Card changed; refresh the Board');
+        break;
+      }
       default:
         return fail('INVALID_COMMAND', `${String(command.type)} is not a board command`);
     }
-    const event: ParamountEvent = { id: randomUUID(), at: new Date().toISOString(), actor: 'you', command: command as unknown as ParamountCommand, correlationId: span.cid };
+    const event: ParamountEvent = { id: randomUUID(), at, actor: 'you', command: applied as unknown as ParamountCommand, correlationId: span.cid };
     deps.appendEvent(event);
     deps.publish(event);
     return { ok: true, event };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Command failed';
+    if (cardMutation && writeAttempted) return fail('UNCERTAIN_STATE', `Card may have been saved; refresh the Board before retrying: ${message}`, error);
     return writeAttempted && command.type === 'board.columns'
       ? fail('UNCERTAIN_STATE', `Column order may have been saved; refresh the snapshot before retrying: ${message}`, error)
       : fail('INTERNAL', message, error);

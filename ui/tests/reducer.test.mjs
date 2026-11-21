@@ -83,3 +83,13 @@ test('card.update empty patch leaves fields unchanged but stamps updated', () =>
   assert.equal(next.cards[0].title, 'Old title');
   assert.equal(next.cards[0].updated, '2026-11-21T10:00:00.000Z');
 });
+
+test('card.archive retains the card, status and update time in the snapshot', () => {
+  for (const status of ['todo', 'doing', 'blocked', 'done']) {
+    const snap = baseSnap({ status });
+    const event = ev({ type: 'card.archive', key: 'NSC-99' });
+    const next = applyEvent(snap, event);
+    assert.deepEqual(next.cards, [{ ...snap.cards[0], boardArchivedAt: event.at }]);
+    assert.equal(applyEvent(next, { ...event, at: '2026-11-22T10:00:00.000Z' }), next);
+  }
+});

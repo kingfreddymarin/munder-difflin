@@ -83,6 +83,12 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
       };
       return audit({ ...s, cards: [...s.cards, card] }, ev, 'Created card', card.key, card.title, c.assignee ? [c.assignee] : []);
     }
+    case 'card.archive': {
+      const card = s.cards.find((x) => x.key === c.key);
+      if (!card || card.boardArchivedAt) return s;
+      const cards = s.cards.map((x) => x === card ? { ...x, boardArchivedAt: ev.at } : x);
+      return audit({ ...s, cards }, ev, 'Archived card', card.key, card.title, []);
+    }
     case 'card.update': {
       const card = s.cards.find((x) => x.key === c.key);
       if (!card) return s;

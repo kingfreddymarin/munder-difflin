@@ -125,6 +125,9 @@ export interface HiveTask {
   dependsOn: string[];
   priority: number;
   createdAt: string;
+  /** Hides the card from the Board while retaining its workflow status and history. */
+  boardArchivedAt?: string;
+  updatedAt?: string;
   /** Paramount extension links: parent task and owning team, without changing ledger routing. */
   parentId?: string;
   teamId?: string;

@@ -75,6 +75,8 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   };
   /** Board commands (paramount-board.ts); absent means unsupported. */
   board?: ParamountBoardDeps;
+  /** Main process verifies the owner UI sender. Omitted by non-UI callers. */
+  canMutateBoard?(): boolean;
   /** Opens allow-listed links and folders (paramount-shell.ts); absent means unsupported. */
   shell?: ParamountShellDeps;
   /** Artifact map behind each agent's terminal (paramount-terminal.ts); absent means unsupported. */
