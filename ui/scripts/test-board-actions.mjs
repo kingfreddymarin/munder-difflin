@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE ?? 'playwright');
 const { dispatchParamount } = require('../../test/load-ts.cjs')('src/main/paramount.ts');
 const url = process.env.BOARD_TEST_URL ?? 'http://127.0.0.1:4179';
 const key = 'NSC-231';
-async function fixture(t, { rejectUpdate = false } = {}) {
+async function fixture(t, { rejectUpdate = false, updateGate } = {}) {
   const browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_EXECUTABLE,
     args: process.env.CHROMIUM_SINGLE_PROCESS === '1' ? ['--single-process'] : [],
@@ -31,8 +31,9 @@ async function fixture(t, { rejectUpdate = false } = {}) {
     appendEvent() {}, publish() {},
   };
   await page.exposeFunction('testSnapshot', () => ({ registry: { agents: {} }, tasks: { tasks: [task] }, ptys: [], messages: [] }));
-  await page.exposeFunction('testDispatch', (command) => {
+  await page.exposeFunction('testDispatch', async (command) => {
     commands.push(command);
+    if (command.type === 'card.update' && updateGate) await updateGate;
     return dispatchParamount(command, deps);
   });
   await page.exposeFunction('testMove', (id, patch) => {
@@ -132,6 +133,43 @@ test('Edit fields cycles Tab and Shift+Tab within the dialog and restores card f
   await card.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   assert.equal(await focused(card), true);
 });
+
+for (const mode of ['Rename', 'Edit fields']) {
+  test(`${mode} skips pending Save and Cancel in both tab directions`, async (t) => {
+    let releaseUpdate;
+    const updateGate = new Promise((resolve) => { releaseUpdate = resolve; });
+    t.after(releaseUpdate);
+    const { page, card, menuItem } = await fixture(t, { rejectUpdate: true, updateGate });
+    await card.press('Shift+F10');
+    await menuItem(`${mode}…`).press('Enter');
+
+    const rename = mode === 'Rename';
+    const overlay = rename
+      ? page.getByRole('group', { name: `Rename ${key}` })
+      : page.getByRole('dialog', { name: `Edit ${key}` });
+    const title = overlay.getByLabel(rename ? 'New title' : 'Title', { exact: true });
+    await title.fill('Pending title');
+    await title.press('Enter');
+    await overlay.locator('button[aria-disabled="true"]').waitFor();
+
+    const remainingControls = rename ? [] : [
+      overlay.getByLabel('Description'),
+      overlay.getByLabel('Assignee'),
+      overlay.getByRole('radio', { name: 'P1' }),
+      overlay.getByRole('button', { name: 'Close' }),
+    ];
+    await expectTabSequence(page, 'Tab', [...remainingControls, title, ...remainingControls, title]);
+    const reverseControls = remainingControls.toReversed();
+    await expectTabSequence(page, 'Shift+Tab', [...reverseControls, title, ...reverseControls, title]);
+
+    releaseUpdate();
+    await overlay.getByText('Could not save. Try again.', { exact: true }).waitFor();
+    await page.keyboard.press('Escape');
+    await overlay.waitFor({ state: 'hidden' });
+    await card.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    assert.equal(await focused(card), true);
+  });
+}
 
 test('Rename and Edit fields keep the form on a failed desktop save and restore focus on Escape', async (t) => {
   const { page, card, menuItem, task } = await fixture(t, { rejectUpdate: true });

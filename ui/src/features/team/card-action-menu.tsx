@@ -105,7 +105,7 @@ export function CardActionMenuProvider({ children }: { children: React.ReactNode
         return;
       }
       if (event.key !== 'Tab' || mode !== 'rename' || !panel.current) return;
-      const controls = Array.from(panel.current.querySelectorAll<HTMLElement>('form :is(input, button):enabled'));
+      const controls = Array.from(panel.current.querySelectorAll<HTMLElement>('form :is(input, button):enabled:not([tabindex="-1"])'));
       const active = document.activeElement;
       const first = controls[0];
       const last = controls[controls.length - 1];
@@ -173,7 +173,8 @@ export function CardActionMenuProvider({ children }: { children: React.ReactNode
                 <label htmlFor="card-rename" className="text-xs">New title</label>
                 <input autoFocus id="card-rename" className="rounded border bg-background px-2 py-1 text-sm" value={rename}
                   onChange={(e) => setRename(e.target.value)} maxLength={200} />
-                <Button size="sm" aria-disabled={sending} disabled={!!updateReason || !rename.trim() || rename.trim() === card.title.trim()}>Save</Button>
+                <Button size="sm" aria-disabled={sending} tabIndex={sending ? -1 : undefined}
+                  disabled={!!updateReason || !rename.trim() || rename.trim() === card.title.trim()}>Save</Button>
                 <Button type="button" size="sm" variant="ghost" disabled={sending} onClick={() => { setStatus(''); setMode('actions'); }}>Cancel</Button>
               </form>
             )}
@@ -271,7 +272,8 @@ function EditCardDialog({ card, agents, onClose }: { card: Card; agents: { id: s
           {saveFailed && <p role="status" className="text-sm text-destructive">Could not save. Try again.</p>}
           <DialogFooter>
             <Button type="button" variant="ghost" disabled={sending} onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={!dirty || patch.title === '' || !!reason} aria-disabled={sending}>{sending ? 'Saving…' : 'Save'}</Button>
+            <Button type="submit" disabled={!dirty || patch.title === '' || !!reason} aria-disabled={sending}
+              tabIndex={sending ? -1 : undefined}>{sending ? 'Saving…' : 'Save'}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
