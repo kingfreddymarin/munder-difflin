@@ -47,10 +47,13 @@ test('chats is not in primary navigation; terminal is', () => {
 });
 
 test('Home, Team, agent links, the agent sheet and the sidebar open the terminal, not a chat', () => {
-  for (const path of ['src/pages/home.tsx', 'src/pages/team.tsx', 'src/components/app/agent-link.tsx', 'src/features/team/agent-sheet.tsx', 'src/app/app-shell.tsx']) {
+  for (const path of ['src/pages/home.tsx', 'src/pages/team.tsx', 'src/components/app/agent-link.tsx', 'src/app/app-shell.tsx']) {
     const code = src(path);
     assert.match(code, /go\(AGENT_VIEW, agentViewParams\(/, `${path} opens the agent's terminal`);
   }
+  // agent-sheet delegates open-terminal to the shared useAgentActions hook; check the hook carries the navigation
+  assert.match(src('src/features/team/agent-actions.ts'), /go\(AGENT_VIEW, agentViewParams\(/, 'agent-actions hook opens the terminal');
+  assert.match(src('src/features/team/agent-sheet.tsx'), /useAgentActions\(/, 'agent-sheet uses shared hook for terminal action');
   assert.match(src('src/pages/team.tsx'), /const openAgent = \(id: string\) => go\(AGENT_VIEW, agentViewParams\(id\)\)/);
   assert.match(src('src/pages/home.tsx'), /const openAgent = \(id: string\) => go\(AGENT_VIEW, agentViewParams\(id\)\)/);
   assert.doesNotMatch(src('src/features/team/agent-sheet.tsx'), /go\('chats'/);

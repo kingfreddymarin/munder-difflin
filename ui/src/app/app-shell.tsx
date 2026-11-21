@@ -24,6 +24,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { MoreHorizontal } from 'lucide-react';
 import { useDispatch } from '@/data/store';
 import { useFloorViewMode } from './floor-view-mode';
+import { AgentActionMenuProvider, useAgentActionTargets } from '@/features/team/agent-action-menu';
 import { FloorSearch } from '@/features/search/floor-search';
 import { isSearchTrigger } from '@/features/search/search-index';
 
@@ -45,6 +46,7 @@ function SidebarAgents() {
   const agents = useFloor((s) => s.agents);
   const terminals = useFloor((s) => s.terminals);
   const roster = React.useMemo(() => terminalRoster(agents, terminals), [agents, terminals]);
+  const actionTargets = useAgentActionTargets(React.useMemo(() => roster.map((r) => r.agent.id), [roster]));
   if (roster.length === 0) return null;
   const current = route.id === AGENT_VIEW ? route.params.get('a') : null;
   return (
@@ -60,7 +62,7 @@ function SidebarAgents() {
                   isActive={current === agent.id}
                   tooltip={`${agent.name}${live ? '' : ' (not running)'}`}
                   onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}
-                  onContextMenu={(e) => { e.preventDefault(); go('team', { agent: agent.id }); }}
+                  {...actionTargets[agent.id]}
                 >
                   <AgentAvatar agent={agent} size="sm" tooltip={false} />
                   <span className={cn('truncate', !live && 'text-muted-foreground')}>{agent.name}</span>
@@ -179,6 +181,7 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
   }, []);
 
   return (
+    <AgentActionMenuProvider>
     <SidebarProvider>
       <Sidebar collapsible="icon">
         {/* Drag strip under the macOS traffic lights; the window has no title bar of its own. */}
@@ -238,5 +241,6 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
       </SidebarInset>
       <FloorSearch open={searchOpen} onOpenChange={setSearchOpen} />
     </SidebarProvider>
+    </AgentActionMenuProvider>
   );
 }
