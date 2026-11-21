@@ -230,6 +230,7 @@ export function createElectronProvider(): ElectronProvider {
         const contextPct = finite(live.contextPct);
         return {
         id, name, initials: name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase(),
+        cwd: string(ptyByAgent.get(id)?.cwd, string(source.cwd)) || undefined,
         role: role(string(source.role).toLowerCase(), id === registryGod),
         // Live terminal activity decides working vs idle; breaker, blocked and crashed states still win.
         status: typeof live.busy === 'boolean' && (registered === 'idle' || registered === 'working') ? (live.busy ? 'working' : 'idle') : registered,

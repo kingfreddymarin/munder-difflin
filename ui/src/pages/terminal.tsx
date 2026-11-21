@@ -14,6 +14,7 @@ import { useDispatch, useFloor } from '@/data/store';
 import { cn } from '@/lib/utils';
 import { useRouter } from '@/app/router';
 import { selectedAgentId } from '@/app/agent-view';
+import { OpenWith } from '@/components/app/external-link';
 import { Screen } from '@/components/app/screen';
 import { PtyTerminalView } from '@/components/app/terminal/pty-terminal-view';
 import { SessionSide } from '@/components/app/terminal/session-side';
@@ -83,12 +84,14 @@ export function TerminalPage() {
           <AgentAvatar agent={agent} size="sm" tooltip={false} />
           <span className="truncate font-medium">{agent.name}</span>
           <span className={cn('truncate text-xs', statusMeta[agent.status].text)}>{statusMeta[agent.status].label}</span>
+          <span className="ml-auto" />
+          {session?.cwd && <OpenWith path={session.cwd} />}
           <Button
             ref={toggleButton}
             type="button"
             size="sm"
             variant="ghost"
-            className="ml-auto shrink-0 text-black hover:bg-[#FFC24B] hover:text-black focus-visible:border-[#FFC24B] focus-visible:ring-[#FFC24B] dark:text-white dark:hover:bg-[#FFC24B] dark:hover:text-black"
+            className="shrink-0 text-black hover:bg-[#FFC24B] hover:text-black focus-visible:border-[#FFC24B] focus-visible:ring-[#FFC24B] dark:text-white dark:hover:bg-[#FFC24B] dark:hover:text-black"
             aria-label={sidebarOpen ? 'Collapse terminal sidebar' : 'Expand terminal sidebar'}
             aria-expanded={sidebarOpen}
             aria-controls={sidebarId}

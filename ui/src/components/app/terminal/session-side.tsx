@@ -1,5 +1,5 @@
 // Side panel next to an agent's live terminal: what it is asking you (ASK ME), what agents say to each other,
-// and what it touched (artifact map) with Open in Warp. Every failure renders through ErrorNotice.
+// and what it touched (artifact map) with Open with. Every failure renders through ErrorNotice.
 import * as React from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/animate-ui/components/radix/tabs';
 import { Button } from '@/components/animate-ui/components/buttons/button';
@@ -8,6 +8,7 @@ import { RefreshCw } from '@/components/animate-ui/icons/refresh-cw';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { AgentAvatar } from '@/components/app/agent-avatar';
+import { OpenWith } from '@/components/app/external-link';
 import { ErrorNotice } from '@/components/app/error-notice';
 import { clock, stamp } from '@/components/app/format';
 import type { ParamountArtifact, ParamountArtifactMap } from '@/data/paramount-api';
@@ -143,20 +144,12 @@ type Load = { status: 'idle' | 'loading' } | { status: 'ready'; map: ParamountAr
 function ArtifactList({ agent }: { agent: Agent }) {
   const tools = useTerminalTools();
   const [load, setLoad] = React.useState<Load>({ status: 'idle' });
-  const [openError, setOpenError] = React.useState<unknown>(null);
   const fetchMap = React.useCallback(() => {
     if (!tools.artifacts) return;
     setLoad({ status: 'loading' });
     tools.artifacts(agent.id).then((map) => setLoad({ status: 'ready', map }), (error) => setLoad({ status: 'error', error: toBackendError(error, 'terminal.artifacts') }));
   }, [tools, agent.id]);
   React.useEffect(() => { fetchMap(); }, [fetchMap]);
-  const open = (dir: string) => {
-    if (!tools.openIn) return;
-    setOpenError(null);
-    tools.openIn('warp', dir).catch((error) => setOpenError(toBackendError(error, 'shell.openIn')));
-  };
-  const warpReason = !tools.openIn ? 'This build cannot open Warp.' : null;
-
   if (!tools.artifacts) return <p role="note" className="p-2 text-xs text-amber-300">Unavailable: this build has no artifact mapping.</p>;
   return (
     <div className="flex flex-col gap-2">
@@ -164,11 +157,9 @@ function ArtifactList({ agent }: { agent: Agent }) {
         <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[11px]">
           {load.status === 'ready' ? (load.map.repo ? `${load.map.repo.branch || 'detached'} @ ${load.map.repo.head}` : load.map.cwd || 'no working directory') : load.status === 'loading' ? 'Mapping…' : ''}
         </span>
-        {load.status === 'ready' && load.map.cwd && <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={!!warpReason} title={warpReason ?? undefined} onClick={() => open(load.map.repo?.root || load.map.cwd)}>Open in Warp</Button>}
+        {load.status === 'ready' && <OpenWith path={load.map.repo?.root || load.map.cwd} />}
         <Button size="sm" variant="ghost" className="h-7 px-2" aria-label="Refresh artifacts" onClick={fetchMap} disabled={load.status === 'loading'}><RefreshCw /></Button>
       </div>
-      {warpReason && <span role="note" className="text-xs text-amber-300">Unavailable: {warpReason}</span>}
-      {!!openError && <ErrorNotice error={openError} />}
       {load.status === 'error' && <ErrorNotice error={load.error} />}
       {load.status === 'ready' && <>
         {load.map.warnings.map((w) => <ErrorNotice key={w.errorId} error={new BackendError({ errorId: w.errorId, code: 'UNCERTAIN_STATE', message: `${w.source}: ${w.message}`, operation: 'terminal.artifacts' })} />)}
@@ -177,7 +168,7 @@ function ArtifactList({ agent }: { agent: Agent }) {
         {groupArtifacts(load.map.artifacts).map((g) => (
           <section key={g.id} className="flex flex-col gap-1">
             <h3 className="text-muted-foreground px-1 text-[11px] font-medium uppercase tracking-wide">{g.label} · {g.items.length}</h3>
-            <ul className="flex flex-col gap-1">{g.items.map((a, i) => <ArtifactRow key={`${a.kind}-${a.path ?? a.url ?? a.label}-${i}`} artifact={a} onOpen={open} warpReason={warpReason} />)}</ul>
+            <ul className="flex flex-col gap-1">{g.items.map((a, i) => <ArtifactRow key={`${a.kind}-${a.path ?? a.url ?? a.label}-${i}`} artifact={a} />)}</ul>
           </section>
         ))}
       </>}
@@ -185,8 +176,7 @@ function ArtifactList({ agent }: { agent: Agent }) {
   );
 }
 
-function ArtifactRow({ artifact: a, onOpen, warpReason }: { artifact: ParamountArtifact; onOpen: (dir: string) => void; warpReason: string | null }) {
-  const reason = warpReason ?? (a.dir ? null : 'Not on disk any more.');
+function ArtifactRow({ artifact: a }: { artifact: ParamountArtifact }) {
   return (
     <li className="bg-muted/40 flex items-center gap-2 rounded-md border px-2 py-1">
       {a.status && <Badge variant="warning" className="px-1 py-0 font-mono text-[10px]">{a.status}</Badge>}
@@ -196,7 +186,7 @@ function ArtifactRow({ artifact: a, onOpen, warpReason }: { artifact: ParamountA
         : <span className={cn('min-w-0 flex-1 truncate text-xs', a.kind !== 'commit' && 'font-mono')} title={a.path ?? a.label}>{a.label}</span>}
       {a.at && <span className="text-muted-foreground shrink-0 text-[10px]">{clock(a.at)}</span>}
       {(a.path || a.url) && <CopyButton content={a.path ?? a.url ?? ''} variant="ghost" size="sm" aria-label={`Copy ${a.label}`} />}
-      {a.kind !== 'link' && <Button size="sm" variant="ghost" className="h-6 shrink-0 px-1.5 text-[11px]" disabled={!!reason} title={reason ?? (a.dir ? `Open ${a.dir} in Warp` : undefined)} onClick={() => a.dir && onOpen(a.dir)}>Warp</Button>}
+      {a.dir && <OpenWith path={a.path ?? a.dir} warpPath={a.dir} />}
     </li>
   );
 }

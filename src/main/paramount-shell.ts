@@ -1,6 +1,6 @@
 /**
  * Paramount lane a-shell: open an external reference (GitHub, Azure DevOps) in
- * the browser, or open a folder in Warp or VS Code.
+ * the browser, or open a folder in Warp or a local file or folder in VS Code.
  *
  * Both are refused unless the input is exactly what they claim to be:
  * - a link must be http(s), carry no credentials, and point at an allow-listed host;
@@ -60,16 +60,22 @@ export function checkLink(raw: unknown, hosts: readonly string[] = PARAMOUNT_LIN
 
 /** The real directory to open, or why it is refused. */
 export function checkFolder(raw: unknown): Check<string> {
-  if (!plainString(raw) || !isAbsolute(raw)) return { ok: false, code: 'INVALID_INPUT', message: 'A folder must be an absolute path' };
+  return checkLocalPath(raw, false);
+}
+
+function checkLocalPath(raw: unknown, allowFile: boolean): Check<string> {
+  const label = allowFile ? 'Path' : 'Folder';
+  if (!plainString(raw) || !isAbsolute(raw)) return { ok: false, code: 'INVALID_INPUT', message: `${label} must be absolute` };
   let real: string;
   try {
     real = realpathSync(raw);
-    if (!statSync(real).isDirectory()) return { ok: false, code: 'INVALID_INPUT', message: 'Path is not a directory' };
+    const target = statSync(real);
+    if (!target.isDirectory() && !(allowFile && target.isFile())) return { ok: false, code: 'INVALID_INPUT', message: allowFile ? 'Path is neither a file nor a directory' : 'Path is not a directory' };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     return code === 'ENOENT' || code === 'ENOTDIR'
-      ? { ok: false, code: 'NOT_FOUND', message: 'Folder does not exist' }
-      : { ok: false, code: 'INTERNAL', message: `Folder cannot be read (${code ?? 'unknown error'})` };
+      ? { ok: false, code: 'NOT_FOUND', message: `${label} does not exist` }
+      : { ok: false, code: 'INTERNAL', message: `${label} cannot be read (${code ?? 'unknown error'})` };
   }
   return { ok: true, value: real };
 }
@@ -116,13 +122,13 @@ export async function runShellCommand(command: Record<string, unknown>, deps: Pa
   }
   if (deps.platform !== 'darwin') return fail('UNSUPPORTED', 'Opening a folder in Warp or VS Code is only available on macOS');
   const appName = PARAMOUNT_OPEN_IN_APPS[command.app as ParamountOpenInApp];
-  const folder = checkFolder(command.path);
-  if (!folder.ok) return fail(folder.code, folder.message);
-  const launched = await deps.launch(appName, folder.value);
+  const target = command.app === 'vscode' ? checkLocalPath(command.path, true) : checkFolder(command.path);
+  if (!target.ok) return fail(target.code, target.message);
+  const launched = await deps.launch(appName, target.value);
   if (!launched.ok) {
     return launched.missingApp
       ? fail('NOT_FOUND', `${appName} is not installed on this Mac`, launched.error)
-      : fail('INTERNAL', `${appName} did not open the folder: ${launched.error ?? 'unknown error'}`, launched.error);
+      : fail('INTERNAL', `${appName} did not open the path: ${launched.error ?? 'unknown error'}`, launched.error);
   }
-  return done({ app: command.app, path: folder.value });
+  return done({ app: command.app, path: target.value });
 }

@@ -5,6 +5,7 @@
 // Open another floor… is New Floor… (Cmd+Shift+N): that floor runs in its own window. Switch floor…
 // stops this floor's agents (they come back when it is opened again) and restarts at the picker.
 import * as React from 'react';
+import { OpenWith } from '@/components/app/external-link';
 import { Tile } from '@/components/app/tile';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { useDispatch, useFloor } from '@/data/store';
@@ -45,6 +46,7 @@ export function FloorLocationTile() {
   return <Tile title="Floor location" hint="where this floor's agents, tasks and memory live">
     <span className="text-muted-foreground break-all font-mono text-xs" data-testid="floor-location-path">{floor ?? 'No floor open'}</span>
     <div className="flex flex-wrap gap-2">
+      <OpenWith path={floor ?? undefined} />
       <Button variant="outline" size="sm" disabled={!floor || busy} onClick={() => void change()}>Change…</Button>
       <Button variant="ghost" size="sm" disabled={!floor} onClick={() => void reveal()}>Reveal in Finder</Button>
       <Button variant="ghost" size="sm" disabled={!floor} onClick={() => void dispatch({ type: 'floor.picker', open: true })}>Open another floor…</Button>
@@ -59,7 +61,7 @@ export function FloorLocationTile() {
       </div>
     </div>}
     {target && <div className="grid gap-2 rounded-md border p-3" data-testid="floor-location-confirm">
-      <span className="text-sm">New folder: <span className="break-all font-mono text-xs">{target}</span></span>
+      <div className="flex flex-wrap items-center gap-2"><span className="text-sm">New folder: <span className="break-all font-mono text-xs">{target}</span></span><OpenWith path={target} /></div>
       <span className="text-muted-foreground text-xs">Every agent on this floor stops and Paramount restarts on the new folder. Moving copies the hive, memory and roster there; the old folder is kept until you remove it.</span>
       <div className="flex flex-wrap gap-2">
         <Button disabled={busy} onClick={() => void apply('move')}>{busy ? 'Working…' : 'Move this floor there'}</Button>

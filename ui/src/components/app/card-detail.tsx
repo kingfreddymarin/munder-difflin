@@ -5,6 +5,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from '@/lib/utils';
 import type { Card as CardT, CardRef, CardStatus } from '@/data/types';
 import { useDispatch, useFloor, useUnsupported } from '@/data/store';
+import { OpenWith } from './external-link';
 import { AgentLink } from './agent-link';
 import { stamp } from './format';
 
@@ -45,23 +46,6 @@ export function CardRefButton({ card, cardRef, className }: { card: CardT; cardR
   );
 }
 
-/** Open the card's working directory in Warp or VS Code; disabled with the reason when it cannot. */
-function OpenInButtons({ card }: { card: CardT }) {
-  const dispatch = useDispatch();
-  const unsupported = useUnsupported();
-  return (
-    <>
-      {([['warp', 'Open in Warp'], ['vscode', 'Open in VS Code']] as const).map(([app, label]) => {
-        const command = { type: 'card.open', key: card.key, app } as const;
-        const reason = !card.dir ? 'The owner has not set a working directory on this card.' : unsupported(command);
-        return (
-          <Button key={app} size="sm" variant="outline" disabled={!!reason} title={reason ?? card.dir} onClick={() => void dispatch(command)}>{label}</Button>
-        );
-      })}
-    </>
-  );
-}
-
 export function MoveCardMenu({ card }: { card: CardT }) {
   const dispatch = useDispatch();
   const unsupported = useUnsupported();
@@ -93,7 +77,6 @@ export function CardDetail({ card }: { card: CardT }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
-        <OpenInButtons card={card} />
         {links.map((r) => <CardRefButton key={r.url} card={card} cardRef={r} className="px-1" />)}
       </div>
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -110,7 +93,7 @@ export function CardDetail({ card }: { card: CardT }) {
         <dd>{agent ? <AgentLink agent={agent} /> : <span className="text-muted-foreground">{card.agentId || 'unassigned'}</span>}</dd>
         {(card.workspace || card.tags.length > 0) && (<><dt className="text-muted-foreground">Tags</dt>
           <dd className="flex flex-wrap gap-1">{card.workspace && <Badge variant="outline">{card.workspace}</Badge>}{card.tags.map((t) => <Badge key={t} variant="secondary">{t}</Badge>)}</dd></>)}
-        {card.dir && (<><dt className="text-muted-foreground">Folder</dt><dd className="font-mono text-xs break-all">{card.dir}</dd></>)}
+        {card.dir && (<><dt className="text-muted-foreground">Folder</dt><dd className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs break-all">{card.dir}</span><OpenWith path={card.dir} cardKey={card.key} /></dd></>)}
         {card.people.length > 0 && (<><dt className="text-muted-foreground">People</dt><dd>{card.people.join(' · ')}</dd></>)}
       </dl>
       {card.dependsOn && <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-200">Depends on {card.dependsOn}</div>}
