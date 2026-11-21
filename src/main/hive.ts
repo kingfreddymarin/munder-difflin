@@ -21,7 +21,7 @@
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
-  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, readSync, closeSync
+  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, fchmodSync, openSync, readSync, closeSync
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative } from 'node:path';
 import { homedir } from 'node:os';
@@ -2045,10 +2045,14 @@ export class HiveManager {
     this.ensureHive();
     const path = join(root, 'tasks.json');
     const current = this.readJson<{ tasks?: unknown }>(path, { tasks: [] });
-    const merged = mergeTaskLedger(current?.tasks, tasks);
-    this.atomicWriteJson(path, { ...current, tasks: merged });
-    this.appendLog({ kind: 'tasks', count: merged.length });
-    this.commit(`hive: tasks (${merged.length})`);
+    this.persistTasks(path, current, mergeTaskLedger(current?.tasks, tasks));
+  }
+
+  private persistTasks(path: string, ledger: { tasks?: unknown }, tasks: unknown[]): void {
+    const mode = statSync(path).mode & 0o777;
+    this.atomicWriteJson(path, { ...ledger, tasks }, mode);
+    this.appendLog({ kind: 'tasks', count: tasks.length });
+    this.commit(`hive: tasks (${tasks.length})`);
   }
 
   /** Append one card against the latest on-disk ledger. Renderer callers must
@@ -2078,13 +2082,18 @@ export class HiveManager {
   /** Patch one card against the latest on-disk ledger, preserving unrelated
    *  cards and fields (notably webhook.tokenHash and Slack thread metadata). */
   patchTask(id: string, patch: Partial<Omit<HiveTask, 'id'>>): boolean {
-    const ledger = this.tasks() as { tasks?: HiveTask[] };
+    const root = this.root();
+    if (!root) return false;
+    const path = join(root, 'tasks.json');
+    if (!existsSync(path)) return false;
+    this.ensureHive();
+    const ledger = this.readJson<{ tasks?: HiveTask[] }>(path, { tasks: [] });
     const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
     const index = tasks.findIndex((task) => task?.id === id);
     if (index < 0) return false;
     const next = tasks.slice();
     next[index] = { ...tasks[index], ...patch, id };
-    this.writeTasks(next);
+    this.persistTasks(path, ledger, next);
     return true;
   }
 
@@ -3035,10 +3044,23 @@ export class HiveManager {
   private writeJson(p: string, data: unknown): void {
     writeFileSync(p, JSON.stringify(data, null, 2), 'utf8');
   }
-  private atomicWriteJson(p: string, data: unknown): void {
+  private atomicWriteJson(p: string, data: unknown, mode?: number): void {
     const tmp = `${p}.tmp-${shortRand()}`;
-    writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-    renameSync(tmp, p);
+    const json = JSON.stringify(data, null, 2);
+    const fd = openSync(tmp, 'wx', mode === undefined ? 0o666 : 0o600);
+    try {
+      try {
+        writeFileSync(fd, json, 'utf8');
+        // Creation applies the umask. Restore the existing mode before publishing.
+        if (mode !== undefined) fchmodSync(fd, mode);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, p);
+    } catch (error) {
+      try { unlinkSync(tmp); } catch { /* keep the original error */ }
+      throw error;
+    }
   }
 
   // — git (single committer, retry + stale-lock recovery) —

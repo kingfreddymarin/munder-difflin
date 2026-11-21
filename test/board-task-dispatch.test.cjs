@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const loadTs = require('./load-ts.cjs');
@@ -72,6 +72,67 @@ test('sends one human work order, persists its receipt and assignee, and reuses 
   assert.deepEqual(restarted.inbox('worker-pam').map((item) => item.id), [message.id]);
   assert.deepEqual(restarted.inbox('god-1'), []);
   assert.equal(events.length, 1);
+});
+
+test('dispatch preserves the existing ledger mode under umask 0022', {
+  skip: process.platform === 'win32'
+}, (t) => {
+  const { hive, run } = fixture(t);
+  assert.equal(hive.patchTask(card.id, { assignee: 'god-1', status: 'todo' }), true);
+  const path = join(hive.root(), 'tasks.json');
+  chmodSync(path, 0o600);
+  const previousUmask = process.umask(0o022);
+  try {
+    const result = run({ ...command, expectedAssignee: 'god-1' });
+    assert.equal(result.ok, true);
+    assert.equal(hive.tasks().tasks[0].assignee, 'worker-pam');
+    assert.equal(hive.tasks().tasks[0].boardDispatch.messageId, result.event.id);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+
+    chmodSync(path, 0o640);
+    process.umask(0o077);
+    hive.writeTasks(hive.tasks().tasks);
+    assert.equal(statSync(path).mode & 0o777, 0o640);
+  } finally {
+    process.umask(previousUmask);
+  }
+});
+
+test('a stale status edit preserves the dispatch receipt and retry delivers only once', (t) => {
+  const { home, hive, run } = fixture(t);
+  assert.equal(hive.patchTask(card.id, { assignee: 'god-1', status: 'todo' }), true);
+  const [stale, other] = hive.tasks().tasks;
+  const dispatch = { ...command, expectedAssignee: 'god-1' };
+  const first = run(dispatch);
+  assert.equal(first.ok, true);
+  hive.writeTasks([{ ...stale, status: 'blocked' }, other]);
+
+  const restarted = new HiveManager(() => home);
+  const [saved] = restarted.tasks().tasks;
+  const retry = run(dispatch, restarted);
+  assert.deepEqual({
+    status: saved.status,
+    assignee: saved.assignee,
+    receipt: saved.boardDispatch?.messageId,
+    retry: retry.event?.id,
+    inbox: restarted.inbox('worker-pam').map((message) => message.id)
+  }, {
+    status: 'blocked',
+    assignee: 'worker-pam',
+    receipt: first.event.id,
+    retry: first.event.id,
+    inbox: [first.event.id]
+  });
+
+  assert.equal(restarted.patchTask(card.id, { assignee: 'god-1' }), true);
+  assert.equal(restarted.tasks().tasks[0].assignee, 'god-1');
+  const intentional = run(dispatch, restarted);
+  assert.equal(intentional.ok, true);
+  assert.notEqual(intentional.event.id, first.event.id);
+  assert.equal(restarted.inbox('worker-pam').length, 2);
+
+  restarted.writeTasks([{ ...saved, status: 'doing' }, other]);
+  assert.equal(restarted.tasks().tasks[0].boardDispatch.messageId, intentional.event.id);
 });
 
 test('rejects stale selections, completed tasks, reserved or ineligible recipients and renderer-supplied content', (t) => {
