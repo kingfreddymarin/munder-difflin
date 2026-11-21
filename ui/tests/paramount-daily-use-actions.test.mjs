@@ -32,7 +32,7 @@ test('chat attachments and dictation require explicit actions and report failure
 });
 
 test('agent profile exposes an explicit provider/account/model switch that starts fresh', () => {
-  const sheet = source('../src/features/team/agent-sheet.tsx');
+  const sheet = source('../src/features/team/agent-profile.tsx');
   assert.match(sheet, /type: 'agent\.switch'/);
   assert.match(sheet, /LauncherSelect discovery=\{models\?\.launchers\} provider=\{switchProvider\}/);
   assert.match(sheet, /start fresh/);

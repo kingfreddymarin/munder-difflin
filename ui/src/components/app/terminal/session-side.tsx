@@ -1,7 +1,7 @@
 // Side panel next to an agent's live terminal: what it is asking you (ASK ME), what agents say to each other,
 // and what it touched (artifact map) with Open in Warp. Every failure renders through ErrorNotice.
 import * as React from 'react';
-import { Tabs, TabsList, TabsTrigger } from '@/components/animate-ui/components/radix/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/animate-ui/components/radix/tabs';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { CopyButton } from '@/components/animate-ui/components/buttons/copy';
 import { RefreshCw } from '@/components/animate-ui/icons/refresh-cw';
@@ -17,41 +17,55 @@ import type { Agent, Message } from '@/data/types';
 import { cn } from '@/lib/utils';
 import { agentTalk, groupArtifacts, openAsks } from './session-data';
 import { useRouter } from '@/app/router';
+import { AgentProfileForm, useAgentProfile } from '@/features/team/agent-profile';
 
-type Tab = 'asks' | 'talk' | 'artifacts' | 'updates';
+type Tab = 'asks' | 'talk' | 'artifacts' | 'updates' | 'profile';
 
-export function SessionSide({ agent, className }: { agent: Agent; className?: string }) {
+export function SessionSide({ agent, defaultProfile, className }: { agent: Agent; defaultProfile: boolean; className?: string }) {
   const messages = useFloor((s) => s.messages);
   const agents = useFloor((s) => s.agents);
   const asks = React.useMemo(() => openAsks(messages, agent.id), [messages, agent.id]);
   const { route } = useRouter();
-  const [tab, setTab] = React.useState<Tab>(route.params.get('tab') === 'updates' ? 'updates' : asks.length ? 'asks' : 'talk');
+  const [tab, setTab] = React.useState<Tab>(() => {
+    if (route.params.get('tab') === 'updates') return 'updates';
+    if (defaultProfile) return 'profile';
+    return asks.length ? 'asks' : 'talk';
+  });
   React.useEffect(() => { if (route.params.get('tab') === 'updates') setTab('updates'); }, [route.params]);
   const updates = messages.filter((m) => m.kind === 'system' && m.terminalAgentId === agent.id).sort((a, b) => b.at.localeCompare(a.at));
   return (
     <aside aria-label={`${agent.name} context`} className={cn('bg-card flex min-h-0 flex-col gap-2 overflow-hidden rounded-xl border p-2', className)}>
-      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
-        <TabsList className="w-full">
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="min-h-0 flex-1">
+        <TabsList aria-label="Terminal sidebar tabs" className="h-auto w-full shrink-0 flex-wrap">
           <TabsTrigger value="asks">Asks{asks.length ? ` · ${asks.length}` : ''}</TabsTrigger>
           <TabsTrigger value="talk">Agents talk</TabsTrigger>
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
           <TabsTrigger value="updates">Updates</TabsTrigger>
+          <TabsTrigger value="profile" className="text-black focus-visible:ring-[#FFC24B] data-[state=active]:bg-[#FFC24B] data-[state=active]:text-black dark:text-white dark:data-[state=active]:text-black">Profile</TabsTrigger>
         </TabsList>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          {tab === 'asks' && <AsksList asks={asks} agent={agent} />}
+          {tab === 'talk' && <TalkList messages={messages} agents={agents} agent={agent} />}
+          {tab === 'artifacts' && <ArtifactList agent={agent} />}
+          {tab === 'updates' && <div className="flex flex-col gap-2">
+            {!updates.length && <p className="text-muted-foreground p-2 text-sm">No system updates yet.</p>}
+            {updates.map((m) => <details key={m.id} className="rounded-lg border p-2">
+              <summary className="cursor-pointer text-xs">{m.text} · {stamp(m.at)}</summary>
+              <pre className="mt-2 overflow-x-auto text-xs whitespace-pre-wrap break-words">{m.details ?? m.text}</pre>
+            </details>)}
+          </div>}
+          <TabsContent value="profile" className="px-1 pb-1 [--primary:#FFC24B] [--primary-foreground:black] [--ring:#FFC24B]">
+            <SessionProfile agentId={agent.id} />
+          </TabsContent>
+        </div>
       </Tabs>
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-        {tab === 'asks' && <AsksList asks={asks} agent={agent} />}
-        {tab === 'talk' && <TalkList messages={messages} agents={agents} agent={agent} />}
-        {tab === 'artifacts' && <ArtifactList agent={agent} />}
-        {tab === 'updates' && <div className="flex flex-col gap-2">
-          {!updates.length && <p className="text-muted-foreground p-2 text-sm">No system updates yet.</p>}
-          {updates.map((m) => <details key={m.id} className="rounded-lg border p-2">
-            <summary className="cursor-pointer text-xs">{m.text} · {stamp(m.at)}</summary>
-            <pre className="mt-2 overflow-x-auto text-xs whitespace-pre-wrap break-words">{m.details ?? m.text}</pre>
-          </details>)}
-        </div>}
-      </div>
     </aside>
   );
+}
+
+function SessionProfile({ agentId }: { agentId: string }) {
+  const profile = useAgentProfile(agentId);
+  return <AgentProfileForm profile={profile} compact />;
 }
 
 function AsksList({ asks, agent }: { asks: Message[]; agent: Agent }) {

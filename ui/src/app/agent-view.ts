@@ -15,7 +15,7 @@ export function orchestratorOf(agents: Agent[]): Agent | undefined {
   return agents.find((a) => a.role === 'paramount');
 }
 
-/** Agents for the sidebar and the session list: the orchestrator first, then floor order,
+/** Agents for the main sidebar: the orchestrator first, then floor order,
  *  each marked live when it has a terminal. */
 export function terminalRoster(agents: Agent[], terminals: TerminalSession[]): Array<{ agent: Agent; live: boolean }> {
   const live = new Set(terminals.map((t) => t.agentId));
