@@ -4711,6 +4711,13 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   shell: paramountShellDeps((url) => shell.openExternal(url), (step) => paramountLog(step)),
   terminal: { messages: (agentId) => hive.voiceMessages({ agentId, limit: 200 }), logStep: (step) => paramountLog(step) },
   team: paramountTeamDeps(evt.sender),
+  // NSC-255: floor rules live in this floor's hive; suggestions come from its connected repos and the orchestrator.
+  rules: {
+    hiveRoot: () => (hive.enabled() ? hive.root() : null),
+    repos: () => readConfig().registeredRepos ?? [],
+    orchestratorId: () => hive.registry().godId ?? undefined,
+    askOrchestrator: (agentId, subject, body) => { hive.send({ to: agentId, act: 'request', subject, body, requires_reply: false }, 'human'); },
+  },
   savePreference: saveParamountPreference,
   // lane b-home-chats: ask replies are mailed as the human; direct questions are looked up by id.
   send: (msg) => { const sent = hive.send(msg, 'human'); analytics.trackMessageSent('hive'); return { ok: !!sent?.id }; },

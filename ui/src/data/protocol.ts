@@ -1,7 +1,7 @@
 import type { CouncilLauncherPick } from './paramount-api';
 // The contract between the UI and the core. The UI sends commands (intent);
 // the core validates them, appends events to the hive log, and pushes the events back.
-import type { ParamountBoardCommand, ParamountArtifactMap, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountOpenInApp, ParamountHirePlan, ParamountOrganization, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './paramount-api';
+import type { ParamountBoardCommand, ParamountArtifactMap, ParamountAgentDiscovery, ParamountAgentImport, ParamountAgentSource, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountOpenInApp, ParamountHirePlan, ParamountOrganization, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult, ParamountFloorRules, ParamountRuleCheck } from './paramount-api';
 import type { ObjectiveInput } from './objectives';
 import type { Access, Agent, AskMode, CardStatus, ChatView, HomeLayout, IterationSettings, Snapshot, YoloSettings } from './types';
 export type Command =
@@ -34,7 +34,7 @@ export type Command =
   | { type: 'floor.open'; home: string }
   | { type: 'floor.picker'; open: boolean }
   | { type: 'floor.switch' }
-  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; codexExecutionPolicy?: 'inherit' | 'workspace-ask' | 'workspace-auto' | 'full-ask' | 'full-auto'; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
+  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; codexExecutionPolicy?: 'inherit' | 'workspace-ask' | 'workspace-auto' | 'full-ask' | 'full-auto'; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null; rules?: string[] }
   | { type: 'accounts.list' }
   | { type: 'accounts.create'; provider: 'claude' | 'codex'; label: string }
   | { type: 'accounts.rename'; id: string; label: string }
@@ -94,4 +94,13 @@ export interface DataProvider {
   hire?(manifest: Record<string, unknown>, options?: { cwd?: string; confirm?: boolean; orchestrator?: boolean; launcher?: CouncilLauncherPick | null }): Promise<ParamountHirePlan>;
   /** Read-only: map artifacts touched by an agent. */
   artifacts?(agentId: string): Promise<ParamountArtifactMap>;
+  /** NSC-255 floor rules: Studio rules (protected), this floor's rules and suggestions waiting for review. */
+  floorRules?(): Promise<ParamountFloorRules>;
+  /** Read-only, works before a floor exists: validates and structures draft rules. */
+  checkFloorRules?(rules: Array<{ id?: string; text: string }>): Promise<ParamountRuleCheck>;
+  saveFloorRules?(rules: Array<{ id?: string; text: string }>, expected?: string): Promise<ParamountFloorRules>;
+  resetFloorRules?(expected?: string): Promise<ParamountFloorRules>;
+  reviewRuleSuggestion?(id: string, decision: 'approve' | 'reject', text?: string, expected?: string): Promise<ParamountFloorRules>;
+  /** Suggestions from the connected repos, and a request to Paramount for more. */
+  suggestFloorRules?(): Promise<{ rules: ParamountFloorRules; suggested: number; askedParamount: boolean }>;
 }

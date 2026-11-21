@@ -316,7 +316,7 @@ export interface OrchestratorFailure { agentId: string; provider: string; resume
  *  window yet (launch); `newFloor`: New Floor… is choosing a floor to start as its own process. */
 export type FloorProbeState = 'free' | 'held' | 'missing' | 'current' | 'data-folder';
 export interface FloorChoice { pending: boolean; newFloor: boolean; last: string | null; recents: Array<{ path: string; exists: boolean; state: FloorProbeState; heldBy?: string }> }
-export interface FloorSetup { floorLock?: FloorLockState; choice?: FloorChoice; launchers?: import('./paramount-api').CouncilLauncherDiscovery; complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
+export interface FloorSetup { floorLock?: FloorLockState; choice?: FloorChoice; ruleStarters?: string[]; launchers?: import('./paramount-api').CouncilLauncherDiscovery; complete: boolean; harnessHome: string | null; suggestedHome: string; engines: FloorSetupEngine[] }
 
 export interface Snapshot {
   /** Missing on providers without a setup stage (the sample provider); treat as set up. */

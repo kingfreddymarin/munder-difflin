@@ -35,6 +35,7 @@ function world(root) {
       refreshLaunchers: () => {}, hiveRoot: () => floor.root, orchestratorId: () => null,
       modelCatalog: () => [], appVersion: '0.4.6', launcherDiscovery: () => ({ status: 'ok', choices: [], profiles: [] })
     },
+    rules: { hiveRoot: () => floor.root },
     floorSetup: {
       launcherDiscovery: () => ({ status: 'ok', choices: [], profiles: [] }),
       config: () => ({ onboardingComplete: false, harnessHome: floor.root }),
@@ -51,7 +52,9 @@ function world(root) {
 const SETUP_SAFE = [
   ['launchers.refresh', { type: 'launchers.refresh' }],
   ['diagnostics.bundle', { type: 'diagnostics.bundle' }],
-  ['diagnostics.save', { type: 'diagnostics.save', name: 'paramount-diagnostics-20261115-202921.json' }]
+  ['diagnostics.save', { type: 'diagnostics.save', name: 'paramount-diagnostics-20261115-202921.json' }],
+  // NSC-255: Customize Rules checks draft rules before the floor exists.
+  ['rules.check', { type: 'rules.check', rules: [{ text: 'Run the tests before marking a task done.' }] }]
 ];
 
 test('the pre-floor allowlist is exactly the commands Setup sends that write no floor', () => {
