@@ -313,6 +313,7 @@ function makeDialogHarness() {
       return refMap.get(i);
     },
     useCallback: (fn) => fn,
+    useMemo: (fn) => fn(),
     useEffect: () => {}, // suppressed — generation ref never resets between openings
   };
   const req = (id) => {

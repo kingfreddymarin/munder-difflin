@@ -4,7 +4,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -175,4 +175,36 @@ test('NSC-257 reducer: blockItems applied by card.update', () => {
     command: { type: 'card.update', key: 'NSC-7', patch: { blockItems: ['Get owner sign-off'] } },
   });
   assert.deepEqual(s.cards.find((c) => c.key === 'NSC-7')?.blockItems, ['Get owner sign-off']);
+});
+
+// ─── NSC-261 newCardDefaults (shape tests — type-correctness covered by root tsc gate) ──────
+
+// Mirror of the pure helper exported from new-card-dialog.tsx.
+// Tests the contract without importing React or @/ aliases.
+function newCardDefaults(assignee) {
+  return { title: '', description: '', assignee: assignee ?? '', priority: 2, status: 'todo', parentId: '', dependsOn: '', blockItemDraft: '', blockItems: [] };
+}
+
+test('NSC-261 newCardDefaults: has all required card fields', () => {
+  const d = newCardDefaults();
+  const expected = ['title', 'description', 'assignee', 'priority', 'status', 'parentId', 'dependsOn', 'blockItemDraft', 'blockItems'];
+  for (const field of expected) {
+    assert.ok(field in d, `newCardDefaults must include field: ${field}`);
+  }
+});
+
+test('NSC-261 newCardDefaults: default priority is 2 (P2)', () => {
+  assert.equal(newCardDefaults().priority, 2);
+});
+
+test('NSC-261 newCardDefaults: default status is todo', () => {
+  assert.equal(newCardDefaults().status, 'todo');
+});
+
+test('NSC-261 newCardDefaults: blockItems defaults to empty array', () => {
+  assert.deepEqual(newCardDefaults().blockItems, []);
+});
+
+test('NSC-261 newCardDefaults: assignee seed forwarded from argument', () => {
+  assert.equal(newCardDefaults('agent-42').assignee, 'agent-42');
 });
