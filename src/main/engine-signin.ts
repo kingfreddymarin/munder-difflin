@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { LAUNCHER_AUTH_ENV } from './council-account-launchers';
 
 export type SignInEngine = 'claude' | 'codex';
@@ -63,7 +63,7 @@ export function createSignInMonitor(opts: { path: (engine: SignInEngine) => stri
   };
   const probe = (engine: SignInEngine, account?: SignInAccount): void => {
     const key = keyFor(engine, account);
-    const bin = account?.bin ?? opts.path(engine);
+    const bin = (account?.bin && isAbsolute(account.bin) ? account.bin : null) ?? opts.path(engine);
     const last = probed.get(key);
     if (!bin || pending.has(key) || (last && now() - last.at < STATUS_TTL_MS)) return;
     const check = run(bin, STATUS_ARGS[engine], 8000, environment(engine, account)).then((r) => {
@@ -89,7 +89,7 @@ export function createSignInMonitor(opts: { path: (engine: SignInEngine) => stri
     async refresh(engine: SignInEngine, account?: SignInAccount): Promise<SignInState> {
       const key = keyFor(engine, account);
       const env = environment(engine, account);
-      const bin = account?.bin ?? (opts.resolvePath ? await opts.resolvePath(engine) : opts.path(engine));
+      const bin = (account?.bin && isAbsolute(account.bin) ? account.bin : null) ?? (opts.resolvePath ? await opts.resolvePath(engine) : opts.path(engine));
       if (!bin) return { state: 'unknown', ...fields(account) };
       expired.delete(key);
       probed.set(key, { at: now(), state: 'unknown' });
