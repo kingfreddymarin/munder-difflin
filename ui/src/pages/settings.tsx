@@ -19,6 +19,7 @@ import { Screen } from '@/components/app/screen';
 import { CoreSettings } from '@/features/settings/core-settings';
 import { ProviderSettings } from '@/features/settings/provider-settings';
 import { MemorySettings } from '@/features/settings/memory-settings';
+import { FloorRulesPanel } from '@/features/settings/floor-rules';
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 
 export function SettingsPage() {
@@ -58,6 +59,7 @@ export function SettingsPage() {
           <TabsTrigger value="connections">Connections</TabsTrigger>
           <TabsTrigger value="team">Team</TabsTrigger>
           <TabsTrigger value="providers">AI engines</TabsTrigger>
+          <TabsTrigger value="rules">Floor rules</TabsTrigger>
           <TabsTrigger value="memory">Memory</TabsTrigger>
           <TabsTrigger value="autonomy">Autonomy & YOLO</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
@@ -121,6 +123,7 @@ export function SettingsPage() {
             </Tile>
           </TabsContent>
           <TabsContent value="providers"><ProviderSettings /></TabsContent>
+          <TabsContent value="rules"><FloorRulesPanel /></TabsContent>
           <TabsContent value="memory"><MemorySettings /></TabsContent>
           <TabsContent value="autonomy">
             <div className="grid gap-3 lg:grid-cols-2">

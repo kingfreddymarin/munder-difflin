@@ -15,6 +15,7 @@ import { defaultOrchestratorEngine } from './setup-defaults';
 import { chooseFolder } from './folder-pick';
 import { FloorRefused } from './floor-refused';
 import { findBridge } from '@/data/bridge';
+import { CustomizeRulesDialog } from '@/features/settings/floor-rules';
 
 type Stage = 'workspace' | 'launchers' | 'orchestrator';
 
@@ -36,6 +37,9 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
   const [pickError, setPickError] = React.useState<string | null>(null);
   // The folder Finish was refused for (another app holds its .floor-lock): show the refusal screen.
   const [refusedAt, setRefusedAt] = React.useState<string | null>(null);
+  // NSC-255: optional floor rules, written with the floor at Finish. Skipping leaves only the Studio rules.
+  const [rules, setRules] = React.useState<string[]>([]);
+  const [rulesOpen, setRulesOpen] = React.useState(false);
   const engine = setup.engines.find((e) => e.id === engineId);
   const homeOk = home.trim().startsWith('/');
   const canFinish = !!engine && engine.orchestrator && engine.installed && homeOk && !busy;
@@ -43,7 +47,7 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
   const finish = async () => {
     if (!engine) return;
     setBusy(true);
-    const ok = await dispatch({ type: 'setup.complete', home: home.trim(), engine: engine.id, ...(model ? { model } : {}), launcher, launcherDefaults, tempLauncher, autoMode, codexExecutionPolicy });
+    const ok = await dispatch({ type: 'setup.complete', home: home.trim(), engine: engine.id, ...(model ? { model } : {}), launcher, launcherDefaults, tempLauncher, autoMode, codexExecutionPolicy, ...(rules.length ? { rules } : {}) });
     setBusy(false);
     refresh();
     setRefusedAt(ok ? null : home.trim());
@@ -134,6 +138,11 @@ export function SetupFlow({ setup }: { setup: FloorSetup }) {
               <span className="flex-1 text-sm">YOLO mode: agents act without asking for approval</span>
               <Switch checked={autoMode} onCheckedChange={setAutoMode} aria-label="YOLO mode" />
             </div>
+            <div className="flex items-center gap-3">
+              <span className="flex-1 text-sm">{rules.length ? `Floor rules: ${rules.length} added to the Studio rules` : 'Floor rules (optional): only the Studio rules apply'}</span>
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => setRulesOpen(true)}>Customize rules…</Button>
+            </div>
+            <CustomizeRulesDialog open={rulesOpen} onOpenChange={setRulesOpen} starters={setup.ruleStarters ?? []} value={rules} onSave={setRules} />
           </div>
         )}
 

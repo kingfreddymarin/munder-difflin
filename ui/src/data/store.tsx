@@ -240,6 +240,14 @@ export function useTeamApi() {
     : null, [provider]);
 }
 
+/** NSC-255: the provider's floor rules calls, or null when it has none. `check` also works before a floor exists. */
+export function useRulesApi() {
+  const { provider } = useStore();
+  return React.useMemo(() => provider.floorRules && provider.checkFloorRules && provider.saveFloorRules && provider.resetFloorRules && provider.reviewRuleSuggestion
+    ? { get: provider.floorRules.bind(provider), check: provider.checkFloorRules.bind(provider), save: provider.saveFloorRules.bind(provider), reset: provider.resetFloorRules.bind(provider), review: provider.reviewRuleSuggestion.bind(provider), suggest: provider.suggestFloorRules?.bind(provider) }
+    : null, [provider]);
+}
+
 /** Lane e-terminal: the provider's artifact map, or null when it has none. */
 export function useTerminalTools() {
   const { provider } = useStore();

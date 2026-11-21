@@ -4,7 +4,7 @@ import { engineSignIns, externalTools, mutedSignInProviders, selectedSignInProvi
 import { floorChoiceOf } from './floor-choice';
 import { objectivesOf } from './objectives';
 import { findBridge, requireBridge } from './bridge';
-import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult } from './electron-api';
+import type { ParamountAgentDiscovery, ParamountArtifactMap, ParamountAgentImport, ParamountCommand, ParamountDiagnostics, ParamountDiagnosticsSave, ParamountHirePlan, ParamountRawSnapshot, ParamountResult, ParamountTeamCommand, ParamountTeamModels, ParamountTeamResult, ParamountRulesCommand, ParamountRulesResult } from './electron-api';
 import { BackendError, checkOk, isFailure, toBackendError } from './errors';
 import { askOptions, cardAsks, heartbeatUpdate, logActivity } from './projection';
 import type { Command, DataProvider, FloorEvent } from './protocol';
@@ -78,6 +78,8 @@ function floorSetupOf(value: unknown): FloorSetup | undefined {
     complete: v.complete,
     harnessHome: typeof v.harnessHome === 'string' ? v.harnessHome : null,
     suggestedHome: string(v.suggestedHome),
+    // NSC-255: starter ideas for the optional Customize Rules step.
+    ...(Array.isArray(v.ruleStarters) ? { ruleStarters: v.ruleStarters.filter((r): r is string => typeof r === 'string').slice(0, 10) } : {}),
     engines: array(v.engines).map((e) => ({
       id: string(e.id), label: string(e.label, string(e.id)), orchestrator: e.orchestrator === true, installed: e.installed === true,
       models: Array.isArray(e.models) ? e.models.filter((m): m is string => typeof m === 'string') : []
@@ -120,11 +122,16 @@ function status(value: string, breaker: string): Agent['status'] {
   return 'idle';
 }
 
-type OkResult = Extract<ParamountResult, { ok: true }> & Omit<ParamountTeamResult, 'ok' | 'event'>;
-type ResultPayload = 'diagnostics' | 'saved' | 'discovery' | 'imported' | 'models' | 'hire' | 'artifacts' | 'organization' | 'createdTeam' | 'delegated';
+type OkResult = Extract<ParamountResult, { ok: true }> & Omit<ParamountTeamResult, 'ok' | 'event'> & Omit<ParamountRulesResult, 'ok' | 'event'>;
+type ResultPayload = 'diagnostics' | 'saved' | 'discovery' | 'imported' | 'models' | 'hire' | 'artifacts' | 'organization' | 'createdTeam' | 'delegated' | 'floorRules' | 'ruleCheck';
 
 /** Sends a command whose answer is a payload on the result rather than a floor event. */
-async function query<K extends ResultPayload>(command: ParamountCommand | ParamountTeamCommand, payload: K, missing: string): Promise<NonNullable<OkResult[K]>> {
+async function query<K extends ResultPayload>(command: ParamountCommand | ParamountTeamCommand | ParamountRulesCommand, payload: K, missing: string): Promise<NonNullable<OkResult[K]>> {
+  return (await queryResult(command, payload, missing))[payload] as NonNullable<OkResult[K]>;
+}
+
+/** The whole ok result, once it carries `payload`. */
+async function queryResult(command: ParamountCommand | ParamountTeamCommand | ParamountRulesCommand, payload: ResultPayload, missing: string): Promise<OkResult> {
   const bridge = requireBridge();
   let result: ParamountResult;
   try {
@@ -135,7 +142,7 @@ async function query<K extends ResultPayload>(command: ParamountCommand | Paramo
   if (isFailure(result)) throw BackendError.fromFailure(result, command.type);
   const value = result?.ok ? (result as OkResult)[payload] : undefined;
   if (!value) throw BackendError.local('INTERNAL', missing, command.type);
-  return value as NonNullable<OkResult[K]>;
+  return result as OkResult;
 }
 
 /** Sends a command that only acts outside the floor (no snapshot change); any failure becomes a BackendError. */
@@ -443,6 +450,25 @@ export function createElectronProvider(): ElectronProvider {
     },
     saveOrganization(organization, expected): Promise<import('./paramount-api').ParamountOrganization> {
       return query({ type: 'team.org.save', organization, expected }, 'organization', 'The core did not save the team organization.').then((result) => { refresh(); return result; });
+    },
+    floorRules() {
+      return query({ type: 'rules.get' }, 'floorRules', 'The core returned no floor rules.');
+    },
+    checkFloorRules(rules) {
+      return query({ type: 'rules.check', rules }, 'ruleCheck', 'The core did not check the rules.');
+    },
+    saveFloorRules(rules, expected) {
+      return query({ type: 'rules.save', rules, ...(expected ? { expected } : {}) }, 'floorRules', 'The core did not save the floor rules.');
+    },
+    resetFloorRules(expected) {
+      return query({ type: 'rules.reset', ...(expected ? { expected } : {}) }, 'floorRules', 'The core did not reset the floor rules.');
+    },
+    reviewRuleSuggestion(id, decision, text, expected) {
+      return query({ type: 'rules.suggestion', id, decision, ...(text !== undefined ? { text } : {}), ...(expected ? { expected } : {}) }, 'floorRules', 'The core did not review the suggestion.');
+    },
+    async suggestFloorRules() {
+      const result = await queryResult({ type: 'rules.suggest' }, 'floorRules', 'The core returned no suggestions.');
+      return { rules: result.floorRules!, suggested: result.suggested ?? 0, askedParamount: result.askedParamount === true };
     },
     delegate(request): Promise<NonNullable<ParamountTeamResult['delegated']>> {
       return query(request, 'delegated', 'The core did not create delegated tasks.').then((result) => { refresh(); return result; });
