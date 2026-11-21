@@ -34,7 +34,7 @@ export type Command =
   | { type: 'floor.open'; home: string }
   | { type: 'floor.picker'; open: boolean }
   | { type: 'floor.switch' }
-  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; codexExecutionPolicy?: 'inherit' | 'workspace-ask' | 'workspace-auto' | 'full-ask' | 'full-auto'; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
+  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; codexExecutionPolicy?: 'inherit' | 'workspace-ask' | 'workspace-auto' | 'full-ask' | 'full-auto'; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null; rules?: string[] }
   | { type: 'accounts.list' }
   | { type: 'accounts.create'; provider: 'claude' | 'codex'; label: string }
   | { type: 'accounts.rename'; id: string; label: string }

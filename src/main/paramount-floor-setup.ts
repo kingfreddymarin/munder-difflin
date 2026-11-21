@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { ParamountCommand, ParamountErrorCode, ParamountEvent, ParamountResult } from '../preload/paramount';
 import type { FloorGateState } from './floor-lock';
+import { STARTER_RULES, applyDraftRules, hasErrors, readFloorRules, writeFloorRules, type FloorRulesDoc } from './floor-rules';
 
 export interface FloorSetupEngine {
   id: string;
@@ -32,6 +33,8 @@ export interface FloorSetupState {
   floorLock?: FloorGateState;
   /** The launch floor chooser: pending until the human opens a floor in this run. */
   choice?: FloorChoice;
+  /** NSC-255: starter ideas for the optional Customize Rules step; only while setting up. */
+  ruleStarters?: string[];
 }
 
 /** The floor picker (owner requests 2026-11-12, Munder 0.5.7 parity). `pending`: no floor is open in
@@ -91,13 +94,15 @@ export function floorSetupState(deps: FloorSetupDeps): FloorSetupState {
     ...(!complete && deps.launcherDiscovery ? { launchers: publicDiscovery(deps.launcherDiscovery()) } : {}),
     ...(deps.floor ? { floorLock: deps.floor.state() } : {}),
     ...(complete && deps.floor?.choice ? { choice: deps.floor.choice() } : {}),
+    ...(!complete ? { ruleStarters: [...STARTER_RULES] } : {}),
     // Only the setup screen lists engines. Probing them costs a login-shell `which` per missing
     // CLI on the main thread, so a set-up floor skips it on every snapshot (NSC-216).
     engines: complete ? [] : deps.engines()
   };
 }
 
-const ALLOWED = ['type', 'home', 'engine', 'model', 'autoMode', 'codexExecutionPolicy', 'launcher', 'launcherDefaults', 'tempLauncher'];
+const ALLOWED = ['type', 'home', 'engine', 'model', 'autoMode', 'codexExecutionPolicy', 'launcher', 'launcherDefaults', 'tempLauncher', 'rules'];
+const MAX_SETUP_RULES = 20;
 const oneLine = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= max && !/[\r\n\0]/.test(v);
 
 /** `setup.complete`; null for any other command. */
@@ -135,6 +140,25 @@ export function dispatchFloorSetup(command: Record<string, unknown>, deps: Floor
     }
   } catch (e) { return fail('INVALID_INPUT', e instanceof Error ? e.message : 'Invalid default launcher'); }
   const home = command.home.trim();
+  // NSC-255: optional floor rules from Customize Rules. Checked before anything is written; a floor
+  // folder that already has rules keeps them and gets these added.
+  let rulesDoc: FloorRulesDoc | null = null;
+  if (command.rules !== undefined) {
+    const list = command.rules;
+    if (!Array.isArray(list) || list.length > MAX_SETUP_RULES || list.some((t) => typeof t !== 'string' || t.length > 2_000)) return fail('INVALID_INPUT', `Floor rules are up to ${MAX_SETUP_RULES} sentences`);
+    const texts = (list as string[]).filter((t) => t.trim());
+    if (texts.length) {
+      // An unreadable rules file reads as empty, so setup replaces it rather than failing.
+      const base = readFloorRules(join(home, 'hive')).doc;
+      const offset = base.rules.length;
+      const next = applyDraftRules(base, [...base.rules.map((r) => ({ id: r.id, text: r.text })), ...texts.map((text) => ({ text }))], new Date().toISOString());
+      if (hasErrors(next.problems)) {
+        const p = next.problems.find((x) => x.level === 'error')!;
+        return fail('INVALID_INPUT', p.index === undefined ? p.message : `Rule ${p.index - offset + 1}: ${p.message}`);
+      }
+      rulesDoc = next.doc;
+    }
+  }
   const ownData = deps.floor?.dataFolderRefusal?.(home);
   if (ownData) return fail('INVALID_INPUT', ownData);
   // Munder's floor lock before anything is written there (launcher picks, the hive itself).
@@ -147,6 +171,7 @@ export function dispatchFloorSetup(command: Record<string, unknown>, deps: Floor
     for (const [provider, pick] of Object.entries(defaults ?? {})) saveLauncherPick(join(home, 'hive'), 'default', pick as LauncherPick | null, provider);
     if (command.tempLauncher !== undefined) saveLauncherPick(join(home, 'hive'), 'temps', command.tempLauncher as LauncherPick | null);
     if (command.launcher !== undefined) saveLauncherPick(join(home, 'hive'), 'orchestrator', command.launcher as LauncherPick | null);
+    if (rulesDoc) writeFloorRules(join(home, 'hive'), rulesDoc);
     deps.complete({ ...(validExecutionPolicy(command.codexExecutionPolicy) ? { codexExecutionPolicy: command.codexExecutionPolicy } : {}), harnessHome: home, godProvider: engine.id, godModel: model || '', ...(typeof command.autoMode === 'boolean' ? { autoMode: command.autoMode } : {}), onboardingComplete: true });
   } catch (error) {
     return fail('UNCERTAIN_STATE', `Setup may be partly saved; reopen Paramount before retrying: ${error instanceof Error ? error.message : String(error)}`, error);

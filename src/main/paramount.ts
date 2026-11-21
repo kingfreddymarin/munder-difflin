@@ -16,6 +16,7 @@ import { runShellCommand, type ParamountShellDeps } from './paramount-shell';
 import { runTerminalCommand, type ParamountTerminalDeps } from './paramount-terminal';
 import type { ParamountArtifactMap } from '../preload/paramount';
 import { dispatchTeam, type ParamountTeamDeps } from './paramount-team';
+import { dispatchRules, type ParamountRulesDeps } from './paramount-floor-rules';
 import { AGENT_PROVIDER_PRESETS } from '../shared/agentProvider';
 
 const DIAGNOSTICS_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/;
@@ -35,6 +36,8 @@ export interface ParamountDeps extends Partial<Pick<HomeChatsDeps, 'send' | 'mes
   savePreference(key: 'profile' | 'setup' | 'home' | 'chats' | 'objectives' | 'signInReminders', value: Record<string, unknown>): void;
   /** First-run floor setup (`setup.complete`); absent means unsupported. */
   floorSetup?: FloorSetupDeps;
+  /** NSC-255 floor rules (`rules.*`); absent means unsupported. */
+  rules?: ParamountRulesDeps;
   appendEvent(event: ParamountEvent): void;
   /** False while no floor is chosen (fresh profile in Setup); see paramount-pre-floor.ts. */
   floorLogAvailable?(): boolean;
@@ -153,6 +156,7 @@ export function dispatchParamount(command: unknown, deps: ParamountDeps, span: S
   if (isBoardCommand(command.type)) return dispatchBoard(command, deps, span);
   const setup = dispatchFloorSetup(command, deps.floorSetup, span); if (setup) return setup;
   const team = dispatchTeam(command, deps, span); if (team) return team;
+  const rules = dispatchRules(command, deps, span); if (rules) return rules;
   if (command.type === 'terminal.artifacts') {
     // git runs off the main thread; the answer follows when it is done.
     const r = runTerminalCommand(command, deps.terminal, deps.agents(), span.cid, fail);

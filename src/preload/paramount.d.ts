@@ -41,7 +41,7 @@ export type ParamountCommand =
   /** The floor another app held: try to claim it again, or go back to setup to pick another. */
   | { type: 'floor.retry' }
   | { type: 'floor.choose-another' }
-  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; codexExecutionPolicy?: 'inherit' | 'workspace-ask' | 'workspace-auto' | 'full-ask' | 'full-auto'; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null }
+  | { type: 'setup.complete'; home: string; engine: string; model?: string; autoMode?: boolean; codexExecutionPolicy?: 'inherit' | 'workspace-ask' | 'workspace-auto' | 'full-ask' | 'full-auto'; launcher?: CouncilLauncherPick | null; launcherDefaults?: Record<string, CouncilLauncherPick | null>; tempLauncher?: CouncilLauncherPick | null; rules?: string[] }
   /** Read-only: returns a redacted diagnostics bundle on the result. */
   | { type: 'diagnostics.bundle'; logLines?: number }
   /** Saves the same redacted bundle as a JSON file through the core's save dialog.
@@ -407,4 +407,47 @@ export type ParamountTeamResult = Extract<ParamountResult, { ok: true }> & {
   createdTeam?: ParamountOrganization['teams'][number];
   delegated?: { parentKey: string; childKeys: string[] };
   hire?: ParamountHirePlan;
+};
+
+// NSC-255: floor rules (Settings > Floor rules, Customize Rules at floor creation).
+export type ParamountRuleWhen = 'always' | 'on-start' | 'before-commit' | 'before-push' | 'before-pr' | 'before-done';
+export type ParamountRuleKind = 'require' | 'forbid' | 'prefer';
+export interface ParamountRuleProblem {
+  level: 'error' | 'warning';
+  code: 'invalid' | 'unsafe' | 'conflict' | 'duplicate' | 'redundant' | 'limit' | 'unreadable';
+  /** Plain language, shown as is. */
+  message: string;
+  /** The draft rule (0-based) it is about. */
+  index?: number;
+  studioRuleId?: string;
+}
+export interface ParamountStudioRule { id: string; text: string; why: string }
+export interface ParamountFloorRule { id: string; text: string; when: ParamountRuleWhen; kind: ParamountRuleKind; source: 'you' | 'paramount'; addedAt: string }
+export interface ParamountRuleSuggestion { id: string; text: string; when: ParamountRuleWhen; kind: ParamountRuleKind; reason?: string; from: string; suggestedAt: string; problems: ParamountRuleProblem[] }
+export interface ParamountFloorRules {
+  /** Built in, protected: they apply to every floor and cannot be changed. */
+  studio: ParamountStudioRule[];
+  /** This floor's own rules; they add to the Studio rules. */
+  rules: ParamountFloorRule[];
+  /** Waiting for review; none is active until approved. */
+  suggestions: ParamountRuleSuggestion[];
+  revision: string;
+  problems: ParamountRuleProblem[];
+}
+export interface ParamountRuleCheck { rules: Array<{ id?: string; text: string; when: ParamountRuleWhen; kind: ParamountRuleKind }>; problems: ParamountRuleProblem[] }
+export type ParamountRulesCommand =
+  | { type: 'rules.get' }
+  /** Read-only, works before a floor exists: validates and structures draft rules. */
+  | { type: 'rules.check'; rules: Array<{ id?: string; text: string }> }
+  | { type: 'rules.save'; rules: Array<{ id?: string; text: string }>; expected?: string }
+  /** Removes this floor's rules; Studio rules and queued suggestions stay. */
+  | { type: 'rules.reset'; expected?: string }
+  | { type: 'rules.suggestion'; id: string; decision: 'approve' | 'reject'; text?: string; expected?: string }
+  /** Suggestions from the connected repos, and a request to Paramount for more. */
+  | { type: 'rules.suggest' };
+export type ParamountRulesResult = Extract<ParamountResult, { ok: true }> & {
+  floorRules?: ParamountFloorRules;
+  ruleCheck?: ParamountRuleCheck;
+  suggested?: number;
+  askedParamount?: boolean;
 };
