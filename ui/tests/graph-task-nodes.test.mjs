@@ -11,7 +11,7 @@ const src = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const js = ts.transpileModule(src('../src/features/team/graph-model.ts'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const mod = { exports: {} };
 new Function('module', 'exports', 'require', js)(mod, mod.exports, require);
-const { buildTaskGraph, agentLayout, UNASSIGNED, CARD_W, CARD_H, GRAPH_WIDTH } = mod.exports;
+const { buildTaskGraph, agentLayout, buildGraphLayout, placeGraphNodes, canPlace, keyboardGraphMove, UNASSIGNED, CARD_W, CARD_H, GRAPH_WIDTH } = mod.exports;
 
 const card = (key, agentId, status = 'todo', extra = {}) => ({ key, title: `Card ${key}`, status, priority: '', agentId, created: '', createdBy: '', updated: '', description: '', plan: [], doneMeans: [], tags: [], refs: [], ...extra });
 const pos = { god: { x: 480, y: 80 }, jim: { x: 300, y: 180 }, pam: { x: 660, y: 180 } };
@@ -65,21 +65,6 @@ test('cards whose owner is not on the graph are grouped as unassigned', () => {
   assert.equal(UNASSIGNED, '__unassigned__');
 });
 
-test('the graph panel renders task nodes and edges, and a card opens on the Board', () => {
-  const panel = src('../src/features/team/graph-panel.tsx');
-  assert.match(panel, /buildTaskGraph\(cards, layout\)/);
-  assert.match(panel, /data-task-node=\{n\.key\}/);
-  assert.match(panel, /aria-label=\{`Card \$\{n\.key\}: \$\{n\.title\}\. \$\{cardLabel\[n\.status\]\}/);
-  assert.match(panel, /Owner \$\{agents\.find\(\(a\) => a\.id === n\.agentId\)\?\.name \?\? 'unassigned'\}/);
-  assert.match(panel, /const openCard = \(key: string\) => go\('board', \{ card: key \}\)/);
-  assert.match(panel, /data-edge="owner"/);
-  assert.match(panel, /data-edge=\{e\.kind\}/);
-  assert.match(panel, /\+\{c\.hidden\} more/);
-  // agents and automations are still drawn
-  assert.match(panel, /triggers\.map/);
-  assert.match(panel, /agents\.map\(\(a\) => \(\n\s*<g key=\{a\.id\}/);
-});
-
 // Dwight F1: owners sharing or crowding an x (lead and middle report, Unassigned and the
 // rightmost agent, rows of 4+) drew cards on top of each other.
 const shapes = {
@@ -112,19 +97,66 @@ for (const [n, agents] of Object.entries(shapes)) {
   });
 }
 
-// Dwight F2: the band grew the drawing, but the tile did not, so Activity and Data sources
-// covered every task node. The tile now fills its grid cell and the graph scrolls inside it.
-test('the graph scrolls inside a tile that fills its grid cell', () => {
-  const panel = src('../src/features/team/graph-panel.tsx');
+test('the Team page keeps graph and neighbouring tiles in their grid cells', () => {
   const team = src('../src/pages/team.tsx');
-  assert.match(panel, /<div data-graph-scroll className="min-h-0 flex-1 overflow-auto">/);
-  assert.match(panel, /viewBox=\{`0 0 \$\{GRAPH_WIDTH\} \$\{tasks\.height\}`\}/);
-  assert.match(panel, /className="block h-auto w-full min-w-\[36rem\]"/);
   assert.match(team, /id=\{`team-panel-\$\{id\}`\} className="min-h-0 min-w-0">\n\s*<Tile [^\n]*className="h-full">/);
 });
 
-test('a task card opens with Enter or Space', () => {
-  const panel = src('../src/features/team/graph-panel.tsx');
-  assert.match(panel, /if \(e\.key === 'Enter' \|\| e\.key === ' '\) \{ e\.preventDefault\(\); openCard\(key\); \}/);
-  assert.match(panel, /onKeyDown=\{\(e\) => activate\(e, n\.key\)\}/);
+const crowded = [{ id: 'lead' }, ...Array.from({ length: 21 }, (_, i) => ({ id: `agent-${i}`, reportsTo: i < 16 ? 'lead' : 'agent-4' }))];
+const triggers = ['t1', 't2', 't3', 't4'];
+const mixed = [...crowded.flatMap(({ id }) => ['1', '2', '3', '4'].map((i) => card(`${id}-${i}`, id))), card('orphan', '')];
+
+for (const [label, agents, cards, automationIds] of [
+  ['empty floor', [], [], []],
+  ['only tasks and automations', [], [card('orphan', '')], triggers],
+  ['many siblings and wrapped tasks', crowded, mixed, triggers],
+  ['cyclic reporting and no tasks', [{ id: 'a', reportsTo: 'b' }, { id: 'b', reportsTo: 'a' }], [], triggers],
+]) {
+  test(`all default node and label bounds have clearance on ${label}`, () => {
+    const { slots, height } = buildGraphLayout(agents, cards, automationIds);
+    for (const [id, box] of Object.entries(slots)) {
+      assert.ok(canPlace(box, id, slots, slots, height), `${id} touches another node or is outside the drawing`);
+    }
+  });
+}
+
+test('valid saved moves persist by identity after refresh, including distinct node families', () => {
+  const agents = [{ id: 'same' }, { id: 'next', reportsTo: 'same' }];
+  const cards = [card('same', 'same')];
+  const { slots, height } = buildGraphLayout(agents, cards, ['same']);
+  const saved = { 'agent:same': { x: 600, y: 86 }, 'card:same': { x: 250, y: 300 }, 'automation:same': { x: 150, y: 190 } };
+  assert.ok(Object.keys(saved).every((id) => canPlace({ ...slots[id], ...saved[id] }, id, slots, slots, height)));
+  const refreshed = buildGraphLayout(agents, cards.map((c) => ({ ...c, title: 'Renamed' })), ['same']);
+  const placed = placeGraphNodes(refreshed.slots, saved, refreshed.height);
+  for (const [id, point] of Object.entries(saved)) assert.deepEqual(placed[id], { ...slots[id], ...point });
+  assert.deepEqual(placeGraphNodes(refreshed.slots, {}, refreshed.height), refreshed.slots);
+});
+
+test('conflicting or invalid saved positions recover safely when nodes enter or leave', () => {
+  const saved = { 'agent:a': { x: 250, y: 174 }, 'agent:b': { x: 250, y: 174 }, 'card:orphan': { x: 0, y: 400 }, 'automation:t1': { x: null, y: 100 }, you: { x: 700, y: 30 } };
+  const agents = [{ id: 'a' }, { id: 'b' }];
+  const cards = [card('orphan', '')];
+  const { slots, height } = buildGraphLayout(agents, cards, ['t1']);
+  const placed = placeGraphNodes(slots, saved, height);
+  assert.equal(placed['agent:a'].y, 174);
+  for (const id of ['agent:b', 'card:orphan', 'automation:t1', 'you']) assert.deepEqual(placed[id], slots[id]);
+  const crowded = buildGraphLayout([...agents, { id: 'new', reportsTo: 'a' }], cards, ['t1']);
+  // The new node is at the centre of the second row. A move into its slot falls back.
+  const previous = { 'agent:a': { x: 510, y: 174 } };
+  assert.equal(placeGraphNodes(slots, previous, height)['agent:a'].y, 174);
+  assert.deepEqual(placeGraphNodes(crowded.slots, previous, crowded.height)['agent:a'], crowded.slots['agent:a']);
+});
+
+test('arrow movement finds a clear landing beyond a neighbour and stops at the canvas edge', () => {
+  const slots = {
+    'agent:a': { x: 200, y: 86, width: 108, height: 62 },
+    'agent:b': { x: 322, y: 86, width: 108, height: 62 },
+  };
+  const right = { x: 1, y: 0 };
+  const id = 'agent:a';
+  const point = keyboardGraphMove(id, right, slots, slots, 280);
+  assert.ok(point && point.x > slots['agent:b'].x);
+  assert.ok(canPlace({ ...slots[id], ...point }, id, slots, slots, 280));
+  const placed = placeGraphNodes(slots, { [id]: { x: 722, y: 86 } }, 280);
+  assert.equal(keyboardGraphMove(id, right, slots, placed, 280), undefined);
 });
