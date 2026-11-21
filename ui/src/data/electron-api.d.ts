@@ -1,4 +1,5 @@
 import type { SideAgentAction, SideAgentProvider, SideAgentResult, SideAgentState } from '../../../src/shared/sideAgent';
+import type { FloorOverview } from '../../../src/shared/floor-overview';
 import type { ParamountPreloadAPI } from './paramount-api';
 
 export type * from './paramount-api';
@@ -9,6 +10,9 @@ export type ElectronBridge = ParamountPreloadAPI & {
   sideAgentState?(): Promise<SideAgentState>;
   sideAgentAct?(action: SideAgentAction, provider?: SideAgentProvider): Promise<SideAgentResult>;
   onSideAgentChanged?(cb: (disposedPtyId?: string) => void): () => void;
+  listFloorViews?(): Promise<FloorOverview[]>;
+  focusFloorView?(id: string): Promise<boolean>;
+  onFloorViewControls?(callback: () => void): () => void;
   resizePty?(id: string, cols: number, rows: number): Promise<{ ok: boolean; error?: string }>;
   killPty?(id: string): Promise<{ ok: boolean; error?: string }>;
   // Terminal (lane e-terminal): the same calls Munder's own terminal uses.

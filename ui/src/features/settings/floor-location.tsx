@@ -9,6 +9,7 @@ import { Tile } from '@/components/app/tile';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { useDispatch, useFloor } from '@/data/store';
 import { findBridge } from '@/data/bridge';
+import { FloorViewSettings } from '@/app/floor-view-mode';
 import { chooseFolder } from '@/app/folder-pick';
 
 export function FloorLocationTile() {
@@ -49,6 +50,7 @@ export function FloorLocationTile() {
       <Button variant="ghost" size="sm" disabled={!floor} onClick={() => void dispatch({ type: 'floor.picker', open: true })}>Open another floor…</Button>
       <Button variant="ghost" size="sm" disabled={!floor || busy} onClick={() => setSwitching(true)}>Switch floor…</Button>
     </div>
+    <FloorViewSettings />
     {switching && <div className="grid gap-2 rounded-md border p-3" data-testid="switch-floor-confirm">
       <span className="text-sm">Every agent on this floor stops. They start again when you open this floor again. Paramount then asks which floor to open. Floors in other windows keep running.</span>
       <div className="flex gap-2">

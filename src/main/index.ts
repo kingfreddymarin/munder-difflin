@@ -5,6 +5,7 @@ import { councilBuild, councilVersion, floorProcessHome, isFloorProcess, paramou
 import { codexExecutionArgs, useCodexRemoteControl } from '../shared/executionPolicy';
 import { bootFloorPlan, copyFloorMovedState, copyFloorPersistedState, dataFolderRefusal, FloorPersistedStateCopyError, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
 import { mergeAccountProfiles, resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
+import { createFloorOverview, projectFloorRows } from './floor-overview';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { type IpcMainInvokeEvent, app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn, spawnSync } from 'node:child_process';
@@ -2574,8 +2575,13 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   // navigation must NOT flip readiness off (the renderer only drains on mount,
   // so a later deep link would otherwise queue and sit until a full reload).
   win.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) floorControlsDocument.delete(wc);
     if (details.isMainFrame) rendererReadyForHires = false;
   });
+  wc.on('did-frame-navigate', (_event, _url, _code, _status, isMainFrame, processId, frameId) => {
+    if (isMainFrame) floorControlsDocument.set(wc, { processId, frameId, ready: false });
+  });
+  wc.on('render-process-gone', () => floorControlsDocument.delete(wc));
 
   // Paramount: the UI is the separate Paramount app, never src/renderer.
   // Floors run on their own partition, so the scheme is registered per session.
@@ -4055,6 +4061,79 @@ function paramountPublish(event: ParamountEvent): void {
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', event);
   }
 }
+const floorOverview = createFloorOverview({
+  shared: sharedDataDir(),
+  profile: app.getPath('userData'),
+  home: floorHome,
+  rows: () => {
+    const now = Date.now();
+    return projectFloorRows(hive.registry(), hive.tasks(), (id) => {
+      const pty = ptyForAgent(id);
+      const busy = pty && now - (ptyManager.lastOutputAt(pty) ?? 0) < WORKER_WAKE_IDLE_MS;
+      return { status: !pty ? 'offline' : busy ? 'working' : 'idle', breaker: breaker.levelFor(id) };
+    }, roster.read()?.agents ?? []);
+  },
+  focus: () => {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow();
+    pendingFloorControls.set(win.webContents, ++floorControlsRequestId);
+    deliverFloorControls(win.webContents);
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    return true;
+  }
+});
+
+// The UI subscribes after its first snapshot, which can finish after page load.
+// Retain the request in main until the target's listener has handled it.
+// Between full navigation start and commit, even the current frame is outgoing.
+const floorControlsDocument = new WeakMap<Electron.WebContents, {
+  processId: number;
+  frameId: number;
+  ready: boolean;
+}>();
+const pendingFloorControls = new WeakMap<Electron.WebContents, number>();
+let floorControlsRequestId = 0;
+
+function deliverFloorControls(contents: Electron.WebContents): void {
+  const requestId = pendingFloorControls.get(contents);
+  if (requestId !== undefined && floorControlsDocument.get(contents)?.ready && !contents.isDestroyed()) {
+    contents.send('floor-overview:controls', requestId);
+  }
+}
+
+function canUseFloorOverview(event: Pick<Electron.IpcMainEvent, 'senderFrame'>): boolean {
+  const frame = event.senderFrame;
+  if (!floorHome() || !frame || frame.parent !== null) return false;
+  try {
+    const trusted = new URL(paramountUiUrl());
+    const actual = new URL(frame.url);
+    return actual.protocol === trusted.protocol && actual.host === trusted.host;
+  } catch { return false; }
+}
+
+function floorControlsSenderDocument(event: Electron.IpcMainEvent) {
+  const document = floorControlsDocument.get(event.sender);
+  if (document && event.processId === document.processId && event.frameId === document.frameId &&
+      canUseFloorOverview(event) && event.senderFrame === event.sender.mainFrame) return document;
+  return undefined;
+}
+
+ipcMain.handle('floor-overview:list', (event) => canUseFloorOverview(event) ? floorOverview.list() : []);
+ipcMain.handle('floor-overview:focus', (event, id: unknown) =>
+  canUseFloorOverview(event) && typeof id === 'string' && /^[a-f0-9]{64}$/.test(id) ? floorOverview.focus(id) : false);
+ipcMain.on('floor-overview:controls-ready', (event) => {
+  const document = floorControlsSenderDocument(event);
+  if (!document) return;
+  document.ready = true;
+  deliverFloorControls(event.sender);
+});
+ipcMain.on('floor-overview:controls-handled', (event, requestId: unknown) => {
+  if (floorControlsSenderDocument(event)?.ready && pendingFloorControls.get(event.sender) === requestId) {
+    pendingFloorControls.delete(event.sender);
+  }
+});
+
 // ─── Floors (owner requests 2026-11-12; Munder 0.5.7 parity, floors.ts) ────────
 // The floor is chosen on every launch: the main process claims nothing at boot, and the picker
 // opens a floor in this process (openChosenFloor). With a floor open, New Floor… (Cmd+Shift+N)
@@ -6678,6 +6757,7 @@ app.whenReady().then(() => {
   // off, the app keeps Electron's default menu — zero behavior change.
   // Always installed: File carries New Floor… (the floor picker).
   installAppMenu();
+  if (gotInstanceLock) floorOverview.start();
   createWindow();
   // Auto-start the Slack webhook server when configured. Best-effort: a tunnel
   // failure (offline) is logged, not fatal. The tunnel URL is ephemeral and
@@ -6763,6 +6843,7 @@ function releaseFloorOnQuit(): void {
   floorGate.release();
 }
 function keepFloorReleaseLast(): void { app.removeListener('will-quit', releaseFloorOnQuit); app.on('will-quit', releaseFloorOnQuit); }
+app.on('will-quit', () => floorOverview.stop());
 app.on('will-quit', releaseFloorOnQuit);
 app.on('will-quit', (e) => {
   if (analyticsFlushed) return;

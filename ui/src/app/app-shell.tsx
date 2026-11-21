@@ -22,6 +22,7 @@ import { Button } from '@/components/animate-ui/components/buttons/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/animate-ui/components/radix/dropdown-menu';
 import { MoreHorizontal } from 'lucide-react';
 import { useDispatch } from '@/data/store';
+import { useFloorViewMode } from './floor-view-mode';
 
 /** Buffer every live agent's output from spawn, as Munder's App does (terminal-pool prewarmTerminals). */
 function usePrewarmTerminals() {
@@ -97,6 +98,7 @@ function TopBar({ title }: { title: string }) {
 
 /** Secondary app actions stay in their existing screens; this menu makes them discoverable globally. */
 function MoreMenu() {
+  const views = useFloorViewMode();
   const { go } = useRouter();
   const dispatch = useDispatch();
   const item = (label: string, detail: string, action: () => void) => (
@@ -114,6 +116,7 @@ function MoreMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" collisionPadding={8} className="w-[min(18rem,calc(100vw-1rem))]">
         <DropdownMenuLabel>More actions</DropdownMenuLabel>
+        {views?.enabled && item('Floor views', 'See the open Paramount floors in this window', () => views.setVisible(true))}
         {item('Open another floor…', 'Choose a recent floor or folder', () => { void dispatch({ type: 'floor.picker', open: true }); })}
         <DropdownMenuSeparator />
         {item('Agents & temps', 'Hire, import, configure and manage agents', () => go('team'))}

@@ -13,6 +13,7 @@ import { chooseFolder } from './folder-pick';
 import { FloorRefused } from './floor-refused';
 import { createEnterGuard, type EnterGuard } from './enter-guard';
 import { findBridge } from '@/data/bridge';
+import { FloorViewToggle, type useFloorViewMode } from './floor-view-mode';
 
 type Recent = FloorChoice['recents'][number];
 const folderName = (path: string) => path.split('/').filter(Boolean).pop() ?? path;
@@ -36,7 +37,7 @@ export function stateLabel(r: Recent): string {
   }
 }
 
-export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: FloorLockState }) {
+export function FloorChooser({ choice, lock, viewMode }: { choice: FloorChoice; lock?: FloorLockState; viewMode?: ReturnType<typeof useFloorViewMode> }) {
   const dispatch = useDispatch();
   const { refresh } = useSnapshotRefresh();
   const { error, clear } = useActionError();
@@ -56,6 +57,7 @@ export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: Flo
     if (policy !== null && !await dispatch({ type: 'settings.update', patch: { codexExecutionPolicy: policy } })) { setBusy(false); return; }
     const ok = await dispatch({ type: 'floor.open', home });
     setBusy(false);
+    if (ok && !launch && viewMode?.enabled) viewMode.setVisible(true);
     refresh();
     setRefusedAt(ok || !launch ? null : home);
   };
@@ -89,7 +91,9 @@ export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: Flo
           <p className="text-muted-foreground text-sm">
             {launch
               ? 'Each floor keeps its own agents, tasks, memory and logs. Nothing starts until you open one.'
-              : 'The floor you choose opens in its own window and runs alongside this one.'}
+              : viewMode?.enabled
+                ? 'The floor opens in its own window and appears in Floor views here.'
+                : 'The floor you choose opens in its own window and runs alongside this one.'}
           </p>
         </div>
         {choice.recents.length > 0 && (
@@ -111,6 +115,7 @@ export function FloorChooser({ choice, lock }: { choice: FloorChoice; lock?: Flo
             })}
           </div>
         )}
+        {!launch && viewMode && <FloorViewToggle mode={viewMode} />}
         <ExecutionPolicySelect value={policy ?? savedPolicy} onChange={setPolicy} />
         {error && error.operation === 'settings.update' && <p role="alert" className="text-destructive text-sm">{error.message}</p>}
         {pickError && <p className="text-destructive text-sm">{pickError}</p>}
