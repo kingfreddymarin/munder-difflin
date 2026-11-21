@@ -224,7 +224,6 @@ test('POSIX Gemini and Antigravity hooks survive a hive path containing spaces',
   const base = fs.mkdtempSync('/tmp/md-provider-space-');
   const home = path.join(base, 'user');
   const harness = path.join(base, 'harness space');
-  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
 
   const realHome = process.env.HOME;
   const realProfile = process.env.USERPROFILE;
@@ -237,6 +236,10 @@ test('POSIX Gemini and Antigravity hooks survive a hive path containing spaces',
   assert.equal(os.homedir(), home, 'home redirect failed — aborting before touching the real home');
 
   const hive = new HiveManager(() => harness);
+  t.after(async () => {
+    await hive.flushCommits();
+    fs.rmSync(base, { recursive: true, force: true });
+  });
   hive.ensureHive();
   hive.installAgyHooks();
   hive.installGeminiHooks(path.join(harness, 'hive/agents/a1'));
