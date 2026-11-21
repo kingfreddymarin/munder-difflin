@@ -7,7 +7,11 @@ import { Screen } from '@/components/app/screen';
 import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { findBridge } from '@/data/bridge';
+import { useFloor } from '@/data/store';
 import type { SideAgentAction, SideAgentProvider, SideAgentState } from '../../../src/shared/sideAgent';
+
+const PERSONA_DEFAULT = '__default__';
+const PERSONA_NONE = '__none__';
 
 const outlineButton = 'border-neutral-300 bg-white text-black hover:bg-neutral-100 hover:text-black dark:border-neutral-700 dark:bg-neutral-900 dark:text-white dark:hover:bg-neutral-800 dark:hover:text-white';
 const buttonFocus = 'focus-visible:border-current focus-visible:ring-current/40';
@@ -15,13 +19,24 @@ const buttonFocus = 'focus-visible:border-current focus-visible:ring-current/40'
 export function SideAgentPage() {
   const bridge = findBridge();
   const { go } = useRouter();
+  const agents = useFloor((s) => s.agents);
   const [provider, setProvider] = React.useState<SideAgentProvider>('opencode');
+  const [persona, setPersona] = React.useState<string>(PERSONA_DEFAULT);
   const [state, setState] = React.useState<SideAgentState>({ status: 'idle' });
   const [busy, setBusy] = React.useState(false);
   const [ready, setReady] = React.useState(false);
   const [error, setError] = React.useState('');
   const running = state.status === 'running';
   const context = state.status === 'idle' ? null : state.context;
+
+  React.useEffect(() => {
+    if (!bridge?.getConfig) return;
+    void bridge.getConfig().then((cfg) => {
+      if (cfg.sideAgentPersona === null) setPersona(PERSONA_NONE);
+      else if (typeof cfg.sideAgentPersona === 'string') setPersona(cfg.sideAgentPersona);
+      else setPersona(PERSONA_DEFAULT);
+    }).catch(() => { /* leave default if config unreadable */ });
+  }, [bridge]);
 
   React.useEffect(() => {
     if (!bridge?.sideAgentState || !bridge.onSideAgentChanged) return;
@@ -43,6 +58,14 @@ export function SideAgentPage() {
     refresh();
     return () => { active = false; unsubscribe(); };
   }, [bridge]);
+
+  function savePersona(value: string) {
+    setPersona(value);
+    if (!bridge?.updateConfig) return;
+    const persisted: string | null | undefined =
+      value === PERSONA_NONE ? null : value === PERSONA_DEFAULT ? undefined : value;
+    void bridge.updateConfig({ sideAgentPersona: persisted }).catch(() => { /* best-effort */ });
+  }
 
   async function act(action: SideAgentAction) {
     if (!bridge?.sideAgentAct || busy) return;
@@ -78,6 +101,19 @@ export function SideAgentPage() {
             >
               <option value="opencode">OpenCode 2</option>
               <option value="claude">Claude Code</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm font-medium">
+            Persona
+            <select
+              className="h-9 rounded-md border border-neutral-300 bg-white px-3 text-sm focus-visible:outline-current dark:border-neutral-700 dark:bg-neutral-900"
+              value={persona}
+              disabled={busy || running}
+              onChange={(event) => savePersona(event.target.value)}
+            >
+              <option value={PERSONA_DEFAULT}>Default (Floor assistant)</option>
+              <option value={PERSONA_NONE}>None — no persona</option>
+              {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           </label>
           {running ? <>

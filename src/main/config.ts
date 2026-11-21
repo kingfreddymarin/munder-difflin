@@ -416,6 +416,13 @@ export interface HarnessConfig {
    *  1h → 2h compact cadence). Set once the migration has run to completion. */
   triggersMigratedV1?: boolean;
 
+  // ─── Side-agent persona ────────────────────────────────────────────────────
+  /** Which persona the side agent reads as.
+   *  - `undefined` (absent) = default "Floor assistant" system prompt.
+   *  - `null`               = None — no system prompt; pure neutral provider session.
+   *  - agentId string       = impersonate that agent (name + role prepended to the prompt). */
+  sideAgentPersona?: string | null;
+
   // ─── Memory reflection (the janitor's condense half) ───────────────────────
   /** Master toggle for the in-process MemoryReflector. Default on. */
   reflectEnabled?: boolean;

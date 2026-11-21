@@ -3256,6 +3256,13 @@ const sideAgents = createSideAgents(sideAgentPtys, () => {
 }, (owner, disposedPtyId) => {
   try { if (!owner.isDestroyed()) owner.send('side-agent:changed', disposedPtyId); }
   catch { /* renderer closed during delivery */ }
+}, () => {
+  const configured = readConfig().sideAgentPersona;
+  if (configured === null) return null; // None — no system prompt
+  if (configured === undefined) return undefined; // default "Floor assistant"
+  const agent = hive.registry().agents[configured];
+  if (!agent) return undefined; // agent not found, fall back to default
+  return { id: agent.id, name: agent.name, role: agent.role };
 });
 
 ipcMain.handle('side-agent:state', (evt) => sideAgents.state(evt.sender));

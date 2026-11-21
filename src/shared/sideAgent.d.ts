@@ -11,7 +11,13 @@ export interface SideAgentContext {
   decisions: string[];
 }
 
-type SideAgentSource = { provider: SideAgentProvider; context: SideAgentContext };
+/** The persona the side agent reads as.
+ *  - `null`   = None — no system prompt; pure neutral provider session.
+ *  - object   = agent persona, name + optional role used as the opening identity line.
+ *  - `undefined` (absent) = default "Floor assistant" persona. */
+export type SideAgentPersona = { id: string; name: string; role?: string } | null;
+
+type SideAgentSource = { provider: SideAgentProvider; context: SideAgentContext; persona: SideAgentPersona | undefined };
 
 export type SideAgentState =
   | { status: 'idle' }

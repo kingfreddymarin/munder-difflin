@@ -1,5 +1,6 @@
 import type { SideAgentAction, SideAgentProvider, SideAgentResult, SideAgentState } from '../../../src/shared/sideAgent';
 import type { FloorOverview } from '../../../src/shared/floor-overview';
+import type { HarnessConfig } from '../../../src/preload/index';
 import type { ParamountPreloadAPI } from './paramount-api';
 
 export type * from './paramount-api';
@@ -24,6 +25,9 @@ export type ElectronBridge = ParamountPreloadAPI & {
   onCloseRequested?(cb: (info: { ptyCount: number; sideAgentCount?: number }) => void): () => void;
   confirmClose?(): Promise<void>;
   cancelClose?(): Promise<void>;
+  getConfig?(): Promise<HarnessConfig>;
+  updateConfig?(patch: Partial<HarnessConfig>): Promise<HarnessConfig>;
+  onConfigChanged?(cb: (config: HarnessConfig) => void): () => void;
   readClipboard?(): Promise<string>;
   /** Native folder dialog (openDirectory + createDirectory). error 'cancelled' when the human cancels. */
   chooseFolder?(): Promise<{ ok: true; path: string } | { ok: false; error: string }>;

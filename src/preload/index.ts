@@ -334,6 +334,11 @@ export interface HarnessConfig {
   providerBaseUrls?: Partial<Record<AgentProvider, string>>;
   /** Per-CLI-provider default model slug, used to pre-fill the model picker. */
   providerDefaultModels?: Partial<Record<AgentProvider, string>>;
+  /** Which persona the side agent reads as.
+   *  - `undefined` (absent) = default "Floor assistant" system prompt.
+   *  - `null`               = None — no system prompt; pure neutral provider session.
+   *  - agentId string       = impersonate that agent (name + role prepended to the prompt). */
+  sideAgentPersona?: string | null;
 }
 
 export interface MemoryStatus {

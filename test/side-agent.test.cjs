@@ -247,6 +247,70 @@ test('a native side PTY accepts input, reports exit, and removes its provider pr
     assert.deepEqual(pty.list(), []);
   });
 
+function fixtureWithPersona(t, readPersona) {
+  let context = fixtureContext();
+  const spawned = new Map();
+  const owner = { isDestroyed: () => false };
+  const fakePty = {
+    isCommandAvailable: () => true,
+    spawn(opts, window) { spawned.set(opts.id, { opts, window }); return { ok: true }; },
+    kill(id) { return { ok: spawned.delete(id) }; },
+    killByOwner() {},
+    killAll() { spawned.clear(); },
+    setExitHandler() {}
+  };
+  const side = createSideAgents(fakePty, () => context, () => {}, readPersona);
+  t.after(() => side.closeAll());
+  return { side, owner, spawned };
+}
+
+test('None persona omits --append-system-prompt and --prompt for both providers', (t) => {
+  for (const provider of ['opencode', 'claude']) {
+    const f = fixtureWithPersona(t, () => null);
+    assert.equal(f.side.launch(f.owner, provider, false).ok, true);
+    const { opts } = f.spawned.get(f.side.state(f.owner).ptyId);
+    assert.ok(!opts.args.includes('--append-system-prompt'), `${provider}: no --append-system-prompt`);
+    assert.ok(!opts.args.includes('--prompt'), `${provider}: no --prompt`);
+    const state = f.side.state(f.owner);
+    assert.equal(state.persona, null, `${provider}: state.persona is null`);
+  }
+});
+
+test('agent persona injects identity line with name, id and role', (t) => {
+  const persona = { id: 'alice', name: 'Alice', role: 'senior engineer' };
+  for (const provider of ['opencode', 'claude']) {
+    const f = fixtureWithPersona(t, () => persona);
+    assert.equal(f.side.launch(f.owner, provider, false).ok, true);
+    const { opts } = f.spawned.get(f.side.state(f.owner).ptyId);
+    const prompt = provider === 'opencode' ? opts.args.at(-1) : opts.args[opts.args.indexOf('--append-system-prompt') + 1];
+    assert.match(prompt, /You are Alice \(alice\), senior engineer, answering questions/);
+    const state = f.side.state(f.owner);
+    assert.deepEqual(state.persona, persona, `${provider}: state.persona matches`);
+  }
+});
+
+test('agent persona without role omits the role clause', (t) => {
+  const persona = { id: 'bob', name: 'Bob' };
+  const f = fixtureWithPersona(t, () => persona);
+  assert.equal(f.side.launch(f.owner, 'claude', false).ok, true);
+  const { opts } = f.spawned.get(f.side.state(f.owner).ptyId);
+  const idx = opts.args.indexOf('--append-system-prompt');
+  const prompt = opts.args[idx + 1];
+  assert.match(prompt, /You are Bob \(bob\), answering questions/);
+  assert.doesNotMatch(prompt, /, undefined/);
+});
+
+test('default persona (undefined readPersona) uses floor assistant text', (t) => {
+  const f = fixtureWithPersona(t, undefined);
+  assert.equal(f.side.launch(f.owner, 'claude', false).ok, true);
+  const { opts } = f.spawned.get(f.side.state(f.owner).ptyId);
+  const idx = opts.args.indexOf('--append-system-prompt');
+  const prompt = opts.args[idx + 1];
+  assert.match(prompt, /You are a temporary question assistant outside the Paramount floor/);
+  const state = f.side.state(f.owner);
+  assert.equal(state.persona, undefined);
+});
+
 test('OpenCode is found in its native installer directory when the login shell misses it',
   { skip: process.platform === 'win32' }, (t) => {
     const { fallbackCommandPath } = loadTs('src/main/snapshotCommandDiscovery.ts');
