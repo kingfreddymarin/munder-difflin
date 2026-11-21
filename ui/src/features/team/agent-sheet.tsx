@@ -11,9 +11,10 @@ import { EngineSignInActions } from '@/components/app/engine-sign-in-actions';
 import { clock } from '@/components/app/format';
 import { saveExistingAgentPreset } from './agent-preset';
 import { NewCardDialog } from '@/features/team/new-card-dialog';
-import { useFloor } from '@/data/store';
+import { useDispatch, useFloor } from '@/data/store';
 import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
+import { useAgentActions } from './agent-actions';
 
 /** `tab` opens a given tab first (Chats' avatar click opens `profile`, the agent's settings). */
 export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; onClose: () => void; tab?: string | null }) {
@@ -30,6 +31,66 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
 
   const mine = React.useMemo(() => cards.filter((c) => c.agentId === agentId && c.status !== 'done'), [cards, agentId]);
   const events = React.useMemo(() => activity.filter((e) => e.agentId === agentId).slice(0, 8), [activity, agentId]);
+
+  type SheetMode = 'default' | 'rename' | 'note' | 'restart';
+  const [sheetMode, setSheetMode] = React.useState<SheetMode>('default');
+  const [sheetInput, setSheetInput] = React.useState('');
+  const [sheetStatus, setSheetStatus] = React.useState('');
+  const [sheetSending, setSheetSending] = React.useState(false);
+  const dispatch = useDispatch();
+
+  React.useEffect(() => { setSheetMode('default'); setSheetStatus(''); }, [agentId]);
+
+  const { actions: agentActions, run: runAction, renameAgent } = useAgentActions(agentId ?? '', {
+    onClose,
+    onRenameStart: () => { setSheetInput(agent?.name ?? ''); setSheetMode('rename'); setSheetStatus(''); },
+    onNoteStart: () => { setSheetInput(''); setSheetMode('note'); setSheetStatus(''); },
+    onRestartStart: () => { setSheetMode('restart'); setSheetStatus(''); },
+  });
+
+  const profileActions = React.useMemo(
+    () => agentActions.filter((a) => a.id !== 'open-profile'),
+    [agentActions],
+  );
+
+  const submitRename = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const name = sheetInput.trim();
+    if (!name) return;
+    setSheetSending(true);
+    setSheetStatus('');
+    try {
+      const result = await renameAgent(name);
+      if (result.ok) { setSheetStatus(`Renamed to ${result.name ?? name}.`); setSheetMode('default'); }
+      else setSheetStatus(result.error ?? 'Could not rename.');
+    } finally { setSheetSending(false); }
+  };
+
+  const submitNote = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const text = sheetInput.trim();
+    if (!text || !teamApi?.sendNote) return;
+    setSheetSending(true);
+    setSheetStatus('');
+    try {
+      await teamApi.sendNote(agentId ?? '', text);
+      setSheetMode('default');
+    } catch (err) {
+      setSheetStatus(err instanceof Error ? err.message : 'Could not send note.');
+    } finally { setSheetSending(false); }
+  };
+
+  const restartAgent = async (restartMode: 'resume' | 'fresh') => {
+    setSheetSending(true);
+    setSheetStatus('');
+    try {
+      await dispatch({ type: 'agent.restart', agentId: agentId ?? '', mode: restartMode });
+      setSheetStatus(restartMode === 'resume' ? 'Resume requested.' : 'Fresh session requested.');
+      setSheetMode('default');
+    } catch (err) {
+      setSheetStatus(err instanceof Error ? err.message : 'Restart failed.');
+    } finally { setSheetSending(false); }
+  };
 
   const agentSignIn = accountSelection === 'stale' || accountSelection === 'unavailable' ? undefined : prerequisites.find((entry) => entry.signInProvider === engineId
     && (accountSelection === 'selected'
@@ -80,8 +141,50 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
                     <EngineSignInActions provider={agentSignIn.signInProvider} state={agentSignIn.state} accountSelection={accountSelection} cliAvailable={accountModel?.installed ?? true} accountId={agentSignIn.signInAccountId} accountFingerprint={agentSignIn.signInAccountFingerprint} accountLabel={agentSignIn.signInAccountLabel} />
                   </div>}
                   <LauncherSettings agentId={agent.id} provider={engineId} scope={agent.id === models?.orchestratorId || agent.id === 'god' ? 'orchestrator' : 'agent'} onSelectionChange={loadModels} />
-                  <div className="mt-3 flex gap-2">
-                    <Button className="flex-1" onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}>Open terminal</Button>
+                  <div className="mt-3 flex flex-col gap-2">
+                    {sheetMode === 'default' && (
+                      <div className="flex flex-wrap gap-2">
+                        {profileActions.map((action) => (
+                          <Button key={action.id} size="sm" variant="outline" disabled={action.disabled || sheetSending}
+                            onClick={() => void runAction(action.id)}>
+                            {action.label}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                    {sheetMode === 'rename' && (
+                      <form className="flex flex-col gap-2" onSubmit={(e) => void submitRename(e)}>
+                        <label htmlFor="sheet-agent-rename" className="text-xs">New name for {agent.name}</label>
+                        <input autoFocus id="sheet-agent-rename" className="rounded border bg-background px-2 py-1 text-sm"
+                          value={sheetInput} onChange={(e) => setSheetInput(e.target.value)} maxLength={80} />
+                        <div className="flex gap-2">
+                          <Button size="sm" disabled={!sheetInput.trim() || sheetSending}>{sheetSending ? 'Saving…' : 'Save name'}</Button>
+                          <Button type="button" size="sm" variant="ghost" disabled={sheetSending} onClick={() => setSheetMode('default')}>Cancel</Button>
+                        </div>
+                      </form>
+                    )}
+                    {sheetMode === 'note' && (
+                      <form className="flex flex-col gap-2" onSubmit={(e) => void submitNote(e)}>
+                        <label htmlFor="sheet-agent-note" className="text-xs">Note for {agent.name}</label>
+                        <textarea autoFocus id="sheet-agent-note" className="min-h-20 rounded border bg-background p-2 text-sm"
+                          value={sheetInput} onChange={(e) => setSheetInput(e.target.value)} maxLength={5000} />
+                        <div className="flex gap-2">
+                          <Button size="sm" disabled={!sheetInput.trim() || sheetSending}>{sheetSending ? 'Sending…' : 'Send note'}</Button>
+                          <Button type="button" size="sm" variant="ghost" disabled={sheetSending} onClick={() => setSheetMode('default')}>Cancel</Button>
+                        </div>
+                      </form>
+                    )}
+                    {sheetMode === 'restart' && (
+                      <div className="flex flex-col gap-2">
+                        <span className="text-xs text-muted-foreground">Restart {agent.name}</span>
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="outline" disabled={sheetSending} onClick={() => void restartAgent('resume')}>Resume session</Button>
+                          <Button size="sm" variant="outline" disabled={sheetSending} onClick={() => void restartAgent('fresh')}>Start fresh</Button>
+                          <Button size="sm" variant="ghost" disabled={sheetSending} onClick={() => setSheetMode('default')}>Cancel</Button>
+                        </div>
+                      </div>
+                    )}
+                    {sheetStatus && <span role="status" className="text-xs text-muted-foreground">{sheetStatus}</span>}
                   </div>
                 </TabsContent>
                 <TabsContent value="tasks" className="flex flex-col gap-2">

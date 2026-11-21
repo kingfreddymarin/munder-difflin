@@ -6,11 +6,14 @@ const source = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
 test('agent cards, list rows and tree nodes expose keyboard and context-menu actions with a restore path', () => {
   const menu = source('../src/features/team/agent-action-menu.tsx');
-  for (const phrase of ['onContextMenu', "event.key === 'F10'", 'Resume session', 'Start fresh', 'Archive', 'Rename', 'Send note']) assert.ok(menu.includes(phrase), `missing ${phrase}`);
+  const hook = source('../src/features/team/agent-actions.ts');
+  // UI/keyboard structure lives in the menu component
+  for (const phrase of ['onContextMenu', "event.key === 'F10'", 'Resume session', 'Start fresh']) assert.ok(menu.includes(phrase), `missing in menu: ${phrase}`);
   assert.match(menu, /agent\.restart/);
-  assert.match(menu, /agent\.update/);
-  assert.match(menu, /archiveAgent\(menu\.id, true\)/);
-  assert.match(menu, /api\.sendNote\(menu\.id, note\)/);
+  assert.match(menu, /teamApi\.sendNote\(agentId, text\)/);
+  // Action labels and business logic live in the shared hook (NSC-252/NSC-256)
+  for (const phrase of ['Archive', 'Rename', 'Send note']) assert.ok(hook.includes(phrase), `missing in agent-actions hook: ${phrase}`);
+  assert.match(hook, /teamApi\.archiveAgent\(agentId, true\)/);
   assert.match(source('../src/data/electron-provider.ts'), /act: 'inform'/);
   assert.match(source('../src/components/app/agent-summary.tsx'), /Right-click or Shift\+F10/);
   assert.match(source('../src/features/team/agents-panel.tsx'), /useAgentActionTargets/);

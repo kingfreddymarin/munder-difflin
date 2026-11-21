@@ -41,6 +41,8 @@ export type ElectronBridge = ParamountPreloadAPI & {
   providerKeyClear?(backend: string): Promise<{ ok: boolean; error?: string }>;
   hiveMemory?(id: string): Promise<string>;
   hiveSetArchived?(id: string, archived: boolean): Promise<{ ok: boolean; error?: string }>;
+  hiveSetAgentHold?(id: string, hold: boolean): Promise<{ ok: boolean; onHold?: boolean; error?: string }>;
+  hiveRenameAgent?(id: string, name: string): Promise<{ ok: boolean; name?: string; error?: string }>;
   attachFiles?(): Promise<{ ok: true; files: Array<{ path: string; name: string }> } | { ok: false; error: string }>;
   saveClipboardImage?(): Promise<{ ok: true; file: { path: string; name: string } } | { ok: false; error: string }>;
   freeflowTranscribe?(arg: { audio: ArrayBuffer | Uint8Array; mimeType?: string; filename?: string }): Promise<{ ok: boolean; text?: string; error?: string }>;
