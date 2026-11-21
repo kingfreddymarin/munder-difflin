@@ -12,12 +12,15 @@ execFileSync('node_modules/.bin/tsc', [
   '--ignoreConfig', '--outDir', outputDir, '--target', 'ES2022', '--module', 'ESNext', '--moduleResolution', 'Bundler',
   '--skipLibCheck', 'src/data/electron-api.d.ts', 'src/data/electron-provider.ts',
 ]);
-for (const file of readdirSync(outputDir).filter((name) => name.endsWith('.js'))) {
-  const path = join(outputDir, file);
+const emitted = readdirSync(outputDir, { recursive: true }).map(String).filter((n) => n.endsWith('.js'));
+for (const f of emitted) {
+  const path = join(outputDir, f);
   writeFileSync(path, readFileSync(path, 'utf8').replace(/from '(\.\/[^']+)'/g, "from '$1.js'"));
 }
-const { createElectronProvider } = await import(pathToFileURL(join(outputDir, 'electron-provider.js')).href);
-const { BackendError, toBackendError } = await import(pathToFileURL(join(outputDir, 'errors.js')).href);
+const providerFile = emitted.find((n) => n.endsWith('electron-provider.js'));
+const errorsFile = emitted.find((n) => n.endsWith('errors.js'));
+const { createElectronProvider } = await import(pathToFileURL(join(outputDir, String(providerFile))).href);
+const { BackendError, toBackendError } = await import(pathToFileURL(join(outputDir, String(errorsFile))).href);
 rmSync(outputDir, { recursive: true });
 
 function nativeSnapshot() {
