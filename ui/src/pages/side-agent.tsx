@@ -8,10 +8,21 @@ import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
 import { findBridge } from '@/data/bridge';
 import { useFloor } from '@/data/store';
-import type { SideAgentAction, SideAgentProvider, SideAgentState } from '../../../src/shared/sideAgent';
+import type { SideAgentAction, SideAgentModelList, SideAgentProvider, SideAgentState } from '../../../src/shared/sideAgent';
 
 const PERSONA_DEFAULT = '__default__';
 const PERSONA_NONE = '__none__';
+const MODEL_DEFAULT = '';
+const PROVIDER_LABEL: Record<SideAgentProvider, string> = { opencode: 'OpenCode 2', claude: 'Claude Code' };
+
+/** One line under the Model picker saying where the choices came from, or why there are none. */
+function modelNote(provider: SideAgentProvider, list: SideAgentModelList | undefined): string {
+  const label = PROVIDER_LABEL[provider];
+  if (!list) return `Asking ${label} for its models…`;
+  if (list.status === 'ok') return `${list.models.length} model${list.models.length === 1 ? '' : 's'} listed by ${label}.`;
+  if (list.status === 'unsupported') return `${label} has no command to list its models, so it uses its own default.`;
+  return `${list.error ?? `${label} could not list models.`} Using its default model.`;
+}
 
 const outlineButton = 'border-neutral-300 bg-white text-black hover:bg-neutral-100 hover:text-black dark:border-neutral-700 dark:bg-neutral-900 dark:text-white dark:hover:bg-neutral-800 dark:hover:text-white';
 const buttonFocus = 'focus-visible:border-current focus-visible:ring-current/40';
@@ -22,6 +33,8 @@ export function SideAgentPage() {
   const agents = useFloor((s) => s.agents);
   const [provider, setProvider] = React.useState<SideAgentProvider>('opencode');
   const [persona, setPersona] = React.useState<string>(PERSONA_DEFAULT);
+  const [savedModels, setSavedModels] = React.useState<Partial<Record<SideAgentProvider, string>>>({});
+  const [modelLists, setModelLists] = React.useState<Partial<Record<SideAgentProvider, SideAgentModelList>>>({});
   const [state, setState] = React.useState<SideAgentState>({ status: 'idle' });
   const [busy, setBusy] = React.useState(false);
   const [ready, setReady] = React.useState(false);
@@ -35,8 +48,20 @@ export function SideAgentPage() {
       if (cfg.sideAgentPersona === null) setPersona(PERSONA_NONE);
       else if (typeof cfg.sideAgentPersona === 'string') setPersona(cfg.sideAgentPersona);
       else setPersona(PERSONA_DEFAULT);
+      setSavedModels(cfg.sideAgentModels ?? {});
     }).catch(() => { /* leave default if config unreadable */ });
   }, [bridge]);
+
+  React.useEffect(() => {
+    if (!bridge?.sideAgentModels || modelLists[provider]) return;
+    let active = true;
+    void bridge.sideAgentModels(provider).then((list) => {
+      if (active) setModelLists((lists) => ({ ...lists, [provider]: list }));
+    }, () => {
+      if (active) setModelLists((lists) => ({ ...lists, [provider]: { provider, status: 'error', models: [] } }));
+    });
+    return () => { active = false; };
+  }, [bridge, provider, modelLists]);
 
   React.useEffect(() => {
     if (!bridge?.sideAgentState || !bridge.onSideAgentChanged) return;
@@ -66,6 +91,18 @@ export function SideAgentPage() {
       value === PERSONA_NONE ? null : value === PERSONA_DEFAULT ? undefined : value;
     void bridge.updateConfig({ sideAgentPersona: persisted }).catch(() => { /* best-effort */ });
   }
+
+  function saveModel(value: string) {
+    const next = { ...savedModels, [provider]: value === MODEL_DEFAULT ? undefined : value };
+    setSavedModels(next);
+    if (!bridge?.updateConfig) return;
+    void bridge.updateConfig({ sideAgentModels: next }).catch(() => { /* best-effort */ });
+  }
+
+  const modelList = modelLists[provider];
+  const listedModels = modelList?.models ?? [];
+  // A saved id the provider no longer lists falls back to its default (main does the same).
+  const selectedModel = savedModels[provider] && listedModels.includes(savedModels[provider]!) ? savedModels[provider]! : MODEL_DEFAULT;
 
   async function act(action: SideAgentAction) {
     if (!bridge?.sideAgentAct || busy) return;
@@ -116,12 +153,28 @@ export function SideAgentPage() {
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           </label>
+          {bridge?.sideAgentModels && <label className="flex flex-col gap-1 text-sm font-medium">
+            Model
+            <select
+              className="h-9 max-w-xs rounded-md border border-neutral-300 bg-white px-3 text-sm focus-visible:outline-current dark:border-neutral-700 dark:bg-neutral-900"
+              value={selectedModel}
+              disabled={busy || running || listedModels.length === 0}
+              aria-describedby="side-agent-model-note"
+              onChange={(event) => saveModel(event.target.value)}
+            >
+              <option value={MODEL_DEFAULT}>Provider default</option>
+              {listedModels.map((id) => <option key={id} value={id}>{id}</option>)}
+            </select>
+          </label>}
           {running ? <>
             <Button className={`${outlineButton} ${buttonFocus}`} variant="outline" disabled={busy} onClick={() => void act('stop')}>Stop</Button>
             <Button className={`${outlineButton} ${buttonFocus}`} variant="outline" disabled={busy} onClick={() => void act('restart')}>Restart</Button>
             <OpenWith path={state.cwd} />
           </> : <Button className={`bg-yellow-300 text-black hover:bg-yellow-400 ${buttonFocus}`} disabled={busy || !ready} onClick={() => void act('start')}>Start side agent</Button>}
         </div>
+        {bridge?.sideAgentModels && <p id="side-agent-model-note" role="status" className="text-sm text-neutral-600 dark:text-neutral-400">
+          {running ? `Running with ${state.model ?? 'the provider default model'}.` : modelNote(provider, modelList)}
+        </p>}
         {!bridge?.sideAgentAct && <p role="status" className="text-sm text-neutral-600 dark:text-neutral-400">Open this page in the Paramount desktop app to start a session.</p>}
         {error && <p role="alert" className="text-sm text-black dark:text-white">{error}</p>}
         {ended && <p role="status" className="text-sm">

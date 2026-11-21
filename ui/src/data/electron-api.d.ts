@@ -1,4 +1,4 @@
-import type { SideAgentAction, SideAgentProvider, SideAgentResult, SideAgentState } from '../../../src/shared/sideAgent';
+import type { SideAgentAction, SideAgentModelList, SideAgentProvider, SideAgentResult, SideAgentState } from '../../../src/shared/sideAgent';
 import type { FloorOverview } from '../../../src/shared/floor-overview';
 import type { HarnessConfig } from '../../../src/preload/index';
 import type { ParamountPreloadAPI } from './paramount-api';
@@ -10,6 +10,8 @@ export type * from './paramount-api';
 export type ElectronBridge = ParamountPreloadAPI & {
   sideAgentState?(): Promise<SideAgentState>;
   sideAgentAct?(action: SideAgentAction, provider?: SideAgentProvider): Promise<SideAgentResult>;
+  /** Models the provider CLI lists; discovered in main with a timeout, cached for the session. */
+  sideAgentModels?(provider: SideAgentProvider, refresh?: boolean): Promise<SideAgentModelList>;
   onSideAgentChanged?(cb: (disposedPtyId?: string) => void): () => void;
   listFloorViews?(): Promise<FloorOverview[]>;
   focusFloorView?(id: string): Promise<boolean>;

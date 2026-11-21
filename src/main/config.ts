@@ -13,6 +13,7 @@ import { defaultMcpDefaults } from '../shared/mcpCatalog';
 import { MAX_AGENT_TOKEN_CAP } from '../shared/tokenCaps';
 import { expandTilde, normalizeHiveHome } from './fs';
 import type { IntegrationRecord } from '../shared/integrations';
+import type { SideAgentProvider } from '../shared/sideAgent';
 import {
   DEFAULT_CONTEXT_TRIGGER,
   DEFAULT_ORG_TRIGGER,
@@ -422,6 +423,9 @@ export interface HarnessConfig {
    *  - `null`               = None — no identity/persona line; floor context is still sent.
    *  - agentId string       = impersonate that agent (name + role prepended) + floor context. */
   sideAgentPersona?: string | null;
+  /** The model the side agent launches with, per provider. Absent = the provider's
+   *  own default. Only honoured when that provider's CLI listed the id this session. */
+  sideAgentModels?: Partial<Record<SideAgentProvider, string>>;
 
   // ─── Memory reflection (the janitor's condense half) ───────────────────────
   /** Master toggle for the in-process MemoryReflector. Default on. */

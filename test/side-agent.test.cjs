@@ -338,3 +338,140 @@ test('OpenCode is found in its native installer directory when the login shell m
     assert.ok([executable, '/opt/homebrew/bin/opencode', '/usr/local/bin/opencode']
       .includes(fallbackCommandPath('opencode')));
   });
+
+// ─── NSC-249: side agent models listed by the provider CLI ────────────────────
+const {
+  parseOpenCodeModels, discoverSideAgentModels, createSideAgentModelCatalog, SIDE_AGENT_MODEL_SOURCES,
+} = loadTs('src/main/side-agent-models.ts');
+const { sideAgentProfile } = loadTs('src/main/side-agent.ts');
+const modelFixture = (name) => readFileSync(join(__dirname, 'fixtures', 'side-agent-models', name), 'utf8');
+
+test('parses `opencode models` output captured from OpenCode 2.0.28', () => {
+  const isolated = parseOpenCodeModels(modelFixture('opencode-2.0.28-models-isolated.txt'));
+  assert.equal(isolated.length, 11);
+  assert.equal(isolated[0], 'opencode/big-pickle');
+  assert.ok(isolated.every((id) => id.startsWith('opencode/')));
+  const gateway = parseOpenCodeModels(modelFixture('opencode-2.0.28-models-with-gateway.txt'));
+  assert.equal(gateway.length, 63);
+  assert.ok(gateway.includes('cloudflare-ai-gateway/anthropic/claude-sonnet-4.5'));
+  assert.ok(gateway.includes('cloudflare-ai-gateway/xai/grok-4.20-0309-non-reasoning'));
+  assert.equal(gateway.at(-1), 'opencode/step-5-preview-free');
+});
+
+test('the OpenCode parser keeps only printed ids: no noise, colour codes, flags or duplicates', () => {
+  const noisy = [
+    '\u001b[32mopencode/big-pickle\u001b[0m', 'opencode/big-pickle', 'Warning: update available',
+    'Error: Standalone server exited before reporting readiness', '--model/injected', '  opencode/exo-free  ', '',
+  ].join('\r\n');
+  assert.deepEqual(parseOpenCodeModels(noisy), ['opencode/big-pickle', 'opencode/exo-free']);
+  assert.deepEqual(parseOpenCodeModels(''), []);
+});
+
+const profileFor = (provider, scratch) => sideAgentProfile(provider, scratch);
+
+test('OpenCode models are listed with `opencode models --standalone` from an isolated profile', async () => {
+  const calls = [];
+  const result = await discoverSideAgentModels('opencode', {
+    commandPath: (command) => `/fixture/bin/${command}`,
+    isolatedProfile: profileFor,
+    run: async (file, args, options) => {
+      calls.push({ file, args, options, exists: existsSync(options.cwd) });
+      return { stdout: modelFixture('opencode-2.0.28-models-isolated.txt') };
+    },
+  });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.models.length, 11);
+  assert.deepEqual(calls.map(({ file, args }) => [file, args]), [['/fixture/bin/opencode', ['models', '--standalone']]]);
+  assert.ok(calls[0].exists, 'runs inside the temporary profile');
+  assert.ok(calls[0].options.timeout > 0, 'listing is time-limited');
+  assert.equal(calls[0].options.env.XDG_CONFIG_HOME, join(dirname(calls[0].options.cwd), 'config'));
+  assert.equal(existsSync(dirname(calls[0].options.cwd)), false, 'temporary profile removed');
+});
+
+test('missing, failing, timed-out or silent providers fall back to their default without throwing', async () => {
+  const deps = { commandPath: () => '/fixture/bin/opencode', isolatedProfile: profileFor };
+  const missing = await discoverSideAgentModels('opencode', { ...deps, commandPath: () => null, run: () => assert.fail('must not run') });
+  assert.deepEqual({ ...missing, error: undefined }, { provider: 'opencode', status: 'unavailable', models: [], error: undefined });
+  const failed = await discoverSideAgentModels('opencode', { ...deps, run: async () => { throw Object.assign(new Error('exit 1'), { code: 1 }); } });
+  assert.equal(failed.status, 'error');
+  assert.deepEqual(failed.models, []);
+  const timedOut = await discoverSideAgentModels('opencode', { ...deps, run: async () => { throw Object.assign(new Error('timeout'), { killed: true, signal: 'SIGKILL' }); } });
+  assert.equal(timedOut.status, 'error');
+  assert.match(timedOut.error, /too long/);
+  const silent = await discoverSideAgentModels('opencode', { ...deps, run: async () => ({ stdout: 'Error: no providers\n' }) });
+  assert.equal(silent.status, 'error');
+  assert.deepEqual(silent.models, []);
+  // Claude Code has no command that lists models: report it, never spawn, offer the default only.
+  assert.equal(SIDE_AGENT_MODEL_SOURCES.claude, null);
+  const claude = await discoverSideAgentModels('claude', { ...deps, run: () => assert.fail('must not run') });
+  assert.deepEqual(claude, { provider: 'claude', status: 'unsupported', models: [] });
+});
+
+test('the catalog caches a successful listing, retries a failed one and only resolves listed ids', async () => {
+  let runs = 0;
+  let fail = true;
+  const catalog = createSideAgentModelCatalog({
+    commandPath: () => '/fixture/bin/opencode',
+    isolatedProfile: profileFor,
+    run: async () => {
+      runs++;
+      if (fail) throw new Error('offline');
+      return { stdout: modelFixture('opencode-2.0.28-models-isolated.txt') };
+    },
+  });
+  assert.equal((await catalog.list('opencode')).status, 'error');
+  assert.equal(catalog.resolve('opencode', 'opencode/big-pickle'), undefined, 'nothing listed yet → provider default');
+  fail = false;
+  const [a, b] = await Promise.all([catalog.list('opencode'), catalog.list('opencode')]);
+  assert.equal(a, b, 'concurrent requests share one listing');
+  assert.equal(runs, 2);
+  await catalog.list('opencode');
+  assert.equal(runs, 2, 'successful listing is cached');
+  assert.equal(catalog.resolve('opencode', 'opencode/big-pickle'), 'opencode/big-pickle');
+  assert.equal(catalog.resolve('opencode', 'anthropic/claude-made-up'), undefined, 'unlisted id → provider default');
+  assert.equal(catalog.resolve('opencode', '--standalone'), undefined);
+  assert.equal(catalog.resolve('claude', 'opus'), undefined, 'Claude lists nothing, so it keeps its default');
+});
+
+test('the selected model reaches the launch: OpenCode config `model`, Claude `--model`', (t) => {
+  const make = (readModel) => {
+    const spawned = new Map();
+    const side = createSideAgents({
+      isCommandAvailable: () => true,
+      spawn(opts) { spawned.set(opts.id, opts); return { ok: true }; },
+      kill(id) { return { ok: spawned.delete(id) }; },
+      killByOwner() {}, killAll() { spawned.clear(); }, setExitHandler() {},
+    }, fixtureContext, () => {}, undefined, readModel);
+    t.after(() => side.closeAll());
+    const owner = { isDestroyed: () => false };
+    return { side, owner, opts: () => spawned.get(side.state(owner).ptyId) };
+  };
+  const seen = [];
+  const oc = make((provider) => { seen.push(provider); return 'opencode/big-pickle'; });
+  assert.equal(oc.side.launch(oc.owner, 'opencode', false).ok, true);
+  assert.deepEqual(seen, ['opencode']);
+  const ocOpts = oc.opts();
+  const profile = JSON.parse(readFileSync(join(ocOpts.env.XDG_CONFIG_HOME, 'opencode', 'opencode.json')));
+  assert.equal(profile.model, 'opencode/big-pickle');
+  assert.equal(profile.update, 'disable');
+  assert.ok(!ocOpts.args.includes('--model'), 'OpenCode 2 TUI rejects --model');
+  assert.equal(oc.side.state(oc.owner).model, 'opencode/big-pickle');
+
+  const cl = make(() => 'claude-sonnet-4-5');
+  assert.equal(cl.side.launch(cl.owner, 'claude', false).ok, true);
+  const args = cl.opts().args;
+  assert.equal(args[args.indexOf('--model') + 1], 'claude-sonnet-4-5');
+  assert.ok(args.indexOf('--model') < args.indexOf('--append-system-prompt'));
+  assert.equal(cl.side.state(cl.owner).model, 'claude-sonnet-4-5');
+
+  // No model (or a malformed one) launches with the provider default: no flag, no config key.
+  for (const value of [undefined, '-p', '']) {
+    const d = make(() => value);
+    assert.equal(d.side.launch(d.owner, 'claude', false).ok, true);
+    assert.ok(!d.opts().args.includes('--model'));
+    assert.equal(d.side.state(d.owner).model, undefined);
+    const o = make(() => value);
+    assert.equal(o.side.launch(o.owner, 'opencode', false).ok, true);
+    assert.equal(JSON.parse(readFileSync(join(o.opts().env.XDG_CONFIG_HOME, 'opencode', 'opencode.json'))).model, undefined);
+  }
+});
