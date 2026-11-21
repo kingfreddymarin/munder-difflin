@@ -24,6 +24,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { MoreHorizontal } from 'lucide-react';
 import { useDispatch } from '@/data/store';
 import { useFloorViewMode } from './floor-view-mode';
+import { FloorSearch } from '@/features/search/floor-search';
+import { isSearchTrigger } from '@/features/search/search-index';
 
 /** Buffer every live agent's output from spawn, as Munder's App does (terminal-pool prewarmTerminals). */
 function usePrewarmTerminals() {
@@ -95,7 +97,7 @@ function useBadges(): Partial<Record<RouteId, number>> {
 
 /** The window's title bar: drags the window, controls inside it stay clickable. When the sidebar does not
  *  sit under the macOS traffic lights (collapsed or offcanvas), the bar leaves room for them. */
-function TopBar({ title }: { title: string }) {
+function TopBar({ title, onOpenSearch }: { title: string; onOpenSearch: () => void }) {
   const { state, isMobile } = useSidebar();
   const clearLights = isMobile || state === 'collapsed';
   return (
@@ -103,6 +105,15 @@ function TopBar({ title }: { title: string }) {
       <SidebarTrigger />
       <Separator orientation="vertical" className="mx-1 !h-5" />
       <span className="flex-1 truncate font-medium">{title}</span>
+      <button
+        type="button"
+        onClick={onOpenSearch}
+        aria-label="Search the floor (⌘K)"
+        className="app-no-drag text-muted-foreground hover:text-foreground hover:bg-accent hidden items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-colors sm:flex"
+      >
+        <span>Search…</span>
+        <kbd className="bg-muted rounded px-1.5 py-0.5 font-mono text-[11px]">⌘K</kbd>
+      </button>
       <MoreMenu />
       <ThemeTogglerButton variant="ghost" size="sm" aria-label="Toggle theme" />
       <NotificationsMenu />
@@ -152,6 +163,21 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
   const { route, go } = useRouter();
   const badges = useBadges();
   usePrewarmTerminals();
+
+  const [searchOpen, setSearchOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isSearchTrigger(e.key, e.metaKey, e.ctrlKey, e.target as Element | null, isMac)) {
+        e.preventDefault();
+        setSearchOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon">
@@ -203,13 +229,14 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
         <SidebarRail />
       </Sidebar>
       <SidebarInset className="h-svh min-w-0 overflow-hidden">
-        <TopBar title={title} />
+        <TopBar title={title} onOpenSearch={() => setSearchOpen(true)} />
         <HookSocketBanner />
         <OrchestratorFailureBanner />
         <YoloBanner />
         <SetupGate />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain p-4">{children}</main>
       </SidebarInset>
+      <FloorSearch open={searchOpen} onOpenChange={setSearchOpen} />
     </SidebarProvider>
   );
 }
