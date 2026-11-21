@@ -8,7 +8,7 @@ export type PtyTheme = 'light' | 'dark';
 const lightTheme = {
   background: '#FCFAF0',
   foreground: '#1A1320',
-  cursor: '#D96A62',
+  cursor: '#FFC24B',
   cursorAccent: '#FCFAF0',
   selectionBackground: '#FFEC99',
   selectionForeground: '#1A1320',
@@ -34,7 +34,7 @@ const lightTheme = {
 const darkTheme = {
   background: '#1A1A1F',
   foreground: '#DEDBD6',
-  cursor: '#E08C82',
+  cursor: '#FFC24B',
   cursorAccent: '#1A1A1F',
   selectionBackground: '#37363F',
   selectionForeground: '#DEDBD6',
@@ -60,13 +60,13 @@ export const TERMINAL_THEMES: Record<PtyTheme, typeof lightTheme> = { light: lig
 
 
 function sideAgentPalette(dark: boolean): typeof lightTheme {
-  const background = dark ? '#171717' : '#ffffff';
-  const foreground = dark ? '#ffffff' : '#171717';
+  const background = dark ? '#0a0a0a' : '#ffffff';
+  const foreground = dark ? '#ffffff' : '#0a0a0a';
   const muted = dark ? '#a3a3a3' : '#525252';
-  const yellow = dark ? '#fde047' : '#a16207';
+  const yellow = dark ? '#ffc24b' : '#a16207';
   return {
     background, foreground, cursor: yellow, cursorAccent: background,
-    selectionBackground: '#fde047', selectionForeground: '#171717',
+    selectionBackground: '#ffc24b', selectionForeground: '#0a0a0a',
     black: background, red: yellow, green: foreground, yellow, blue: muted,
     magenta: muted, cyan: muted, white: foreground,
     brightBlack: muted, brightRed: yellow, brightGreen: foreground,
