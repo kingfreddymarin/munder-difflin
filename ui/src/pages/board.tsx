@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { Progress } from '@/components/animate-ui/components/radix/progress';
 import { Tabs, TabsList, TabsTrigger } from '@/components/animate-ui/components/radix/tabs';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/animate-ui/components/radix/dropdown-menu';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/animate-ui/components/radix/popover';
 import { PageHeader } from '@/components/app/panel';
@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils';
 import type { Card as CardT, CardStatus } from '@/data/types';
 import { childRollup, childrenOf, inFamily } from '@/data/card-tree';
 import { Screen } from '@/components/app/screen';
+import { isAlmostDone } from '@/features/board/board-p1';
 
 /** Filter keys: `w:` workspace, `t:` tag, `a:` agent, `p:` parent card (it and its children). OR inside a group, AND across groups. */
 type FilterKey = `${'w' | 't' | 'a' | 'p'}:${string}`;
@@ -164,14 +165,45 @@ function BoardCard({ card, onOpen }: { card: CardT; onOpen: () => void }) {
   );
 }
 
+/** NSC-260 — confirm dialog before bulk-archiving all Done cards. */
+function ArchiveAllDialog({ count, onConfirm, onCancel }: { count: number; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <Dialog open onOpenChange={(o) => !o && onCancel()}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Archive all Done cards?</DialogTitle>
+          <DialogDescription>
+            {count} card{count !== 1 ? 's' : ''} will be archived and hidden from the board. This cannot be undone from the UI.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+          <Button onClick={onConfirm}>Archive {count}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function Column({ id, cards, onOpen }: { id: CardStatus; cards: CardT[]; onOpen: (key: string) => void }) {
   const dispatch = useDispatch();
   const unsupported = useUnsupported();
   const all = useFloor((s) => s.cards);
   const [over, setOver] = React.useState(false);
+  const [archiveAll, setArchiveAll] = React.useState(false);
   const col = columnMeta.find((c) => c.id === id);
   const reason = unsupported({ type: 'card.move', key: '', status: id });
+  const archiveReason = unsupported({ type: 'card.archive', key: '' });
+
+  const runArchiveAll = async () => {
+    setArchiveAll(false);
+    for (const card of cards) {
+      await dispatch({ type: 'card.archive', key: card.key });
+    }
+  };
+
   return (
+    <>
     <section
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
@@ -190,7 +222,11 @@ function Column({ id, cards, onOpen }: { id: CardStatus; cards: CardT[]; onOpen:
       }}
       title={reason ?? undefined}
       className={cn('bg-muted/30 flex min-h-0 flex-col gap-2 rounded-xl border p-2.5 transition-colors', over && (reason ? 'border-destructive/50' : 'border-primary/60 bg-primary/5'))}>
-      <h2 className="flex items-center gap-2 px-1 text-sm font-medium">
+      <h2
+        className="flex items-center gap-2 px-1 text-sm font-medium"
+        onContextMenu={id === 'done' && !archiveReason && cards.length > 0 ? (e) => { e.preventDefault(); setArchiveAll(true); } : undefined}
+        title={id === 'done' && !archiveReason ? 'Right-click to archive all' : undefined}
+      >
         <span className={cn('size-2 rounded-full', col?.dot)} />
         <span className="flex-1">{col?.label ?? id}</span>
         <span className="text-muted-foreground text-xs">{cards.length}</span>
@@ -198,6 +234,25 @@ function Column({ id, cards, onOpen }: { id: CardStatus; cards: CardT[]; onOpen:
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-0.5">
         {cards.map((c) => <BoardCard key={c.key} card={c} onOpen={() => onOpen(c.key)} />)}
         {cards.length === 0 && <span className="text-muted-foreground px-1 py-4 text-center text-xs">Drop a card here</span>}
+      </div>
+    </section>
+    {archiveAll && <ArchiveAllDialog count={cards.length} onConfirm={() => void runArchiveAll()} onCancel={() => setArchiveAll(false)} />}
+    </>
+  );
+}
+
+/** NSC-259 — virtual "Almost Done" column: cards with an open PR or an open humanQA ask. */
+function AlmostDoneColumn({ cards, onOpen }: { cards: CardT[]; onOpen: (key: string) => void }) {
+  return (
+    <section className="bg-muted/30 flex min-h-0 flex-col gap-2 rounded-xl border border-dashed p-2.5">
+      <h2 className="flex items-center gap-2 px-1 text-sm font-medium">
+        <span className="size-2 rounded-full bg-sky-200" />
+        <span className="flex-1">Almost Done</span>
+        <span className="text-muted-foreground text-xs">{cards.length}</span>
+      </h2>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-0.5">
+        {cards.map((c) => <BoardCard key={c.key} card={c} onOpen={() => onOpen(c.key)} />)}
+        {cards.length === 0 && <span className="text-muted-foreground px-1 py-4 text-center text-xs">Cards with an open PR or pending question appear here</span>}
       </div>
     </section>
   );
@@ -258,6 +313,7 @@ function SendTask({ card }: { card: CardT }) {
 
 export function BoardPage() {
   const cards = useFloor((s) => s.cards);
+  const messages = useFloor((s) => s.messages);
   const agents = useFloor((s) => s.agents);
   const order = useFloor((s) => s.board.columns);
   const { route, go } = useRouter();
@@ -266,12 +322,23 @@ export function BoardPage() {
 
   const [creating, setCreating] = React.useState(false);  const open = cards.find((c) => c.key === route.params.get('card'));
   const visible = React.useMemo(() => cards.filter((c) => !c.boardArchivedAt && matches(c, selected)), [cards, selected]);
+
+  // NSC-259: cards meeting the "almost done" rule are shown only in the virtual column.
+  const almostDoneCards = React.useMemo(
+    () => visible.filter((c) => isAlmostDone(c, messages)),
+    [visible, messages],
+  );
+  const almostDoneKeys = React.useMemo(
+    () => new Set(almostDoneCards.map((c) => c.key)),
+    [almostDoneCards],
+  );
+
   const openCard = (key: string) => go('board', { card: key });
 
   return (
     <CardActionMenuProvider>
     <Screen fill>
-      <PageHeader title="Board" description="The single list of work. Agents read their card’s plan every turn and tick steps as they go." actions={<Button data-board-focus-fallback onClick={() => setCreating(true)}>New card</Button>} />
+      <PageHeader title="Board" description="The single list of work. Agents read their card's plan every turn and tick steps as they go." actions={<Button data-board-focus-fallback onClick={() => setCreating(true)}>New card</Button>} />
       <div className="flex flex-wrap items-center gap-3">
         <Tabs value={view} onValueChange={setView}>
           <TabsList>
@@ -287,7 +354,8 @@ export function BoardPage() {
       {view === 'columns' ? (
         <div className="min-h-0 flex-1 overflow-x-auto pb-1">
           <div className="grid h-full min-h-[420px] auto-cols-[minmax(240px,1fr)] grid-flow-col gap-3">
-            {order.map((id) => <Column key={id} id={id} cards={visible.filter((c) => c.status === id)} onOpen={openCard} />)}
+            {order.map((id) => <Column key={id} id={id} cards={visible.filter((c) => c.status === id && !almostDoneKeys.has(c.key))} onOpen={openCard} />)}
+            <AlmostDoneColumn cards={almostDoneCards} onOpen={openCard} />
           </div>
         </div>
       ) : (

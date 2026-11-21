@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/animate-ui/components/buttons/button';
@@ -10,6 +11,7 @@ import { useRouter } from '@/app/router';
 import { OpenWith } from './external-link';
 import { AgentLink } from './agent-link';
 import { stamp } from './format';
+import { autoUnblockItems } from '@/features/board/board-p1';
 
 export const columns: { id: CardStatus; label: string; dot: string }[] = [
   { id: 'backlog', label: 'Backlog', dot: 'bg-zinc-500' },
@@ -89,6 +91,79 @@ function ParentPicker({ card }: { card: CardT }) {
   );
 }
 
+/** NSC-257 — editable unblock checklist shown when a card is blocked. */
+function BlockChecklist({ card }: { card: CardT }) {
+  const dispatch = useDispatch();
+  const unsupported = useUnsupported();
+  const messages = useFloor((s) => s.messages);
+  const reason = unsupported({ type: 'card.update', key: card.key, patch: {} });
+
+  const autoItems = React.useMemo(
+    () => autoUnblockItems(card, messages),
+    [card, messages],
+  );
+  const manualItems: string[] = card.blockItems ?? [];
+
+  const [draft, setDraft] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+
+  const save = async (next: string[]) => {
+    if (reason || saving) return;
+    setSaving(true);
+    await dispatch({ type: 'card.update', key: card.key, patch: { blockItems: next } });
+    setSaving(false);
+  };
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text) return;
+    setDraft('');
+    await save([...manualItems, text]);
+  };
+
+  const remove = (index: number) => {
+    void save(manualItems.filter((_, i) => i !== index));
+  };
+
+  const hasItems = autoItems.length > 0 || manualItems.length > 0;
+
+  return (
+    <section className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-3">
+      <span className="text-xs font-medium text-amber-200">What's needed to unblock</span>
+      {hasItems && (
+        <ul className="flex flex-col gap-1">
+          {autoItems.map((item, i) => (
+            <li key={`auto-${i}`} className="flex items-start gap-2 text-sm text-amber-100/80">
+              <span className="mt-1 size-1.5 shrink-0 rounded-full bg-amber-400/60" />
+              {item}
+            </li>
+          ))}
+          {manualItems.map((item, i) => (
+            <li key={`manual-${i}`} className="flex items-center gap-2 text-sm">
+              <span className="mt-0.5 size-1.5 shrink-0 rounded-full bg-amber-400" />
+              <span className="flex-1">{item}</span>
+              <button type="button" aria-label={`Remove: ${item}`} disabled={!!reason || saving}
+                onClick={() => remove(i)}
+                className="text-muted-foreground hover:text-foreground disabled:opacity-40 text-xs">×</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!reason && (
+        <form onSubmit={add} className="flex gap-2">
+          <input
+            value={draft} onChange={(e) => setDraft(e.target.value)}
+            placeholder="Add unblock item…" maxLength={200} disabled={saving}
+            className="border-input bg-background min-w-0 flex-1 rounded-md border px-2 py-1 text-sm disabled:opacity-50"
+          />
+          <Button type="submit" size="sm" variant="outline" disabled={!draft.trim() || saving}>Add</Button>
+        </form>
+      )}
+    </section>
+  );
+}
+
 export function CardDetail({ card }: { card: CardT }) {
   const agent = useFloor((s) => s.agents.find((a) => a.id === card.agentId));
   const col = columns.find((c) => c.id === card.status);
@@ -121,7 +196,8 @@ export function CardDetail({ card }: { card: CardT }) {
         {card.dir && (<><dt className="text-muted-foreground">Folder</dt><dd className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs break-all">{card.dir}</span><OpenWith path={card.dir} cardKey={card.key} /></dd></>)}
         {card.people.length > 0 && (<><dt className="text-muted-foreground">People</dt><dd>{card.people.join(' · ')}</dd></>)}
       </dl>
-      {card.dependsOn && <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-200">Depends on {card.dependsOn}</div>}
+      {card.status === 'blocked' && <BlockChecklist card={card} />}
+      {card.dependsOn && card.status !== 'blocked' && <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-200">Depends on {card.dependsOn}</div>}
       <section className="flex flex-col gap-1.5">
         <span className="text-muted-foreground text-xs">Description</span>
         <p className="text-sm leading-relaxed">{card.description || 'No description yet. The owner writes it when it starts the card.'}</p>

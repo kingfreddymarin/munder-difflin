@@ -53,7 +53,7 @@ export interface ParamountTeamDeps {
   /** The hive directory, where per-agent model picks are stored; null = hive off. */
   hiveRoot(): string | null;
   addTask(task: { id: string; title: string; description?: string; assignee?: string; status: 'todo' | 'blocked';
-    dependsOn: string[]; priority: number; createdAt: string }): boolean;
+    dependsOn: string[]; priority: number; createdAt: string; parentId?: string; blockItems?: string[] }): boolean;
   addTasksBatch?(tasks: Array<{ id: string; title: string; description?: string; assignee?: string; status: 'todo' | 'blocked'; dependsOn: string[]; priority: number; createdAt: string; parentId?: string; teamId?: string }>): boolean;
   sendAgentMessage?(agentId: string, subject: string, body: string): void;
   /** The model catalog the pickers use (remote copy when cached, else the baked one). */
@@ -340,7 +340,7 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         return attempt;
       }
       case 'card.create': {
-        if (!onlyKeys(command, ['type', 'title', 'description', 'assignee', 'priority', 'status'])) return fail('INVALID_INPUT', 'card.create accepts title, description, assignee, priority and status');
+        if (!onlyKeys(command, ['type', 'title', 'description', 'assignee', 'priority', 'status', 'parentId', 'dependsOn', 'blockItems'])) return fail('INVALID_INPUT', 'card.create accepts title, description, assignee, priority, status, parentId, dependsOn and blockItems');
         const title = typeof command.title === 'string' ? command.title.trim() : '';
         if (!title || title.length > 200 || /[\r\n\0]/.test(title)) return fail('INVALID_INPUT', 'A card needs a one-line title of at most 200 characters');
         if (command.description !== undefined && (typeof command.description !== 'string' || command.description.length > 10_000)) return fail('INVALID_INPUT', 'description must be text of at most 10000 characters');
@@ -348,13 +348,29 @@ export function dispatchTeam(command: Record<string, unknown>, deps: Deps, span:
         if (command.status !== undefined && command.status !== 'todo' && command.status !== 'blocked') return fail('INVALID_INPUT', 'A new card starts in todo or blocked');
         const assignee = command.assignee;
         if (assignee !== undefined && (typeof assignee !== 'string' || !Object.hasOwn(deps.agents(), assignee))) return fail('NOT_FOUND', 'Assignee is not an agent on this floor');
-        const key = nextCardKey((deps.tasks().tasks ?? []).map((t) => t.id), team.ticketKeyPrefix?.());
+        const existingIds = new Set((deps.tasks().tasks ?? []).map((t) => t.id));
+        if (command.parentId !== undefined) {
+          if (typeof command.parentId !== 'string' || !command.parentId) return fail('INVALID_INPUT', 'parentId must be a non-empty card key');
+          if (!existingIds.has(command.parentId as string)) return fail('NOT_FOUND', `Parent card ${command.parentId} does not exist`);
+        }
+        if (command.dependsOn !== undefined) {
+          if (!Array.isArray(command.dependsOn) || (command.dependsOn as unknown[]).some((d) => typeof d !== 'string')) return fail('INVALID_INPUT', 'dependsOn must be an array of card key strings');
+          for (const dep of command.dependsOn as string[]) { if (!existingIds.has(dep)) return fail('NOT_FOUND', `Dependency card ${dep} does not exist`); }
+        }
+        if (command.blockItems !== undefined) {
+          if (!Array.isArray(command.blockItems) || (command.blockItems as unknown[]).length > 50 || (command.blockItems as unknown[]).some((b) => typeof b !== 'string' || (b as string).length > 200)) return fail('INVALID_INPUT', 'blockItems must be an array of at most 50 strings, each at most 200 characters');
+        }
+        const key = nextCardKey([...existingIds], team.ticketKeyPrefix?.());
         const description = typeof command.description === 'string' && command.description.trim() ? command.description.trim() : undefined;
         writeAttempted = true;
         const added = team.addTask({
           id: key, title, ...(description ? { description } : {}), ...(assignee ? { assignee: assignee as string } : {}),
-          status: (command.status as 'todo' | 'blocked' | undefined) ?? 'todo', dependsOn: [], priority: (command.priority as number | undefined) ?? 2,
+          status: (command.status as 'todo' | 'blocked' | undefined) ?? 'todo',
+          dependsOn: Array.isArray(command.dependsOn) ? (command.dependsOn as string[]) : [],
+          priority: (command.priority as number | undefined) ?? 2,
           createdAt: new Date().toISOString(),
+          ...(command.parentId ? { parentId: command.parentId as string } : {}),
+          ...(Array.isArray(command.blockItems) && (command.blockItems as string[]).length > 0 ? { blockItems: command.blockItems as string[] } : {}),
         });
         if (!added) return fail('CONFLICT', `Card ${key} was created by someone else a moment ago; retry`);
         return done({ card: { key } });
