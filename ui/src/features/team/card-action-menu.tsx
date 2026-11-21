@@ -98,14 +98,25 @@ export function CardActionMenuProvider({ children }: { children: React.ReactNode
 
   React.useEffect(() => {
     if (!menu) return;
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+    const onOverlayKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (!sending) closeMenu();
+        return;
+      }
+      if (event.key !== 'Tab' || mode !== 'rename' || !panel.current) return;
+      const controls = Array.from(panel.current.querySelectorAll<HTMLElement>('form :is(input, button):enabled'));
+      const active = document.activeElement;
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      const boundary = event.shiftKey ? first : last;
+      if (active !== boundary && controls.some((control) => control === active)) return;
       event.preventDefault();
-      if (!sending) closeMenu();
+      (event.shiftKey ? last : first)?.focus();
     };
-    document.addEventListener('keydown', onEscape);
-    return () => document.removeEventListener('keydown', onEscape);
-  }, [menu, sending, closeMenu]);
+    document.addEventListener('keydown', onOverlayKey);
+    return () => document.removeEventListener('keydown', onOverlayKey);
+  }, [menu, mode, sending, closeMenu]);
 
   const onPanelKey = (e: React.KeyboardEvent) => {
     if (e.key === 'Tab' && mode !== 'rename') {

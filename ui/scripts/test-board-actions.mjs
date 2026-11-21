@@ -56,6 +56,19 @@ async function fixture(t, { rejectUpdate = false } = {}) {
 
 const focused = (locator) => locator.evaluate((element) => element === document.activeElement);
 
+async function expectTabSequence(page, key, controls) {
+  for (const control of controls) {
+    await page.keyboard.press(key);
+    if (await focused(control)) continue;
+    const active = await page.evaluate(() => ({
+      tag: document.activeElement?.tagName,
+      id: document.activeElement?.id,
+      text: document.activeElement?.closest('button')?.textContent?.trim(),
+    }));
+    assert.fail(`${key} expected ${control}, focused ${JSON.stringify(active)}`);
+  }
+}
+
 test('Shift+F10, arrow keys and Escape move and restore focus', async (t) => {
   const { page, card, menuItem } = await fixture(t);
   await card.press('Shift+F10');
@@ -67,6 +80,56 @@ test('Shift+F10, arrow keys and Escape move and restore focus', async (t) => {
   await page.keyboard.press('Escape');
   await page.getByRole('menu').waitFor({ state: 'hidden' });
   await card.evaluate((element) => new Promise((resolve) => requestAnimationFrame(resolve)));
+  assert.equal(await focused(card), true);
+});
+
+test('Rename cycles Tab and Shift+Tab within the form and restores card focus on Escape', async (t) => {
+  const { page, card } = await fixture(t);
+  await card.press('Shift+F10');
+  await page.keyboard.press('Enter');
+  const group = page.getByRole('group', { name: `Rename ${key}` });
+  const title = group.getByLabel('New title');
+  const save = group.getByRole('button', { name: 'Save', exact: true });
+  const cancel = group.getByRole('button', { name: 'Cancel' });
+  assert.equal(await focused(title), true);
+  await title.fill('Edited title');
+  await expectTabSequence(page, 'Tab', [save, cancel, title, save]);
+  await expectTabSequence(page, 'Shift+Tab', [title, cancel, save, title]);
+
+  await title.fill('Original title');
+  assert.equal(await save.isDisabled(), true);
+  await expectTabSequence(page, 'Tab', [cancel, title]);
+  await expectTabSequence(page, 'Shift+Tab', [cancel, title]);
+  await page.keyboard.press('Escape');
+  await group.waitFor({ state: 'hidden' });
+  await card.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  assert.equal(await focused(card), true);
+});
+
+test('Edit fields cycles Tab and Shift+Tab within the dialog and restores card focus on Escape', async (t) => {
+  const { page, card } = await fixture(t);
+  await card.press('Shift+F10');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: `Edit ${key}` });
+  const title = dialog.getByLabel('Title', { exact: true });
+  const description = dialog.getByLabel('Description');
+  const assignee = dialog.getByLabel('Assignee');
+  const priority = dialog.getByRole('radio', { name: 'P1' });
+  const cancel = dialog.getByRole('button', { name: 'Cancel' });
+  const save = dialog.getByRole('button', { name: 'Save', exact: true });
+  const close = dialog.getByRole('button', { name: 'Close' });
+  assert.equal(await focused(title), true);
+  await title.fill('Edited title');
+  await expectTabSequence(page, 'Tab', [description, assignee, priority, cancel, save, close, title]);
+  await expectTabSequence(page, 'Shift+Tab', [close, save, cancel, priority, assignee, description, title]);
+
+  await title.fill('Original title');
+  assert.equal(await save.isDisabled(), true);
+  await expectTabSequence(page, 'Shift+Tab', [close, cancel]);
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
+  await card.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   assert.equal(await focused(card), true);
 });
 
