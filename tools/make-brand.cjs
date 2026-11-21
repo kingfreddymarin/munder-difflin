@@ -10,7 +10,7 @@
  *   build/icon.png               1024 — electron-builder base
  *   build/icon.ico                   — Windows multi-size
  *   build/icon.icns                  — macOS via iconutil
- *   docs/logo.png                 512 — @brand/logo.png, used in renderer
+ *   src/renderer/src/assets/paramount-logo.png 512 — in-renderer splash + favicon
  *   ui/src/assets/nasstro-mark.png 128 — in-app sidebar mark (displayed at size-8)
  *   ui/src/assets/paramount-mark.svg — SVG mark (copy of Figma source)
  *
@@ -60,8 +60,9 @@ function buildIco(pngPaths) {
 const master1024 = D('build/icon.png');
 sipsResize(SRC_PNG, master1024, 1024);
 
-// ── step 2: docs/logo.png (512, used by @brand/logo.png → renderer) ──────────
-sipsResize(SRC_PNG, D('docs/logo.png'), 512);
+// ── step 2: renderer in-app logo (512, used by App.tsx + main.tsx) ───────────
+// docs/logo.png is the public website mark (Michael's portrait) — do not overwrite.
+sipsResize(SRC_PNG, D('src/renderer/src/assets/paramount-logo.png'), 512);
 
 // ── step 3: in-app sidebar mark (128px, rendered at size-8=32px) ─────────────
 sipsResize(SRC_PNG, D('ui/src/assets/nasstro-mark.png'), 128);
