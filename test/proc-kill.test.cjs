@@ -35,10 +35,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Live pids in process group `pgid` (empty when the group is gone). */
 function groupPids(pgid) {
-  try {
-    return execFileSync('pgrep', ['-g', String(pgid)], { encoding: 'utf8' })
-      .split('\n').map((s) => s.trim()).filter(Boolean).map(Number);
-  } catch { return []; } // pgrep exits 1 when no match
+  return execFileSync('ps', ['-axo', 'pid=,pgid='], { encoding: 'utf8' })
+    .trim().split('\n').flatMap((row) => {
+      const [pid, group] = row.trim().split(/\s+/).map(Number);
+      return group === pgid ? [pid] : [];
+    });
 }
 
 /** Spawn a detached (own-process-group) leader that traps HUP, with a child. */
@@ -66,10 +67,13 @@ async function test(name, fn) {
 
   await test('hardKillTree reaps the WHOLE group, not just the leader', async () => {
     const pid = spawnStubbornTree();
-    await sleep(300);
-    const before = groupPids(pid);
-    assert.ok(before.length >= 2, `expected leader+child in group, saw: ${before.join(',')}`);
-    hardKillTree(pid);
+    try {
+      await sleep(300);
+      const before = groupPids(pid);
+      assert.ok(before.length >= 2, `expected leader+child in group, saw: ${before.join(',')}`);
+    } finally {
+      hardKillTree(pid);
+    }
     await sleep(300);
     assert.deepEqual(groupPids(pid), [], 'group should be empty');
   });
