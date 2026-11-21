@@ -10,6 +10,7 @@ export function TeamsEditor() {
   const agents = useFloor((state) => state.agents);
   const cards = useFloor((state) => state.cards);
   const archivedAgents = useFloor((state) => state.archivedAgents ?? []);
+  const baseline = React.useRef<ParamountOrganization>(EMPTY);
   const [organizationText, setOrganizationText] = React.useState(JSON.stringify(EMPTY, null, 2));
   const [teamId, setTeamId] = React.useState('');
   const [title, setTitle] = React.useState('');
@@ -25,14 +26,14 @@ export function TeamsEditor() {
   React.useEffect(() => {
     if (!api?.organization) return;
     let alive = true;
-    api.organization().then((org) => { if (alive) { setOrganizationText(JSON.stringify(org, null, 2)); setTeamId(org.teams[0]?.id ?? ''); } }).catch((error) => { if (alive) setMessage(error instanceof Error ? error.message : 'Could not load teams'); });
+    api.organization().then((org) => { if (alive) { baseline.current = org; setOrganizationText(JSON.stringify(org, null, 2)); setTeamId(org.teams[0]?.id ?? ''); } }).catch((error) => { if (alive) setMessage(error instanceof Error ? error.message : 'Could not load teams'); });
     return () => { alive = false; };
   }, [api]);
 
   const save = async () => {
     if (!api?.saveOrganization) return;
     setBusy(true); setMessage('');
-    try { const result = await api.saveOrganization(JSON.parse(organizationText) as ParamountOrganization); setOrganizationText(JSON.stringify(result, null, 2)); setTeamId(result.teams[0]?.id ?? ''); setMessage('Teams saved.'); }
+    try { const result = await api.saveOrganization(JSON.parse(organizationText) as ParamountOrganization, baseline.current); baseline.current = result; setOrganizationText(JSON.stringify(result, null, 2)); setTeamId(result.teams[0]?.id ?? ''); setMessage('Teams saved.'); }
     catch (error) { setMessage(error instanceof Error ? error.message : 'Could not save teams'); }
     finally { setBusy(false); }
   };

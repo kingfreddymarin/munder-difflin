@@ -27,6 +27,8 @@ const MAX_HOOK_FRAME_BYTES = 256 * 1024;
 interface HookPayload {
   /** Ownership probe from ensureListening(): answered with { pong, instance }, never a hook. */
   ping?: string;
+  team_command?: unknown;
+  team_token?: unknown;
   hook_event_name?: string;
   agent_id?: string | null;
   session_id?: string;
@@ -302,8 +304,15 @@ export class HookServer {
       // conn.end() below closes the connection after that single frame is handled.
       const frame = pending.subarray(0, nl).toString('utf8');
       let payload: HookPayload = {};
-      try { payload = JSON.parse(frame); } catch { /* ignore */ }
+      try {
+        const decoded = JSON.parse(frame);
+        if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) payload = decoded;
+      } catch { /* ignore */ }
       if (typeof payload.ping === 'string') { conn.end(JSON.stringify({ pong: payload.ping, instance: this.instanceId })); return; }
+      if (Object.hasOwn(payload, 'team_command')) {
+        conn.end(JSON.stringify(this.hive.handleTeamCommand(payload.agent_id, payload.team_token, payload.team_command)));
+        return;
+      }
       let res: unknown = {};
       try { res = this.handle(payload); } catch { res = {}; }
       conn.end(JSON.stringify(res ?? {}));

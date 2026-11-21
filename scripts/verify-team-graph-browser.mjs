@@ -36,7 +36,7 @@ async function assertLayout(graph) {
 
 async function assertTiles(page) {
   const boxes = await page.locator('[id^="team-panel-"]').evaluateAll((tiles) => tiles.map((t) => ({ id: t.id, ...t.getBoundingClientRect().toJSON() })));
-  assert.equal(boxes.length, 5);
+  assert.deepEqual(boxes.map((box) => box.id), ['team-panel-graph']);
   for (const [i, a] of boxes.entries()) {
     assert.ok(a.height > 0 && a.width > 0, `${a.id} must be visible`);
     for (const b of boxes.slice(i + 1)) {
@@ -112,24 +112,41 @@ try {
     assert.equal(await agent.getAttribute('transform'), before);
     const scroll = page.locator('[data-graph-scroll]');
     await jump.click();
-    assert.ok(await scroll.evaluate((el) => el.scrollTop) > 0, 'Tasks scrolls inside the graph');
+    const focusedTask = graph.locator('[data-task-node]:focus');
+    const viewportBox = await scroll.boundingBox();
+    const focusedBox = await focusedTask.boundingBox();
+    assert.ok(focusedBox.y >= viewportBox.y && focusedBox.y + focusedBox.height <= viewportBox.y + viewportBox.height,
+      'Tasks reveals the focused card inside the graph');
     await top.click();
     assert.equal(await scroll.evaluate((el) => el.scrollTop), 0);
     await agent.press('Shift+F10');
     await page.getByRole('menu', { name: /^Actions for / }).waitFor();
     await page.getByRole('menuitem', { name: 'Rename' }).press('Escape');
     await agent.click();
-    await page.waitForURL((url) => url.hash.startsWith('#/terminal?') && new URLSearchParams(url.hash.split('?')[1]).has('a'));
-    await page.goto(teamUrl);
+    const hud = page.getByRole('dialog');
+    await hud.getByRole('button', { name: 'Open agent profile' }).waitFor();
+    assert.equal(page.url(), teamUrl, 'agent selection opens a HUD');
+    await page.keyboard.press('Escape');
+    await hud.waitFor({ state: 'hidden' });
+    assert.equal(await agent.evaluate((element) => element === document.activeElement), true);
+    const reportingLink = graph.getByRole('button', { name: /reports to you/ }).first();
+    await reportingLink.press('Enter');
+    await page.getByRole('dialog', { name: 'Connection' }).getByText(/reports to you/).waitFor();
+    await page.keyboard.press('Escape');
+    await automation.press('Enter');
+    await hud.getByText('Enabled', { exact: false }).waitFor();
+    assert.equal(page.url(), teamUrl, 'automation selection opens a HUD');
+    await hud.getByRole('button', { name: 'Close graph details' }).click();
     for (const activation of ['click', 'Enter', 'Space']) {
       await jump.click();
       const card = graph.locator('[data-task-node]:focus');
       const key = await card.getAttribute('data-task-node');
       if (activation === 'click') await card.click();
       else await card.press(activation);
-      await page.waitForURL((url) => url.hash.startsWith('#/board?') && new URLSearchParams(url.hash.split('?')[1]).get('card') === key);
-      await page.getByRole('dialog').waitFor();
-      await page.goto(teamUrl);
+      await page.getByRole('dialog', { name: new RegExp(key) }).waitFor();
+      assert.equal(page.url(), teamUrl, 'task selection opens a HUD');
+      if (screenshots && activation === 'click') await page.screenshot({ path: join(screenshots, `hud-${viewport.width}.png`) });
+      await hud.getByRole('button', { name: 'Close graph details' }).click();
     }
     const touch = await page.context().newCDPSession(page);
     await top.click();
@@ -146,7 +163,7 @@ try {
     await assertLayout(graph);
     await reset.click();
     await touch.detach();
-    console.log(`${viewport.width}×${viewport.height}: mouse and touch drag, Escape, keyboard, connections, reload, reset, opening and five-tile hit testing passed`);
+    console.log(`${viewport.width}×${viewport.height}: mouse and touch drag, Escape, keyboard, connections, reload, reset, in-graph HUD and hit testing passed`);
   }
   assert.deepEqual(errors, []);
 } finally {
