@@ -49,6 +49,7 @@ test('R2: reset keeps the floor until its last write; a successor cannot claim i
     clearMissionTimers: noop, clearContextTimers: noop, stopWebhookDoneObserver: noop, stopEphemeralWorkerWatcher: noop,
     integrationBroker: stub, hookServer: stub, telemetry: stub, stopSlackServer: noop, reflector: stub, persist: { close: noop },
     ptyManager: { killAll: noop },
+    sideAgents: { closeAll: () => order.push('sideAgents.closeAll') },
     hive: { stopRouter: noop, removeExposedCodexData: noop, root: () => floorHome() && path.join(home, 'hive') },
     memory: { stop: noop, palacePath: () => floorHome() && path.join(home, 'palace') },
     roster: { archive: () => { order.push('roster.archive'); roster.archive(); } },
@@ -61,7 +62,7 @@ test('R2: reset keeps the floor until its last write; a successor cannot claim i
     resetConfig: () => order.push('resetConfig'), app: { relaunch: (opts) => { relaunched = opts; }, exit: () => order.push('exit') } };
   vm.runInNewContext(ts.transpileModule(handlerSrc, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, ctx);
   await handler();
-  assert.deepEqual(order, ['roster.archive', 'remove hive contents', 'release', 'resetConfig', 'exit']);
+  assert.deepEqual(order, ['sideAgents.closeAll', 'roster.archive', 'remove hive contents', 'release', 'resetConfig', 'exit']);
   assert.deepEqual(relaunched.args, ['--floor-data=/shared/floors/old', '--floor-shared=/shared', '--floor-home=/old/home', '--council-floor-picker']);
   assert.equal(successorClaim.ok, false, 'the floor was still held when the hive was emptied');
   assert.equal(successorClaim.error, 'held');

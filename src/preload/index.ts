@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
+import type { SideAgentAction, SideAgentProvider, SideAgentResult, SideAgentState } from '../shared/sideAgent';
 import type { AgentProvider } from '../shared/agentProvider';
 import type { ParamountCommand, ParamountPreloadAPI, ParamountRawSnapshot, ParamountResult, ParamountUpdate } from './paramount';
 import type { HireManifest } from '../shared/hire';
@@ -577,6 +578,15 @@ const api = {
   trackMessageSent: (surface: 'terminal' | 'composer'): Promise<void> =>
     ipcRenderer.invoke('analytics:messageSent', surface).then(() => undefined, () => undefined),
 
+  sideAgentState: (): Promise<SideAgentState> => ipcRenderer.invoke('side-agent:state'),
+  sideAgentAct: (action: SideAgentAction, provider?: SideAgentProvider): Promise<SideAgentResult> =>
+    ipcRenderer.invoke('side-agent:act', action, provider),
+  onSideAgentChanged: (cb: (disposedPtyId?: string) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, disposedPtyId?: string) => cb(disposedPtyId);
+    ipcRenderer.on('side-agent:changed', listener);
+    return () => ipcRenderer.removeListener('side-agent:changed', listener);
+  },
+
   // ─── PTY ─────────────────────────────────────────────────────────────────
   /** `cwd` in the result is the TILDE-EXPANDED absolute path main actually spawned
    *  into — the renderer stores that, not the raw `~/…` the user typed. */
@@ -977,8 +987,8 @@ const api = {
   },
 
   // ─── Quit confirmation ───────────────────────────────────────────────────
-  onCloseRequested: (cb: (info: { ptyCount: number }) => void): (() => void) => {
-    const listener = (_e: IpcRendererEvent, info: { ptyCount: number }) => cb(info);
+  onCloseRequested: (cb: (info: { ptyCount: number; sideAgentCount?: number }) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, info: { ptyCount: number; sideAgentCount?: number }) => cb(info);
     ipcRenderer.on('app:closeRequested', listener);
     return () => ipcRenderer.removeListener('app:closeRequested', listener);
   },

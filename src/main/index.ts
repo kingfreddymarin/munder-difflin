@@ -20,6 +20,7 @@ import { performance } from 'node:perf_hooks';
 import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
+import { createSideAgents, isSideAgentPty, sideAgentSnapshot } from './side-agent';
 import { createSnapshotCommandDiscovery, fallbackCommandPath, installedSnapshotEngines, probeLoginShellCommand, snapshotCommandTools, snapshotSignInPath } from './snapshotCommandDiscovery';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
 import { createBoardDeps } from './paramount-board';
@@ -155,6 +156,7 @@ const crashCapture = {
 installCrashCapture(crashCapture, process, app);
 
 const ptyManager = new PtyManager();
+const sideAgentPtys = new PtyManager();
 const snapshotCommandDiscovery = createSnapshotCommandDiscovery({
   probe: probeLoginShellCommand,
   fallback: fallbackCommandPath,
@@ -1435,9 +1437,17 @@ function writeFleetSnapshot(): void {
         // fall back to the session figure rather than publishing a cold $0.
         const lifetime = costTotals.usdFor(id);
         const sessionUsd = u ? Number(u.usd.toFixed(4)) : 0;
+        const ptyId = ptyForAgent(id);
+        const activity = agentActivity({ [id]: {
+          lastOutputAt: ptyId ? ptyManager.lastOutputAt(ptyId) : undefined,
+          context: hookServer.contextFor(id),
+        } }, now, WORKER_WAKE_IDLE_MS)[id];
+        const status = a.onHold ? 'on hold' : !ptyId ? 'offline' : activity.busy ? 'working' : 'idle';
         return {
           id,
           name: a.name,
+          status,
+          contextPct: activity.contextPct,
           role: a.role ?? (a.isGod ? 'orchestrator' : 'agent'),
           cwd: a.cwd,
           isGod: !!a.isGod,
@@ -2533,7 +2543,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
       // A floor's close is NOT an app quit — confirm only its OWN terminals,
       // via a self-contained native dialog (no renderer modal). Confirming lets
       // the window close; its PTYs are stopped in the 'closed' handler.
-      const owned = ptyManager.countByOwner(wc);
+      const owned = ptyManager.countByOwner(wc) + sideAgentPtys.countByOwner(wc);
       if (owned > 0) {
         const choice = dialog.showMessageBoxSync(win, {
           type: 'warning',
@@ -2548,11 +2558,12 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
       return;
     }
     // Primary window: existing app-wide quit warning (renderer modal).
-    const count = ptyManager.list().length;
-    if (count === 0) return;
+    const ptyCount = ptyManager.list().length;
+    const sideAgentCount = sideAgentPtys.list().length;
+    if (ptyCount + sideAgentCount === 0) return;
     e.preventDefault();
     win.focus();
-    wc.send('app:closeRequested', { ptyCount: count });
+    wc.send('app:closeRequested', { ptyCount, sideAgentCount });
   });
 
   // The primary is the default PTY sink; floors route purely by per-PTY owner.
@@ -2571,7 +2582,9 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   registerParamountProtocol(wc.session);
   win.loadURL(paramountUiUrl());
 
+  wc.on('render-process-gone', () => sideAgents.close(wc));
   win.on('closed', () => {
+    sideAgents.close(wc);
     allWindows.delete(win);
     // A closed floor must not leave its terminals running headless. (Natural
     // onExit teardown — archive + worktree cleanup — still runs per PTY.)
@@ -3217,23 +3230,58 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // record matches what the registry and the PTY actually used.
   return { ...res, cwd: opts.cwd, ...(worktreePath ? { worktreePath } : {}), ...(resumeNotFound ? { resumeNotFound: true } : {}), ...(didResume ? { resumed: true } : {}), ...(seedPrompt ? { seedPrompt } : {}) };
 }
-ipcMain.handle('pty:write', (_evt, id: string, data: string) => {
+const sideAgents = createSideAgents(sideAgentPtys, () => {
+  const floor = floorGate.state();
+  if (allowQuit || floor.state !== 'open' || !hive.enabled()) return null;
+  const registry = hive.registry();
+  const id = registry.godId;
+  if (!id || !Object.hasOwn(registry.agents, id) || !ptyForAgent(id)) return null;
+  return sideAgentSnapshot({
+    floorLabel: basename(floor.floor),
+    orchestratorId: id,
+    orchestratorName: resolveGodName(registry.agents[id].name),
+    capturedAt: new Date().toISOString(),
+    board: hive.board(),
+    ledger: hive.tasks(),
+    fleet: hive.fleet(),
+    log: hive.logTail(120),
+    agentIds: new Set(Object.entries(registry.agents).filter(([, agent]) => !agent.archived).map(([agentId]) => agentId)),
+  });
+}, (owner, disposedPtyId) => {
+  try { if (!owner.isDestroyed()) owner.send('side-agent:changed', disposedPtyId); }
+  catch { /* renderer closed during delivery */ }
+});
+
+ipcMain.handle('side-agent:state', (evt) => sideAgents.state(evt.sender));
+ipcMain.handle('side-agent:act', (evt, action: unknown, provider: unknown) => {
+  if (action === 'stop') return sideAgents.stop(evt.sender);
+  if (action === 'start' || action === 'restart') return sideAgents.launch(evt.sender, provider, action === 'restart');
+  return { ok: false, error: 'Unknown side-agent action.' };
+});
+
+function ptyForSender(sender: Electron.WebContents, id: string): PtyManager | undefined {
+  if (!isSideAgentPty(id)) return ptyManager;
+  if (sideAgents.owns(sender, id)) return sideAgentPtys;
+}
+
+ipcMain.handle('pty:write', (evt, id: string, data: string) => {
   if (typeof id !== 'string' || typeof data !== 'string') return { ok: false, error: 'invalid args' };
-  return ptyManager.write(id, data);
+  return ptyForSender(evt.sender, id)?.write(id, data) ?? { ok: false, error: 'Side agent is no longer running in this window.' };
 });
-ipcMain.handle('pty:resize', (_evt, id: string, cols: number, rows: number) => {
+ipcMain.handle('pty:resize', (evt, id: string, cols: number, rows: number) => {
   if (typeof id !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') return { ok: false, error: 'invalid args' };
-  return ptyManager.resize(id, cols, rows);
+  return ptyForSender(evt.sender, id)?.resize(id, cols, rows) ?? { ok: false, error: 'Side agent is no longer running in this window.' };
 });
-ipcMain.handle('pty:redraw', (_evt, id: string) => {
+ipcMain.handle('pty:redraw', (evt, id: string) => {
   if (typeof id !== 'string') return { ok: false, error: 'invalid id' };
-  return ptyManager.redraw(id);
+  return ptyForSender(evt.sender, id)?.redraw(id) ?? { ok: false, error: 'Side agent is no longer running in this window.' };
 });
 ipcMain.handle('pty:kill', (_evt, id: string) => {
   if (typeof id !== 'string') return { ok: false, error: 'invalid id' };
   // Kill the process, then run the shared lifecycle teardown (archive the agent,
   // remove its isolated worktree, drop the maps). teardownPty is idempotent, so
   // node-pty firing onExit once the child actually dies is a harmless no-op.
+  if (isSideAgentPty(id)) return { ok: false, error: 'Use the Side Agent stop control.' };
   const res = ptyManager.kill(id);
   teardownPty(id);
   return res;
@@ -3561,6 +3609,7 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   // (Identical recovery path to resetAll — relaunch is the clean re-bind.)
   allowQuit = true;
   writeConfig({ harnessHome: newHome });
+  sideAgents.closeAll();
   try { ptyManager.killAll(); } catch (e) { console.error('[changeHome] killAll:', e); }
   // Agents and services on the old floor have stopped: release it. The destination stays
   // reserved for the relaunch (same profile, so the new process takes it over as its own).
@@ -4896,6 +4945,7 @@ function teardownAndQuit(opts: { relaunch?: boolean } = {}): void {
   try { reflector.stop(); } catch (e) { console.error('[quit] reflector.stop:', e); }
   try { persist.close(); } catch (e) { console.error('[quit] persist.close:', e); }
   try { hive.stopAllProxyBridges(); } catch (e) { console.error('[quit] stopAllProxyBridges:', e); }
+  sideAgents.closeAll();
   try { ptyManager.killAll(); } catch (e) { console.error('[quit] killAll:', e); }
   // Switch floor: the same quit (will-quit still releases the floor last), then start again at the picker.
   // Never with the floor or Floor location flags (review F1): a floor process restarts at its picker.
@@ -4958,6 +5008,7 @@ ipcMain.handle('app:resetAll', () => {
   try { memory.stop(); } catch (e) { console.error('[reset] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[reset] reflector.stop:', e); }
   try { persist.close(); } catch (e) { console.error('[reset] persist.close:', e); }
+  sideAgents.closeAll();
   try { ptyManager.killAll(); } catch (e) { console.error('[reset] killAll:', e); }
   try { hive.removeExposedCodexData(); } catch (e) { console.error('[reset] removeExposedCodexData:', e); }
   // Erase the hive (Michael's + every agent's memory, inboxes, tasks, board,
@@ -6644,12 +6695,13 @@ app.whenReady().then(() => {
 // the red close button. Both routes hit the same warning UX.
 app.on('before-quit', (e) => {
   if (allowQuit) return;
-  const count = ptyManager.list().length;
-  if (count === 0) return;
+  const ptyCount = ptyManager.list().length;
+  const sideAgentCount = sideAgentPtys.list().length;
+  if (ptyCount + sideAgentCount === 0) return;
   e.preventDefault();
   if (mainWindow) {
     mainWindow.focus();
-    mainWindow.webContents.send('app:closeRequested', { ptyCount: count });
+    mainWindow.webContents.send('app:closeRequested', { ptyCount, sideAgentCount });
   }
 });
 

@@ -78,6 +78,7 @@ function changeHomeWith(oldHome, gate, refusal, proc = {}) {
     stopWebhookServer: noop, memory: { stop: noop, drain: async () => {} }, reflector: { stop: noop, drain: async () => {} }, bootstrapHiveServices: noop,
     startSlackServer: noop, reconcileWebhookServer: noop,
     writeConfig: (c) => { calls.push(['writeConfig', c]); Object.assign(cfg, c); }, ptyManager: { killAll: () => calls.push(['killAll']) },
+    sideAgents: { closeAll: () => calls.push(['sideAgents.closeAll']) },
     app: { relaunch: (o) => calls.push(['relaunch', o]), exit: () => calls.push(['exit']), getPath: () => proc.userData }, allowQuit: false };
   vm.runInNewContext(ts.transpileModule(filterSrc + handlerSrc, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, ctx);
   return { run: (payload) => handler({}, payload), calls };
@@ -150,7 +151,7 @@ test('F3: a move claims the destination first, never copies lock files, then rel
   assert.equal(destLock.pid, process.pid);
   assert.equal(destLock.userData, council.userData, 'the reserved destination lock, not a copy of the old one');
   assert.equal(fs.existsSync(path.join(old, 'hive', FLOOR_LOCK_FILE)), false, 'old floor released after its agents stopped');
-  assert.deepEqual(h.calls.map((c) => c[0]), ['writeConfig', 'killAll', 'relaunch', 'exit']);
+  assert.deepEqual(h.calls.map((c) => c[0]), ['writeConfig', 'sideAgents.closeAll', 'killAll', 'relaunch', 'exit']);
 });
 
 test('F3: the old claim is released only after agents are killed', () => {
@@ -158,6 +159,7 @@ test('F3: the old claim is released only after agents are killed', () => {
   const reserve = handler.indexOf('floorGate.reserve(newHome)');
   assert.ok(reserve > 0 && reserve < handler.indexOf('ensureHarnessHome(newHome)'));
   assert.ok(handler.indexOf('ptyManager.killAll()') < handler.indexOf('floorGate.release();'));
+  assert.ok(handler.indexOf('sideAgents.closeAll()') < handler.indexOf('floorGate.release();'));
 });
 
 test("owner 2026-11-12: Settings' floor location cannot move to the app's own data folder", async (t) => {

@@ -175,7 +175,8 @@ export function fallbackCommandPath(command: string): string | null {
     `/opt/homebrew/bin/${command}`, `/usr/local/bin/${command}`,
     `${process.env.HOME ?? ''}/.local/bin/${command}`,
     `${process.env.HOME ?? ''}/.claude/local/${command}`,
-    `${process.env.HOME ?? ''}/.volta/bin/${command}`
+    `${process.env.HOME ?? ''}/.volta/bin/${command}`,
+    ...(command === 'opencode' && process.env.HOME ? [`${process.env.HOME}/.opencode/bin/opencode`] : [])
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }

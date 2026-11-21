@@ -31,7 +31,12 @@ function escapeDroppedPath(path: string): string {
   return path.replace(CTRL, '').split('').map((ch) => (SPECIAL.has(ch.charCodeAt(0)) ? BS + ch : ch)).join('');
 }
 
-export function PtyTerminalView({ ptyId, cwd, label }: { ptyId: string; cwd?: string; label: string }) {
+export function PtyTerminalView({ ptyId, cwd, label, palettes = TERMINAL_THEMES }: {
+  ptyId: string;
+  cwd?: string;
+  label: string;
+  palettes?: typeof TERMINAL_THEMES;
+}) {
   const hostRef = React.useRef<HTMLDivElement>(null);
   const theme = usePtyTheme();
   const fontSize = useTerminalFontSize();
@@ -53,7 +58,7 @@ export function PtyTerminalView({ ptyId, cwd, label }: { ptyId: string; cwd?: st
     const container = hostRef.current;
     if (!container || !bridge) return;
     setError(null);
-    const entry = acquireTerminal(ptyId, TERMINAL_THEMES[themeRef.current], fontRef.current);
+    const entry = acquireTerminal(ptyId, palettes[themeRef.current], fontRef.current);
     entry.onError = setError;
     attachTerminal(entry, container);
 
@@ -86,20 +91,20 @@ export function PtyTerminalView({ ptyId, cwd, label }: { ptyId: string; cwd?: st
       // Detach, never dispose: the session keeps streaming into the pool.
       detachTerminal(entry, container);
     };
-  }, [ptyId, bridge]);
+  }, [ptyId, bridge, palettes]);
 
   React.useEffect(() => {
     if (!bridge) return;
-    acquireTerminal(ptyId, TERMINAL_THEMES[theme], fontRef.current).term.options.theme = TERMINAL_THEMES[theme];
+    acquireTerminal(ptyId, palettes[theme], fontRef.current).term.options.theme = palettes[theme];
     notifyThemeChangeAll(theme);
-  }, [theme, ptyId, bridge]);
+  }, [theme, ptyId, bridge, palettes]);
 
   React.useEffect(() => {
     if (!bridge) return;
-    const entry = acquireTerminal(ptyId, TERMINAL_THEMES[themeRef.current], fontSize);
+    const entry = acquireTerminal(ptyId, palettes[themeRef.current], fontSize);
     entry.term.options.fontSize = fontSize;
     fitTerminal(entry);
-  }, [fontSize, ptyId, bridge]);
+  }, [fontSize, ptyId, bridge, palettes]);
 
   // Keyboard zoom: Cmd/Ctrl + '=' / '-' / '0', as in Munder.
   React.useEffect(() => {
@@ -130,11 +135,11 @@ export function PtyTerminalView({ ptyId, cwd, label }: { ptyId: string; cwd?: st
 
   if (!bridge) return <ErrorNotice error={BackendError.local('DISCONNECTED', 'The desktop terminal is unavailable. Open Paramount in the desktop app.', 'pty.attach')} className="m-3" />;
 
-  const palette = TERMINAL_THEMES[theme];
+  const palette = palettes[theme];
   return (
     <div className="flex h-full min-h-0 w-full flex-col" style={{ background: palette.background, color: palette.foreground }}>
       <div className="flex items-center gap-1.5 border-b border-dashed px-2 py-1 font-mono text-xs opacity-80" style={{ borderColor: palette.brightBlack }}>
-        <span aria-hidden className="size-2 animate-pulse" style={{ background: palette.green }} />
+        <span aria-hidden className="size-2 animate-pulse" style={{ background: palettes === TERMINAL_THEMES ? palette.green : palette.yellow }} />
         <span className="truncate">live · pty {ptyId}</span>
         <div className="ml-auto flex items-center gap-0.5">
           <button type="button" onClick={() => setTerminalFontSize(fontSize - 1)} disabled={fontSize <= MIN_TERMINAL_FONT_SIZE} title="Zoom out (Cmd -)" aria-label="Zoom out" className="grid size-6 place-items-center rounded hover:bg-black/10 disabled:opacity-40 dark:hover:bg-white/10"><Minus className="size-3.5" /></button>

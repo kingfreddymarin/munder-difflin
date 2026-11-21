@@ -57,3 +57,25 @@ const darkTheme = {
 };
 
 export const TERMINAL_THEMES: Record<PtyTheme, typeof lightTheme> = { light: lightTheme, dark: darkTheme };
+
+
+function sideAgentPalette(dark: boolean): typeof lightTheme {
+  const background = dark ? '#171717' : '#ffffff';
+  const foreground = dark ? '#ffffff' : '#171717';
+  const muted = dark ? '#a3a3a3' : '#525252';
+  const yellow = dark ? '#fde047' : '#a16207';
+  return {
+    background, foreground, cursor: yellow, cursorAccent: background,
+    selectionBackground: '#fde047', selectionForeground: '#171717',
+    black: background, red: yellow, green: foreground, yellow, blue: muted,
+    magenta: muted, cyan: muted, white: foreground,
+    brightBlack: muted, brightRed: yellow, brightGreen: foreground,
+    brightYellow: yellow, brightBlue: muted, brightMagenta: muted,
+    brightCyan: muted, brightWhite: foreground,
+  };
+}
+
+export const SIDE_AGENT_TERMINAL_THEMES: typeof TERMINAL_THEMES = {
+  light: sideAgentPalette(false),
+  dark: sideAgentPalette(true),
+};
