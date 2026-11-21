@@ -115,6 +115,7 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
         ...(priorityStr !== undefined ? { priority: priorityStr } : {}),
         ...(c.patch.assignee !== undefined ? { agentId: c.patch.assignee } : {}),
         ...(c.patch.parentId !== undefined ? { parentId: c.patch.parentId || undefined } : {}),
+        ...(c.patch.blockItems !== undefined ? { blockItems: c.patch.blockItems } : {}),
         updated: ev.at,
       });
       const detail = Object.entries(c.patch).map(([k, v]) => `${k} = ${v}`).join(', ');

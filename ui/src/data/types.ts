@@ -131,6 +131,8 @@ export interface Card {
   tokens: number;
   origin: string;
   people: string[];
+  /** Human-editable unblock checklist items, persisted on the card (NSC-257). */
+  blockItems?: string[];
 }
 
 export type ActivityKind = 'message' | 'tool' | 'edit' | 'ticket' | 'breaker' | 'question' | 'lifecycle';
