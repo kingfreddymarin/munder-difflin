@@ -795,8 +795,11 @@ export function modelForRole(
   if (meta.isGod) {
     // GOD engine is selectable: an explicit godModel wins, else the chosen
     // provider's recommended orchestrator model, else the legacy Opus default.
+    // Empty string means "no preference" (set after a provider-default switch).
     const preset = providerPreset(config?.godProvider ?? 'claude');
-    return config?.godModel ?? preset.recommendedOrchestratorModel ?? MODEL_GOD;
+    const godModel = config?.godModel;
+    if (godModel === '') return undefined;
+    return godModel ?? preset.recommendedOrchestratorModel ?? MODEL_GOD;
   }
   const hay = `${meta.role ?? ''} ${(meta.capabilities ?? []).join(' ')}`.toLowerCase();
   if (/\b(triage|rout|verif|lint|format|summar|classif|label)/.test(hay)) return MODEL_HELPER;

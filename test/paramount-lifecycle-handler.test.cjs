@@ -123,3 +123,51 @@ async function scenario(firstKind, secondKind) {
 require('node:test')('production lifecycle handlers reject all four overlapping switch/restart combinations', { skip: process.platform === 'win32' }, async () => {
   for (const pair of [['switch', 'switch'], ['switch', 'restart'], ['restart', 'switch'], ['restart', 'restart']]) await scenario(...pair);
 });
+
+require('node:test')('restartAgent: failed spawn does not archive a previously-active agent', { skip: process.platform === 'win32' }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paramount-failed-spawn-'));
+  const agentId = 'fixture-failed-spawn';
+  const manager = new PtyManager();
+  const ptyToAgent = new Map([[agentId, agentId]]);
+  const row = { id: agentId, name: 'Fixture', provider: 'claude', cwd: root, archived: false };
+  const startShell = () => manager.spawn({ id: agentId, cwd: root, command: '/bin/sh', args: ['-c', 'read line'] });
+  assert.equal(startShell().ok, true, 'fixture shell starts');
+  const ctx = {
+    ...lifecycle,
+    hive: {
+      root: () => root, enabled: () => true,
+      registry: () => ({ agents: { [agentId]: { ...row } } }),
+      lastSession: () => 'some-session-id', send: () => {},
+    },
+    claimFloor: () => true, ptyManager: manager, ptyToAgent,
+    worktreePaths: new Map(), statSync: fs.statSync, join: path.join,
+    readConfig: () => ({}),
+    readAgentModels: () => ({ [agentId]: { engine: 'claude', model: 'claude-3-7-sonnet' } }),
+    agentModelPick: () => 'claude-3-7-sonnet',
+    readLauncherState: () => ({ agents: {} }),
+    launcherDiscovery: { current: () => ({ launchers: [] }) },
+    buildWorkerLaunch: () => ({ bin: '/bin/sh', args: [] }),
+    teardownPty: (id) => { ptyToAgent.delete(id); },
+    restoreArchived: (_id, value) => { row.archived = value; },
+    saveAgentModelPick: () => {}, saveLauncherPick: () => {},
+    sender: { send: () => {} },
+    spawnAgentCore: async () => ({ ok: false, error: 'CONFLICT: Existing session could not be resumed; no replacement process was started' }),
+  };
+  try {
+    const handlers = vm.runInNewContext(js, ctx);
+    const result = await handlers.restartAgent(agentId, 'resume');
+    assert.equal(result.ok, false, 'restart fails on CONFLICT');
+    assert.equal(row.archived, false, 'agent must remain unarchived after failed spawn');
+    console.log(JSON.stringify({ test: 'failed-spawn-never-archives', ok: result.ok, archived: row.archived }));
+  } finally {
+    for (const pty of manager.list()) manager.kill(pty.id);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+require('node:test')('modelForRole: empty-string godModel treated as no preference (not re-pinned after provider-default switch)', () => {
+  const { modelForRole } = loadTs('src/main/config.ts');
+  const result = modelForRole({ isGod: true }, { godProvider: 'claude', godModel: '' });
+  assert.equal(result, undefined, 'empty godModel must return undefined — no --model flag on restart');
+  console.log(JSON.stringify({ test: 'empty-godModel-returns-undefined', result }));
+});

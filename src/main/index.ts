@@ -4473,7 +4473,7 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
           const failed = ptyManager.kill(agentId);
           if (failed.ok) teardownPty(agentId, { keepEntry: true, preserveWorktree: true });
         }
-        restoreArchived(agentId, activePty ? true : previousArchived);
+        restoreArchived(agentId, previousArchived);
         return { ok: false, error: res.resumeNotFound ? 'The saved transcript was not found. Start fresh to retain the agent identity and task files.' : res.error ?? 'The saved session could not be resumed.' };
       }
       if (isGod) {
