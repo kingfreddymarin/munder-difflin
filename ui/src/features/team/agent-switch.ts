@@ -1,4 +1,10 @@
 import type { CouncilLauncherPick, ParamountTeamModels } from '@/data/paramount-api';
+import { launcherPick } from '@/lib/launcher-fit';
+
+/** The switch form starts from the live account, else the saved one, as a dispatchable pick without its label. */
+export function switchLauncherSeed(account?: ParamountTeamModels['agents'][string]): CouncilLauncherPick | null {
+  return launcherPick(account?.running ? account.running.launcher : account?.launcher);
+}
 
 export function currentSwitchModel(account?: ParamountTeamModels['agents'][string]) {
   return account?.running ? account.running.model : account?.model;

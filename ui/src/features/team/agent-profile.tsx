@@ -1,4 +1,5 @@
-import { canSwitchAgent, currentSwitchModel } from './agent-switch';
+import { canSwitchAgent, currentSwitchModel, switchLauncherSeed } from './agent-switch';
+import { launcherPick } from '@/lib/launcher-fit';
 import { OpenWith } from '@/components/app/external-link';
 import * as React from 'react';
 import { Switch } from '@/components/animate-ui/components/radix/switch';
@@ -54,7 +55,7 @@ export function useAgentProfile(agentId: string | null) {
       const current = m.agents[agentId]?.running?.provider ?? m.agents[agentId]?.engine;
       const next = m.engines.find((entry) => entry.id === current) ?? m.engines[0];
       setSwitchProvider(next?.id ?? ''); setSwitchModel(currentSwitchModel(m.agents[agentId]) ?? '');
-      setSwitchLauncher(m.agents[agentId]?.running ? m.agents[agentId].running!.launcher ?? null : m.agents[agentId]?.launcher ?? null); setSwitchChosen(false);
+      setSwitchLauncher(switchLauncherSeed(m.agents[agentId])); setSwitchChosen(false);
     }, (cause) => { if (request === modelRequest.current) setModelsError(toBackendError(cause, 'team.models')); });
   }, [teamApi, agentId]);
   React.useEffect(() => { setModels(null); setModel(''); setSwitchChosen(false); setSwitching(false); setSwitchMessage(''); loadModels(); return () => { modelRequest.current++; }; }, [loadModels]);
@@ -93,7 +94,7 @@ export function useAgentProfile(agentId: string | null) {
   const switchEngine = async () => {
     if (!agent || !switchAllowed || switching) return;
     setSwitching(true); setSwitchMessage('');
-    const ok = await dispatch({ type: 'agent.switch', agentId: agent.id, provider: switchProvider, model: switchModel, launcher: switchLauncher });
+    const ok = await dispatch({ type: 'agent.switch', agentId: agent.id, provider: switchProvider, model: switchModel, launcher: launcherPick(switchLauncher) });
     if (selectedAgentId.current !== agent.id) return;
     setSwitchMessage(ok
       ? `Started a fresh ${switchProvider} session for ${agent.name}. Its old session and history remain; unsaved conversation context was not transferred.`
