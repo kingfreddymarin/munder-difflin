@@ -1,7 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { existsSync, readFileSync, statSync } = require('node:fs');
+const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } = require('node:fs');
+const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { createSideAgents, isSideAgentPty, sideAgentCards } = loadTs('src/main/side-agent.ts');
@@ -154,8 +155,6 @@ test('launch failures leave no phantom session and a failed restart preflight pr
 
 test('a native side PTY accepts input, reports exit, and removes its provider profile',
   { skip: process.platform === 'win32', timeout: 20000 }, async (t) => {
-    const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
-    const { tmpdir } = require('node:os');
     const { setTimeout: delay } = require('node:timers/promises');
     const { PtyManager } = loadTs('src/main/pty.ts');
     const bin = mkdtempSync(join(tmpdir(), 'side-agent-bin-'));
@@ -183,4 +182,24 @@ test('a native side PTY accepts input, reports exit, and removes its provider pr
     assert.equal(side.state(owner).status, 'exited');
     assert.equal(existsSync(home), false);
     assert.deepEqual(pty.list(), []);
+  });
+
+test('OpenCode is found in its native installer directory when the login shell misses it',
+  { skip: process.platform === 'win32' }, (t) => {
+    const { fallbackCommandPath } = loadTs('src/main/snapshotCommandDiscovery.ts');
+    const home = mkdtempSync(join(tmpdir(), 'opencode-native-install-'));
+    const oldHome = process.env.HOME;
+    process.env.HOME = home;
+    t.after(() => {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    });
+    const bin = join(home, '.opencode', 'bin');
+    mkdirSync(bin, { recursive: true });
+    const executable = join(bin, 'opencode');
+    writeFileSync(executable, '#!/bin/sh\n', { mode: 0o700 });
+    // A system-wide installation has higher precedence than a per-user installer.
+    assert.ok([executable, '/opt/homebrew/bin/opencode', '/usr/local/bin/opencode']
+      .includes(fallbackCommandPath('opencode')));
   });
