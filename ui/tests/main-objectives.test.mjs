@@ -60,8 +60,7 @@ function makeEditorHarness(initial, { dispatchOk = true, snapshotCards = [] } = 
 
 // ── CardPicker harness ────────────────────────────────────────────────────────
 // Tests CardPicker directly. Hooks:
-//   useGetSnapshot → no cursor (custom hook wrapping store)
-//   useRef (1 call, for beforeCreateRef — MUST persist across renders)
+//   useRef (1 call, for newBtnRef — persists across renders)
 //   useState (1 call, for `creating`)
 function makePickerHarness(initialCardKeys = [], openCards = [], snapshotCards = []) {
   const values = []; let cursor = 0;
@@ -231,25 +230,53 @@ test('"+ New card" click opens NewCardDialog', () => {
   assert.equal(dialog.props.open, true, 'dialog opens after click');
 });
 
-test('when dialog closes after a new card in snapshot, it is auto-linked', () => {
-  const before = [{ key: 'NSC-10', title: 'Fix', status: 'todo' }];
-  const h = makePickerHarness([], OPEN_CARDS, before);
-  // Click "New card" (captures snapshot before creation)
+test('when NewCardDialog calls onCreated, the key is linked', () => {
+  const h = makePickerHarness([], OPEN_CARDS);
   byTestId(h.render(), 'obj-card-new-o1').props.onClick();
-  // Simulate card appearing in snapshot (creation succeeded)
-  h.updateSnapshot([...before, { key: 'NSC-99', title: 'Brand new', status: 'todo' }]);
-  // Close dialog
-  h.findDialog(h.render()).props.onClose();
-  assert.deepEqual(h.getCardKeys(), ['NSC-99'], 'newly created card auto-linked');
+  h.findDialog(h.render()).props.onCreated('NSC-99');
+  assert.deepEqual(h.getCardKeys(), ['NSC-99'], 'newly created card auto-linked via onCreated callback');
 });
 
-test('when dialog is cancelled (snapshot unchanged), nothing is added', () => {
+test('when dialog closes without onCreated, nothing is linked', () => {
+  const h = makePickerHarness([], OPEN_CARDS);
+  byTestId(h.render(), 'obj-card-new-o1').props.onClick();
+  h.findDialog(h.render()).props.onClose();
+  assert.deepEqual(h.getCardKeys(), [], 'cancel or refused create does not add any key');
+});
+
+test('NewCardDialog receives onCreated prop from CardPicker', () => {
+  const h = makePickerHarness([], OPEN_CARDS);
+  byTestId(h.render(), 'obj-card-new-o1').props.onClick();
+  const dialog = h.findDialog(h.render());
+  assert.ok(typeof dialog.props.onCreated === 'function', 'onCreated prop passed to NewCardDialog');
+});
+
+test('stale snapshot arrival between open and close does not link any card', () => {
   const before = [{ key: 'NSC-10', title: 'Fix', status: 'todo' }];
   const h = makePickerHarness([], OPEN_CARDS, before);
   byTestId(h.render(), 'obj-card-new-o1').props.onClick();
-  // snapshot unchanged (user cancelled)
+  // Simulate a live-refresh adding an unrelated card while dialog is open
+  h.updateSnapshot([...before, { key: 'NSC-22', title: 'Unrelated', status: 'todo' }]);
+  // Close without onCreated (cancel or refused create)
   h.findDialog(h.render()).props.onClose();
-  assert.deepEqual(h.getCardKeys(), [], 'no key added on cancel');
+  assert.deepEqual(h.getCardKeys(), [], 'stale arrival is not linked on close');
+});
+
+test('the Board cards label id matches the select id', () => {
+  const h = makePickerHarness([], OPEN_CARDS);
+  const tree = h.render();
+  const sel = byTestId(tree, 'obj-card-select-o1');
+  assert.ok(sel, 'select element present');
+  assert.equal(sel.props.id, 'obj-card-select-o1', 'select id matches data-testid so Label htmlFor binding works');
+});
+
+test('completing card creation does not prematurely submit the objective form', async () => {
+  const h = makeEditorHarness([{ id: 'o1', title: 'T', why: '', owner: '', cardKeys: [], health: 'on-track' }]);
+  const tree = h.render();
+  const picker = nodes(tree).find((n) => typeof n.tag === 'function' && n.props.objectiveId === 'o1');
+  picker.props.onEdit({ cardKeys: ['NSC-99'] });
+  assert.equal(h.commands.length, 0, 'no home.objectives command sent on card auto-link');
+  assert.equal(h.done(), 0, 'editor stays open after card linking');
 });
 
 test('chips show card key; linked card title is shown if in openCards', () => {

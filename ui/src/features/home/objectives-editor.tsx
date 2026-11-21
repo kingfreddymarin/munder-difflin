@@ -7,7 +7,7 @@ import { Button } from '@/components/animate-ui/components/buttons/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { useDispatch, useGetSnapshot } from '@/data/store';
+import { useDispatch } from '@/data/store';
 import { MAX_OBJECTIVES, newObjective, objectivesToSave, type ObjectiveHealth, type ObjectiveInput } from '@/data/objectives';
 import { NewCardDialog } from '@/features/team/new-card-dialog';
 import type { Agent, Card, Objective } from '@/data/types';
@@ -22,9 +22,7 @@ function CardPicker({ objectiveId, cardKeys, openCards, onEdit }: {
   openCards: Pick<Card, 'key' | 'title'>[];
   onEdit: (patch: { cardKeys: string[] }) => void;
 }) {
-  const getSnapshot = useGetSnapshot();
-  // Keys captured just before "New card" is clicked; used to identify the newly created card.
-  const beforeCreateRef = React.useRef<Set<string>>(new Set());
+  const newBtnRef = React.useRef<HTMLButtonElement>(null);
   const [creating, setCreating] = React.useState(false);
 
   const addKey = (key: string) => {
@@ -33,14 +31,8 @@ function CardPicker({ objectiveId, cardKeys, openCards, onEdit }: {
   const removeKey = (key: string) => onEdit({ cardKeys: cardKeys.filter((k) => k !== key) });
 
   const handleDialogClose = () => {
-    // Read the current snapshot directly — the floor event was already applied before
-    // dispatch resolved, so store.get() has the new card even before React re-renders.
-    const latestCards = getSnapshot()?.cards ?? [];
-    const newCard = latestCards.find((c) => !beforeCreateRef.current.has(c.key));
-    if (newCard && !cardKeys.includes(newCard.key)) {
-      onEdit({ cardKeys: [...cardKeys, newCard.key] });
-    }
     setCreating(false);
+    newBtnRef.current?.focus();
   };
 
   const available = openCards.filter((c) => !cardKeys.includes(c.key));
@@ -62,6 +54,7 @@ function CardPicker({ objectiveId, cardKeys, openCards, onEdit }: {
       <div className="flex flex-wrap items-center gap-2">
         {available.length > 0 && (
           <select
+            id={`obj-card-select-${objectiveId}`}
             aria-label="Add existing card"
             className={select}
             value=""
@@ -75,19 +68,17 @@ function CardPicker({ objectiveId, cardKeys, openCards, onEdit }: {
           </select>
         )}
         <Button
+          ref={newBtnRef}
           type="button"
           size="sm"
           variant="ghost"
           data-testid={`obj-card-new-${objectiveId}`}
-          onClick={() => {
-            beforeCreateRef.current = new Set((getSnapshot()?.cards ?? []).map((c) => c.key));
-            setCreating(true);
-          }}
+          onClick={() => setCreating(true)}
         >
           + New card
         </Button>
       </div>
-      <NewCardDialog open={creating} onClose={handleDialogClose} />
+      <NewCardDialog open={creating} onClose={handleDialogClose} onCreated={(key) => addKey(key)} />
     </div>
   );
 }
