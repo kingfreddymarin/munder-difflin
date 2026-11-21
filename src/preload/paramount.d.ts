@@ -56,6 +56,7 @@ export type ParamountCommand =
    *  `projectDir` used to discover a project agent. */
   | { type: 'agents.import'; source: ParamountAgentSource; id: string; projectDir?: string }
   | ParamountHomeChatsCommand
+  | ParamountBoardCommand
   // lane a-shell
   /** Opens an http(s) link in the default browser. Hosts: github.com,
    *  dev.azure.com, *.visualstudio.com; anything else fails INVALID_INPUT. */
@@ -193,6 +194,7 @@ export interface ParamountRawSnapshot {
   preferences: Record<string, unknown>;
   organization?: ParamountOrganization;
   archivedAgents?: Array<{ id: string; name: string }>;
+  boardDispatchAgents?: string[];
 }
 
 /** Only the preload calls Paramount's React adapter needs. */
@@ -288,7 +290,8 @@ export type ParamountBoardCommand =
   | { type: 'card.open'; key: string; app: ParamountOpenApp }
   | { type: 'card.link'; key: string; url: string }
   | { type: 'card.update'; key: string; patch: ParamountCardPatch }
-  | { type: 'card.archive'; key: string };
+  | { type: 'card.archive'; key: string }
+  | { type: 'card.dispatch'; key: string; agentId: string; expectedAssignee: string | null };
 
 // lane e-terminal
 /** One thing an agent touched. `dir` is an existing absolute directory to pass to

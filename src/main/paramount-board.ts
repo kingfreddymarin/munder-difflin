@@ -2,10 +2,11 @@
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { ParamountBoardCommand, ParamountBoardPreferences, ParamountCardPatch, ParamountCardRef, ParamountCardStatus, ParamountCommand, ParamountErrorCode, ParamountEvent, ParamountOpenApp, ParamountResult } from '../preload/paramount';
+import type { BoardDispatchResult } from './hive';
 import type { ParamountDeps } from './paramount';
 import type { Span } from './paramountObservability';
 
-export const BOARD_COMMANDS = ['board.columns', 'card.open', 'card.link', 'card.update', 'card.archive'] as const;
+export const BOARD_COMMANDS = ['board.columns', 'card.open', 'card.link', 'card.update', 'card.archive', 'card.dispatch'] as const;
 const STATUSES: readonly ParamountCardStatus[] = ['backlog', 'todo', 'doing', 'blocked', 'review', 'done'];
 const OPEN_APPS: readonly ParamountOpenApp[] = ['warp', 'vscode'];
 const REF_KINDS: readonly ParamountCardRef['kind'][] = ['pr', 'build', 'run', 'workitem'];
@@ -13,6 +14,7 @@ const REF_SYSTEMS: readonly ParamountCardRef['system'][] = ['github', 'ado'];
 
 /** Host calls the board needs; absent means the build cannot run board commands. */
 export interface ParamountBoardDeps {
+  dispatchTask?(key: string, agentId: string, expectedAssignee: string | null): BoardDispatchResult;
   savePreference(value: ParamountBoardPreferences): void;
   isDirectory(path: string): boolean;
   /** Opens `dir` in the app. Returns an error when the app is not installed. */
@@ -33,6 +35,7 @@ export function openAppUrl(app: ParamountOpenApp, dir: string): string {
 /** Board deps on top of Electron. `handlerFor` is app.getApplicationNameForProtocol;
  *  `open` is shell.openExternal, whose late rejection goes to `onOpenError`. */
 export function createBoardDeps(host: {
+  dispatchTask?: ParamountBoardDeps['dispatchTask'];
   savePreference(value: ParamountBoardPreferences): void;
   isDirectory(path: string): boolean;
   handlerFor(url: string): string;
@@ -41,6 +44,7 @@ export function createBoardDeps(host: {
 }): ParamountBoardDeps {
   const open = (url: string) => { host.open(url).catch((error) => host.onOpenError(url, error)); };
   return {
+    dispatchTask: host.dispatchTask,
     savePreference: host.savePreference,
     isDirectory: host.isDirectory,
     openInApp(app, dir) {
@@ -51,6 +55,19 @@ export function createBoardDeps(host: {
     },
     openUrl: open,
   };
+}
+
+/** The owning top-level frame must be displaying the configured Paramount UI. */
+export function isBoardDispatchSender(ownedMainFrame: boolean, frameUrl: string, uiUrl: string): boolean {
+  if (!ownedMainFrame) return false;
+  try {
+    const frame = new URL(frameUrl);
+    const ui = new URL(uiUrl);
+    frame.hash = ui.hash = '';
+    return frame.href === ui.href;
+  } catch {
+    return false;
+  }
 }
 
 export function isBoardCommand(type: unknown): type is ParamountBoardCommand['type'] {
@@ -177,6 +194,25 @@ export function dispatchBoard(command: Record<string, unknown>, deps: ParamountD
         if (!opened.ok) return fail('NOT_FOUND', opened.error);
         break;
       }
+      case 'card.dispatch': {
+        if (!onlyKeys(command, ['type', 'key', 'agentId', 'expectedAssignee']) || !key(command.key)
+          || !key(command.agentId) || !(command.expectedAssignee === null || key(command.expectedAssignee))) {
+          return fail('INVALID_INPUT', 'Choose a Board task and one agent.');
+        }
+        if (!board.dispatchTask) return fail('UNSUPPORTED', 'Sending Board tasks requires the desktop floor.');
+        writeAttempted = true;
+        const result = board.dispatchTask(command.key, command.agentId, command.expectedAssignee);
+        if (!result.ok) return fail(result.code, result.message);
+        const event: ParamountEvent = {
+          id: result.receipt.messageId, at: result.receipt.at, actor: 'you',
+          command: command as unknown as ParamountCommand, correlationId: span.cid
+        };
+        if (!result.reused) {
+          deps.appendEvent(event);
+          deps.publish(event);
+        }
+        return { ok: true, event };
+      }
       case 'card.link': {
         if (!onlyKeys(command, ['type', 'key', 'url']) || !key(command.key) || !httpsUrl(command.url)) {
           return fail('INVALID_INPUT', 'Invalid card.link; url must be an https link stored on the card');
@@ -227,6 +263,9 @@ export function dispatchBoard(command: Record<string, unknown>, deps: ParamountD
     return { ok: true, event };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Command failed';
+    if (writeAttempted && command.type === 'card.dispatch') {
+      return fail('UNCERTAIN_STATE', 'The task may have been sent. Retry the same agent to check delivery.', error);
+    }
     if (cardMutation && writeAttempted) return fail('UNCERTAIN_STATE', `Card may have been saved; refresh the Board before retrying: ${message}`, error);
     return writeAttempted && command.type === 'board.columns'
       ? fail('UNCERTAIN_STATE', `Column order may have been saved; refresh the snapshot before retrying: ${message}`, error)

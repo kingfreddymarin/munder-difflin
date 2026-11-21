@@ -215,6 +215,7 @@ export function createElectronProvider(): ElectronProvider {
       const registryGod = string(registry.godId);
       // NSC-222 (B1): an archived agent (an archived god included) is not drawn, so it is never a reportsTo target.
       const liveTarget = (target: string) => !!target && !(registryAgents[target] !== undefined && object(registryAgents[target]).archived);
+      const boardDispatchAgents = new Set(strings(native.boardDispatchAgents));
       const agents: Agent[] = Object.entries(registryAgents).filter(([, raw]) => !object(raw).archived).map(([id, raw]) => {
         const source = object(raw);
         const local = rosterById.get(id) ?? {};
@@ -231,6 +232,7 @@ export function createElectronProvider(): ElectronProvider {
         return {
         id, name, initials: name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase(),
         cwd: string(ptyByAgent.get(id)?.cwd, string(source.cwd)) || undefined,
+        ...(boardDispatchAgents.has(id) ? { acceptsBoardTasks: true } : {}),
         role: role(string(source.role).toLowerCase(), id === registryGod),
         // Live terminal activity decides working vs idle; breaker, blocked and crashed states still win.
         status: typeof live.busy === 'boolean' && (registered === 'idle' || registered === 'working') ? (live.busy ? 'working' : 'idle') : registered,
@@ -383,7 +385,7 @@ export function createElectronProvider(): ElectronProvider {
             : card && command.type === 'card.create' ? { ...command, key: card.key } : command;
           const event = { ...result.event, command: applied } as FloorEvent;
           emit(event);
-          if (['card.create', 'setup.complete', 'orchestrator.ensure', 'launchers.refresh', 'floor.retry', 'floor.choose-another', 'floor.open', 'floor.picker'].includes(command.type)) refresh();
+          if (['card.create', 'card.dispatch', 'setup.complete', 'orchestrator.ensure', 'launchers.refresh', 'floor.retry', 'floor.choose-another', 'floor.open', 'floor.picker'].includes(command.type)) refresh();
           return event;
         }
       } catch (cause) {

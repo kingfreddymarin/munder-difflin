@@ -8,6 +8,7 @@ export interface Agent {
   id: string;
   name: string;
   initials: string;
+  acceptsBoardTasks?: boolean;
   role: Role;
   cwd?: string;
   status: AgentStatus;

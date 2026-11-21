@@ -46,6 +46,10 @@ function idOf(value: unknown): string | null {
  * shouldn't: writers here are partial models, so a missing key means "I don't
  * know about this", never "remove it".
  *
+ * The Board receipt and its associated assignee are authoritative on disk.
+ * A snapshot can predate dispatch. Use an explicit task patch to reassign a
+ * card with a receipt or to update the receipt itself.
+ *
  * Entries without a string `id` (a malformed card the god hand-wrote) pass
  * through untouched — there is no key to merge them on, and dropping them would
  * lose data the same way this function exists to prevent.
@@ -62,7 +66,11 @@ export function mergeTaskLedger(existing: unknown, incoming: unknown): unknown[]
     const id = idOf(entry);
     if (!id) return entry;
     const prior = byId.get(id);
-    return prior ? { ...prior, ...(entry as RawTask) } : entry;
+    if (!prior) return entry;
+    const merged = { ...prior, ...(entry as RawTask) };
+    if (Object.hasOwn(prior, 'boardDispatch')) merged.boardDispatch = prior.boardDispatch;
+    if (prior.boardDispatch) merged.assignee = prior.assignee;
+    return merged;
   });
 }
 

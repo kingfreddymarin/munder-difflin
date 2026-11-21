@@ -10,10 +10,10 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/animate-ui
 import { PageHeader } from '@/components/app/panel';
 import { AgentAvatar } from '@/components/app/agent-avatar';
 import { AgentLink } from '@/components/app/agent-link';
-import { UnsupportedReason } from '@/components/app/error-notice';
+import { ErrorNotice, UnsupportedReason } from '@/components/app/error-notice';
 import { CardDetail, columns as columnMeta, refLabel } from '@/components/app/card-detail';
 import { day } from '@/components/app/format';
-import { useDispatch, useFloor, useUnsupported } from '@/data/store';
+import { useActionError, useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { Card as CardT, CardStatus } from '@/data/types';
@@ -203,6 +203,59 @@ function Column({ id, cards, onOpen }: { id: CardStatus; cards: CardT[]; onOpen:
   );
 }
 
+function SendTask({ card }: { card: CardT }) {
+  const agents = useFloor((s) => s.agents);
+  const recipients = agents.filter((agent) => agent.acceptsBoardTasks);
+  const dispatch = useDispatch();
+  const unsupported = useUnsupported();
+  const { error } = useActionError();
+  const selectId = React.useId();
+  const inFlight = React.useRef(false);
+  const [agentId, setAgentId] = React.useState('');
+  const [pending, setPending] = React.useState(false);
+  const [sentTo, setSentTo] = React.useState('');
+  const [failed, setFailed] = React.useState(false);
+  const recipient = recipients.find((agent) => agent.id === agentId);
+  const command = { type: 'card.dispatch', key: card.key, agentId, expectedAssignee: card.agentId || null } as const;
+  const reason = unsupported(command);
+  const send = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (inFlight.current || !recipient || reason || card.status === 'done' || card.boardArchivedAt) return;
+    inFlight.current = true;
+    setPending(true);
+    setFailed(false);
+    const ok = await dispatch(command);
+    inFlight.current = false;
+    setPending(false);
+    if (ok) {
+      setSentTo(recipient.name);
+      setAgentId('');
+    } else {
+      setFailed(true);
+    }
+  };
+  if (card.status === 'done' || card.boardArchivedAt) return null;
+  return (
+    <form onSubmit={send} className="grid gap-2 border-b pb-4">
+      <label htmlFor={selectId} className="text-sm font-medium">Send task to an agent</label>
+      <div className="flex flex-wrap gap-2">
+        <select id={selectId} value={agentId} disabled={pending || !!reason || recipients.length === 0}
+          onChange={(event) => { setAgentId(event.target.value); setSentTo(''); setFailed(false); }}
+          className="border-input bg-background min-w-0 flex-1 rounded-md border px-2 text-sm">
+          <option value="">Choose agent</option>
+          {recipients.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
+        <Button type="submit" size="sm" disabled={pending || !!reason || !recipient}>{pending ? 'Sending…' : 'Send task'}</Button>
+      </div>
+      <UnsupportedReason reason={reason ?? (recipients.length === 0 ? 'No agents on this floor accept Board tasks.' : null)} />
+      {sentTo && <span role="status" className="text-sm">Task sent to {sentTo}.</span>}
+      {failed && (error?.operation === 'card.dispatch'
+        ? <ErrorNotice error={error} />
+        : <span role="alert" className="text-destructive text-sm">The task could not be sent.</span>)}
+    </form>
+  );
+}
+
 export function BoardPage() {
   const cards = useFloor((s) => s.cards);
   const agents = useFloor((s) => s.agents);
@@ -263,6 +316,7 @@ export function BoardPage() {
                 <DialogTitle>{open.title}</DialogTitle>
                 <DialogDescription>Everything the owner agent reads before it works on this card.</DialogDescription>
               </DialogHeader>
+              <SendTask key={open.key} card={open} />
               <CardDetail card={open} />
             </>
           )}

@@ -85,6 +85,8 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
       const cards = s.cards.map((x) => (x.key === c.key ? { ...x, status: c.status, updated: ev.at } : x));
       return audit({ ...s, cards }, ev, 'Moved card', card.key, `${card.status} → ${c.status}`, [card.agentId]);
     }
+    case 'card.dispatch':
+      return { ...s, cards: s.cards.map((card) => card.key === c.key ? { ...card, agentId: c.agentId } : card) };
     case 'card.create': {
       if (!c.key || s.cards.some((x) => x.key === c.key)) return s;
       const card: Card = {
