@@ -1,0 +1,2 @@
+You've hit your monthly spend limit
+To continue using Claude, you can upgrade your plan or wait until your limit resets.

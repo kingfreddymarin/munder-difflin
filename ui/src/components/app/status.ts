@@ -7,6 +7,7 @@ export const statusMeta: Record<AgentStatus, { label: string; dot: string; ring:
   constrained: { label: 'Constrained', dot: 'bg-rose-400', ring: 'ring-rose-400', text: 'text-rose-300' },
   idle: { label: 'Idle', dot: 'bg-zinc-500', ring: 'ring-zinc-500', text: 'text-muted-foreground' },
   crashed: { label: 'Crashed', dot: 'bg-rose-500', ring: 'ring-rose-500', text: 'text-rose-400' },
+  compacting: { label: 'Compacting', dot: 'bg-blue-400', ring: 'ring-blue-400', text: 'text-blue-300' },
 };
 
 export const roleMeta: Record<Role, { label: string; variant: 'info' | 'violet' | 'success' | 'secondary' | 'warning' | 'danger' }> = {

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Button } from '@/components/animate-ui/components/buttons/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 import { ToggleGroup, ToggleGroupItem } from '@/components/animate-ui/components/radix/toggle-group';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -239,43 +239,45 @@ function EditCardDialog({ card, agents, onClose }: { card: Card; agents: { id: s
 
   return (
     <Dialog open onOpenChange={(o) => !o && !sending && onClose()}>
-      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-lg"
+      <DialogContent className="sm:max-w-lg"
         onCloseAutoFocus={(event) => event.preventDefault()}>
         <DialogHeader>
           <DialogTitle>Edit {card.key}</DialogTitle>
           <DialogDescription>Update the card's fields. Changes take effect on the next agent turn.</DialogDescription>
         </DialogHeader>
-        <form onSubmit={submit} className="flex flex-col gap-3">
-          <div className="grid gap-1.5">
-            <Label htmlFor="ec-title">Title</Label>
-            <Input id="ec-title" autoFocus maxLength={200} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value.replace(/[\r\n]/g, ' ') })} />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="ec-desc">Description</Label>
-            <Textarea id="ec-desc" rows={4} maxLength={10_000} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="ec-agent">Assignee</Label>
-            <select id="ec-agent" className="border-input bg-background h-9 rounded-md border px-2 text-sm" value={form.assignee} onChange={(e) => setForm({ ...form, assignee: e.target.value })}>
-              <option value="">Unassigned</option>
-              {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Priority</Label>
-            <ToggleGroup type="single" variant="outline" size="sm" value={form.priority === undefined ? '' : String(form.priority)}
-              onValueChange={(v) => v && setForm({ ...form, priority: Number(v) as 1 | 2 | 3 })}>
-              {PRIORITIES.map((p) => <ToggleGroupItem key={p.value} value={String(p.value)} className="px-3 text-xs">{p.label}</ToggleGroupItem>)}
-            </ToggleGroup>
-          </div>
-          <UnsupportedReason reason={reason} />
-          {saveFailed && <p role="status" className="text-sm text-destructive">Could not save. Try again.</p>}
-          <DialogFooter>
-            <Button type="button" variant="ghost" disabled={sending} onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={!dirty || patch.title === '' || !!reason} aria-disabled={sending}
-              tabIndex={sending ? -1 : undefined}>{sending ? 'Saving…' : 'Save'}</Button>
-          </DialogFooter>
-        </form>
+        <DialogBody>
+          <form id="edit-card-form" onSubmit={submit} className="flex flex-col gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="ec-title">Title</Label>
+              <Input id="ec-title" autoFocus maxLength={200} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value.replace(/[\r\n]/g, ' ') })} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="ec-desc">Description</Label>
+              <Textarea id="ec-desc" rows={4} maxLength={10_000} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="ec-agent">Assignee</Label>
+              <select id="ec-agent" className="border-input bg-background h-9 rounded-md border px-2 text-sm" value={form.assignee} onChange={(e) => setForm({ ...form, assignee: e.target.value })}>
+                <option value="">Unassigned</option>
+                {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Priority</Label>
+              <ToggleGroup type="single" variant="outline" size="sm" value={form.priority === undefined ? '' : String(form.priority)}
+                onValueChange={(v) => v && setForm({ ...form, priority: Number(v) as 1 | 2 | 3 })}>
+                {PRIORITIES.map((p) => <ToggleGroupItem key={p.value} value={String(p.value)} className="px-3 text-xs">{p.label}</ToggleGroupItem>)}
+              </ToggleGroup>
+            </div>
+            <UnsupportedReason reason={reason} />
+            {saveFailed && <p role="status" className="text-sm text-destructive">Could not save. Try again.</p>}
+          </form>
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" variant="ghost" disabled={sending} onClick={onClose}>Cancel</Button>
+          <Button type="submit" form="edit-card-form" disabled={!dirty || patch.title === '' || !!reason} aria-disabled={sending}
+            tabIndex={sending ? -1 : undefined}>{sending ? 'Saving…' : 'Save'}</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

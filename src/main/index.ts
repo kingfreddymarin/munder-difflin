@@ -21,7 +21,9 @@ import { performance } from 'node:perf_hooks';
 import { homedir, release as osRelease, type as osType, totalmem, freemem } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
-import { createSideAgents, isSideAgentPty, sideAgentSnapshot } from './side-agent';
+import { createSideAgents, isSideAgentPty, sideAgentProfile, sideAgentSnapshot } from './side-agent';
+import { createSideAgentModelCatalog } from './side-agent-models';
+import { buildPtyEnv } from './ptyEnv';
 import { createSnapshotCommandDiscovery, fallbackCommandPath, installedSnapshotEngines, probeLoginShellCommand, snapshotCommandTools, snapshotSignInPath } from './snapshotCommandDiscovery';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
 import { createBoardDeps, isBoardDispatchSender, isBoardOwnerSender } from './paramount-board';
@@ -37,7 +39,7 @@ import { createAutoModeExpiry, normalizeAutoModePatch, touchesAutoModeExpiry } f
 import { defaultMunderHive, type AgentSourceRoots } from './agentSources';
 import { buildDiagnostics, installCrashCapture, newErrorId, redact, traced, type LogSink } from './paramountObservability';
 import { createOrchestratorStartWatch } from './orchestrator-start';
-import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
+import { resolveCommand as resolveCliCommand, isSafeCommandName, userShellPath } from './shellEnv';
 import { createClaudeChannelUpdater } from './claude-channel-recovery';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
@@ -101,6 +103,7 @@ import { textContextMenuTemplate } from './text-context-menu';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { agentActivity, type ActivityFacts } from './paramount-activity';
+import { detectProviderLimit } from './provider-limit';
 import { lagOp, startLagProbe } from './lag-probe';
 import { createSnapshotStageTimer, type SnapshotStage } from './paramountSnapshotTiming';
 import { createSnapshotStageCapture } from './snapshotStageCapture';
@@ -1241,6 +1244,8 @@ function paramountActivity(): ReturnType<typeof agentActivity> {
     const ptyId = ptyForAgent(id);
     const u = usageById.get(id);
     const spans = snap.spans[id] ?? [];
+    const tail = ptyId ? ptyManager.tailFor(ptyId) : undefined;
+    const idleMs = (ptyId ? ptyManager.idleFor(ptyId) : undefined) ?? 0;
     facts[id] = {
       lastOutputAt: ptyId ? ptyManager.lastOutputAt(ptyId) : undefined,
       tokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined,
@@ -1252,6 +1257,7 @@ function paramountActivity(): ReturnType<typeof agentActivity> {
       breaker: breaker.levelFor(id),
       lastTool: spans.length ? spans[spans.length - 1].tool : null,
       context: hookServer.contextFor(id) ?? null,
+      providerLimited: tail ? detectProviderLimit(tail, idleMs) : false,
     };
   }
   return agentActivity(facts, Date.now(), WORKER_WAKE_IDLE_MS);
@@ -3256,9 +3262,33 @@ const sideAgents = createSideAgents(sideAgentPtys, () => {
 }, (owner, disposedPtyId) => {
   try { if (!owner.isDestroyed()) owner.send('side-agent:changed', disposedPtyId); }
   catch { /* renderer closed during delivery */ }
+}, () => {
+  const configured = readConfig().sideAgentPersona;
+  if (configured === null) return null; // None — no system prompt
+  if (configured === undefined) return undefined; // default "Floor assistant"
+  const agent = hive.registry().agents[configured];
+  if (!agent) return undefined; // agent not found, fall back to default
+  return { id: agent.id, name: agent.name, role: agent.role };
+}, (provider) => sideAgentModels.resolve(provider, readConfig().sideAgentModels?.[provider]));
+
+// Model discovery runs off the main thread (async child process, timed out) and only when
+// the side agent asks, so it never delays app startup. It lists from the same isolated,
+// credential-free profile the side agent launches with.
+const sideAgentModels = createSideAgentModelCatalog({
+  commandPath: (command) => sideAgentPtys.commandPath(command),
+  isolatedProfile: (provider, scratch) => {
+    const { cwd, env } = sideAgentProfile(provider, scratch);
+    const userPath = process.platform === 'win32' ? (process.env.PATH || '') : userShellPath();
+    return { cwd, env: buildPtyEnv(process.env, userPath, env, process.platform, [], false) };
+  },
+  log: (message, error) => console.warn(message, error instanceof Error ? error.message : error),
 });
 
 ipcMain.handle('side-agent:state', (evt) => sideAgents.state(evt.sender));
+ipcMain.handle('side-agent:models', (_evt, provider: unknown, refresh: unknown) => {
+  if (provider !== 'opencode' && provider !== 'claude') return { provider, status: 'error', models: [], error: 'Unknown provider.' };
+  return sideAgentModels.list(provider, refresh === true);
+});
 ipcMain.handle('side-agent:act', (evt, action: unknown, provider: unknown) => {
   if (action === 'stop') return sideAgents.stop(evt.sender);
   if (action === 'start' || action === 'restart') return sideAgents.launch(evt.sender, provider, action === 'restart');

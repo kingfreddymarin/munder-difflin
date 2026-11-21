@@ -13,6 +13,7 @@ import { HookSocketBanner, OrchestratorFailureBanner } from './hook-socket-banne
 import { SetupGate } from './setup-gate';
 import { cn } from '@/lib/utils';
 import { AgentAvatar } from '@/components/app/agent-avatar';
+import { agentStatusColour } from '@/components/app/agent-status-colour';
 import { AGENT_VIEW, agentViewParams, terminalRoster } from './agent-view';
 import { findBridge } from '@/data/bridge';
 import { disposeTerminal, prewarmTerminals } from '@/components/app/terminal/terminal-pool';
@@ -23,6 +24,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { MoreHorizontal } from 'lucide-react';
 import { useDispatch } from '@/data/store';
 import { useFloorViewMode } from './floor-view-mode';
+import { FloorSearch } from '@/features/search/floor-search';
+import { isSearchTrigger } from '@/features/search/search-index';
 
 /** Buffer every live agent's output from spawn, as Munder's App does (terminal-pool prewarmTerminals). */
 function usePrewarmTerminals() {
@@ -49,15 +52,29 @@ function SidebarAgents() {
       <SidebarGroupLabel>Agents</SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          {roster.map(({ agent, live }) => (
-            <SidebarMenuItem key={agent.id}>
-              <SidebarMenuButton isActive={current === agent.id} tooltip={`${agent.name}${live ? '' : ' (not running)'}`} onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}>
-                <AgentAvatar agent={agent} size="sm" tooltip={false} />
-                <span className={cn('truncate', !live && 'text-muted-foreground')}>{agent.name}</span>
-                <span aria-label={live ? 'live terminal' : 'not running'} className={cn('ml-auto size-1.5 shrink-0 rounded-full', live ? 'bg-emerald-500' : 'bg-muted-foreground/40')} />
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
+          {roster.map(({ agent, live }) => {
+            const colour = live ? agentStatusColour(agent) : null;
+            return (
+              <SidebarMenuItem key={agent.id}>
+                <SidebarMenuButton
+                  isActive={current === agent.id}
+                  tooltip={`${agent.name}${live ? '' : ' (not running)'}`}
+                  onClick={() => go(AGENT_VIEW, agentViewParams(agent.id))}
+                  onContextMenu={(e) => { e.preventDefault(); go('team', { agent: agent.id }); }}
+                >
+                  <AgentAvatar agent={agent} size="sm" tooltip={false} />
+                  <span className={cn('truncate', !live && 'text-muted-foreground')}>{agent.name}</span>
+                  <span
+                    aria-label={colour ? agent.status : 'not running'}
+                    className={cn('ml-auto size-1.5 shrink-0 rounded-full',
+                      colour ? colour.dot : 'bg-muted-foreground/40',
+                      colour?.blink && 'motion-safe:animate-pulse',
+                    )}
+                  />
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            );
+          })}
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
@@ -80,7 +97,7 @@ function useBadges(): Partial<Record<RouteId, number>> {
 
 /** The window's title bar: drags the window, controls inside it stay clickable. When the sidebar does not
  *  sit under the macOS traffic lights (collapsed or offcanvas), the bar leaves room for them. */
-function TopBar({ title }: { title: string }) {
+function TopBar({ title, onOpenSearch }: { title: string; onOpenSearch: () => void }) {
   const { state, isMobile } = useSidebar();
   const clearLights = isMobile || state === 'collapsed';
   return (
@@ -88,6 +105,15 @@ function TopBar({ title }: { title: string }) {
       <SidebarTrigger />
       <Separator orientation="vertical" className="mx-1 !h-5" />
       <span className="flex-1 truncate font-medium">{title}</span>
+      <button
+        type="button"
+        onClick={onOpenSearch}
+        aria-label="Search the floor (⌘K)"
+        className="app-no-drag text-muted-foreground hover:text-foreground hover:bg-accent hidden items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-colors sm:flex"
+      >
+        <span>Search…</span>
+        <kbd className="bg-muted rounded px-1.5 py-0.5 font-mono text-[11px]">⌘K</kbd>
+      </button>
       <MoreMenu />
       <ThemeTogglerButton variant="ghost" size="sm" aria-label="Toggle theme" />
       <NotificationsMenu />
@@ -137,6 +163,21 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
   const { route, go } = useRouter();
   const badges = useBadges();
   usePrewarmTerminals();
+
+  const [searchOpen, setSearchOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isSearchTrigger(e.key, e.metaKey, e.ctrlKey, e.target as Element | null, isMac)) {
+        e.preventDefault();
+        setSearchOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon">
@@ -188,13 +229,14 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
         <SidebarRail />
       </Sidebar>
       <SidebarInset className="h-svh min-w-0 overflow-hidden">
-        <TopBar title={title} />
+        <TopBar title={title} onOpenSearch={() => setSearchOpen(true)} />
         <HookSocketBanner />
         <OrchestratorFailureBanner />
         <YoloBanner />
         <SetupGate />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain p-4">{children}</main>
       </SidebarInset>
+      <FloorSearch open={searchOpen} onOpenChange={setSearchOpen} />
     </SidebarProvider>
   );
 }

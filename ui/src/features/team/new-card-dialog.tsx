@@ -2,7 +2,7 @@
 // One card.create call carries all fields; dependsOn is a string[] in the ledger (displayed joined).
 // See COMMANDS.md Board Tasks for the agent path.
 import * as React from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 import { ToggleGroup, ToggleGroupItem } from '@/components/animate-ui/components/radix/toggle-group';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { Input } from '@/components/ui/input';
@@ -95,102 +95,103 @@ export function NewCardDialog({ open, onClose, onCreated, assignee }: { open: bo
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
-      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>New card</DialogTitle>
           <DialogDescription>All fields are available upfront. Title is the only required field; agents pick up the card on their next turn.</DialogDescription>
         </DialogHeader>
-        <form onSubmit={submit} className="flex flex-col gap-3">
+        <DialogBody>
+          <form id="new-card-form" onSubmit={submit} className="flex flex-col gap-3">
 
-          {/* Title */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="nc-title">Title</Label>
-            <Input id="nc-title" autoFocus maxLength={200} value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value.replace(/[\r\n]/g, ' ') })} />
-          </div>
-
-          {/* Description */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="nc-desc">Description</Label>
-            <Textarea id="nc-desc" rows={3} maxLength={10_000} value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })} />
-          </div>
-
-          {/* Assignee + Priority side by side */}
-          <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+            {/* Title */}
             <div className="grid gap-1.5">
-              <Label htmlFor="nc-agent">Assignee</Label>
-              <select id="nc-agent" className="border-input bg-background h-9 rounded-md border px-2 text-sm"
-                value={form.assignee} onChange={(e) => setForm({ ...form, assignee: e.target.value })}>
-                <option value="">Unassigned</option>
-                {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
+              <Label htmlFor="nc-title">Title</Label>
+              <Input id="nc-title" autoFocus maxLength={200} value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value.replace(/[\r\n]/g, ' ') })} />
             </div>
+
+            {/* Description */}
             <div className="grid gap-1.5">
-              <Label>Priority</Label>
-              <ToggleGroup type="single" variant="outline" size="sm" value={String(form.priority)}
-                onValueChange={(v) => v && setForm({ ...form, priority: Number(v) as 1 | 2 | 3 })}>
-                {PRIORITIES.map((p) => <ToggleGroupItem key={p.value} value={String(p.value)} className="px-3 text-xs">{p.label}</ToggleGroupItem>)}
+              <Label htmlFor="nc-desc">Description</Label>
+              <Textarea id="nc-desc" rows={4} maxLength={10_000} value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            </div>
+
+            {/* Assignee + Priority side by side */}
+            <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+              <div className="grid gap-1.5">
+                <Label htmlFor="nc-agent">Assignee</Label>
+                <select id="nc-agent" className="border-input bg-background h-9 rounded-md border px-2 text-sm"
+                  value={form.assignee} onChange={(e) => setForm({ ...form, assignee: e.target.value })}>
+                  <option value="">Unassigned (Paramount routes it)</option>
+                  {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Priority</Label>
+                <ToggleGroup type="single" variant="outline" size="sm" value={String(form.priority)}
+                  onValueChange={(v) => v && setForm({ ...form, priority: Number(v) as 1 | 2 | 3 })}>
+                  {PRIORITIES.map((p) => <ToggleGroupItem key={p.value} value={String(p.value)} className="px-3 text-xs">{p.label}</ToggleGroupItem>)}
+                </ToggleGroup>
+              </div>
+            </div>
+
+            {/* Status */}
+            <div className="grid gap-1.5">
+              <Label>Initial status</Label>
+              <ToggleGroup type="single" variant="outline" size="sm" value={form.status}
+                onValueChange={(v) => v && setForm({ ...form, status: v as 'todo' | 'blocked' })}>
+                {STATUSES.map((s) => <ToggleGroupItem key={s.value} value={s.value} className="px-3 text-xs">{s.label}</ToggleGroupItem>)}
               </ToggleGroup>
             </div>
-          </div>
 
-          {/* Status */}
-          <div className="grid gap-1.5">
-            <Label>Initial status</Label>
-            <ToggleGroup type="single" variant="outline" size="sm" value={form.status}
-              onValueChange={(v) => v && setForm({ ...form, status: v as 'todo' | 'blocked' })}>
-              {STATUSES.map((s) => <ToggleGroupItem key={s.value} value={s.value} className="px-3 text-xs">{s.label}</ToggleGroupItem>)}
-            </ToggleGroup>
-          </div>
-
-          {/* Parent card */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="nc-parent">Parent card</Label>
-            <select id="nc-parent" className="border-input bg-background h-9 rounded-md border px-2 text-sm"
-              value={form.parentId} onChange={(e) => setForm({ ...form, parentId: e.target.value })}>
-              <option value="">No parent</option>
-              {activeCards.map((c) => <option key={c.key} value={c.key}>{c.key} · {c.title}</option>)}
-            </select>
-          </div>
-
-          {/* Depends on */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="nc-depends">Depends on <span className="text-muted-foreground font-normal text-xs">(card key — stored as dependsOn in tasks.json)</span></Label>
-            <Input id="nc-depends" placeholder="e.g. NSC-42" maxLength={40} value={form.dependsOn}
-              onChange={(e) => setForm({ ...form, dependsOn: e.target.value.trim() })} />
-          </div>
-
-          {/* Unblock items (NSC-257) */}
-          <div className="grid gap-1.5">
-            <Label>Unblock items <span className="text-muted-foreground font-normal text-xs">(shown when card is blocked)</span></Label>
-            {form.blockItems.length > 0 && (
-              <ul className="flex flex-col gap-0.5">
-                {form.blockItems.map((item, i) => (
-                  <li key={i} className="flex items-center gap-2 text-sm">
-                    <span className="size-1.5 shrink-0 rounded-full bg-amber-400 mt-0.5" />
-                    <span className="flex-1">{item}</span>
-                    <button type="button" onClick={() => removeBlockItem(i)} className="text-muted-foreground hover:text-foreground text-xs">×</button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <div className="flex gap-2">
-              <Input placeholder="Add unblock item…" maxLength={200} value={form.blockItemDraft}
-                onChange={(e) => setForm({ ...form, blockItemDraft: e.target.value })}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addBlockItem(e); } }} />
-              <Button type="button" size="sm" variant="outline" onClick={addBlockItem} disabled={!form.blockItemDraft.trim()}>Add</Button>
+            {/* Parent card */}
+            <div className="grid gap-1.5">
+              <Label htmlFor="nc-parent">Parent card</Label>
+              <select id="nc-parent" className="border-input bg-background h-9 rounded-md border px-2 text-sm"
+                value={form.parentId} onChange={(e) => setForm({ ...form, parentId: e.target.value })}>
+                <option value="">No parent</option>
+                {activeCards.map((c) => <option key={c.key} value={c.key}>{c.key} · {c.title}</option>)}
+              </select>
             </div>
-          </div>
 
-          <UnsupportedReason reason={reason} />
-          {status && <p role="status" className="text-muted-foreground text-xs">{status}</p>}
+            {/* Depends on */}
+            <div className="grid gap-1.5">
+              <Label htmlFor="nc-depends">Depends on <span className="text-muted-foreground font-normal text-xs">(card key — stored as dependsOn in tasks.json)</span></Label>
+              <Input id="nc-depends" placeholder="e.g. NSC-42" maxLength={40} value={form.dependsOn}
+                onChange={(e) => setForm({ ...form, dependsOn: e.target.value.trim() })} />
+            </div>
 
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={handleClose} disabled={sending}>Cancel</Button>
-            <Button type="submit" disabled={!command.title || !!reason || sending}>{sending ? 'Creating…' : 'Create card'}</Button>
-          </DialogFooter>
-        </form>
+            {/* Unblock items (NSC-257) */}
+            <div className="grid gap-1.5">
+              <Label>Unblock items <span className="text-muted-foreground font-normal text-xs">(shown when card is blocked)</span></Label>
+              {form.blockItems.length > 0 && (
+                <ul className="flex flex-col gap-0.5">
+                  {form.blockItems.map((item, i) => (
+                    <li key={i} className="flex items-center gap-2 text-sm">
+                      <span className="size-1.5 shrink-0 rounded-full bg-amber-400 mt-0.5" />
+                      <span className="flex-1">{item}</span>
+                      <button type="button" onClick={() => removeBlockItem(i)} className="text-muted-foreground hover:text-foreground text-xs">×</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex gap-2">
+                <Input placeholder="Add unblock item…" maxLength={200} value={form.blockItemDraft}
+                  onChange={(e) => setForm({ ...form, blockItemDraft: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addBlockItem(e); } }} />
+                <Button type="button" size="sm" variant="outline" onClick={addBlockItem} disabled={!form.blockItemDraft.trim()}>Add</Button>
+              </div>
+            </div>
+
+            <UnsupportedReason reason={reason} />
+            {status && <p role="status" className="text-muted-foreground text-xs">{status}</p>}
+          </form>
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={handleClose} disabled={sending}>Cancel</Button>
+          <Button type="submit" form="new-card-form" disabled={!command.title || !!reason || sending}>{sending ? 'Creating…' : 'Create card'}</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
