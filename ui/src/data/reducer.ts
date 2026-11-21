@@ -93,6 +93,9 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
         key: c.key, title: c.title, status: c.status ?? 'todo', priority: c.priority === 1 ? 'P1' : c.priority === 3 ? 'P3' : 'P2',
         agentId: c.assignee ?? '', created: ev.at, createdBy: 'you', updated: ev.at, description: c.description ?? '',
         plan: [], doneMeans: [], tags: [], refs: [], tokens: 0, origin: 'you', people: [],
+        ...(c.parentId ? { parentId: c.parentId } : {}),
+        ...(Array.isArray(c.dependsOn) && c.dependsOn.length > 0 ? { dependsOn: c.dependsOn.join(', ') } : {}),
+        ...(Array.isArray(c.blockItems) && c.blockItems.length > 0 ? { blockItems: c.blockItems } : {}),
       };
       return audit({ ...s, cards: [...s.cards, card] }, ev, 'Created card', card.key, card.title, c.assignee ? [c.assignee] : []);
     }

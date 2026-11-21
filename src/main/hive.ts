@@ -161,6 +161,8 @@ export interface HiveTask {
    *  once and never persisted), so a GET status lookup can match by hashing the
    *  presented token. Read-only capability: it never widens routing or exposure. */
   webhook?: { tokenHash: string };
+  /** Human-editable unblock checklist shown when the card is blocked (NSC-257). */
+  blockItems?: string[];
   /** Board fields (Paramount lane c-board), set by the agent that owns the card:
    *  free `tags` and a `workspace` the board filters on, an absolute working `dir`
    *  for "open in Warp / VS Code", and `refs` to the PR, build, run and ADO work

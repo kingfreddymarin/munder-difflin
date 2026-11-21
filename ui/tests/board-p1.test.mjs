@@ -4,11 +4,11 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -207,4 +207,88 @@ test('NSC-261 newCardDefaults: blockItems defaults to empty array', () => {
 
 test('NSC-261 newCardDefaults: assignee seed forwarded from argument', () => {
   assert.equal(newCardDefaults('agent-42').assignee, 'agent-42');
+});
+
+// ─── NSC-261 reducer: card.create with new fields ─────────────────────────────
+
+function makeCard(key, overrides = {}) {
+  return { key, status: 'todo', title: 'T', agentId: '', created: '', createdBy: '', updated: '', description: '', plan: [], doneMeans: [], tags: [], refs: [], tokens: 0, origin: '', people: [], priority: '', ...overrides };
+}
+
+test('NSC-261 reducer card.create: parentId and blockItems on new card', () => {
+  const parent = makeCard('NSC-1');
+  const s = applyEvent(snap([parent]), {
+    id: 'ev1', at: '2026-11-21T20:00:00Z', actor: 'you',
+    command: { type: 'card.create', key: 'NSC-2', title: 'Child', parentId: 'NSC-1', blockItems: ['Needs review'] },
+  });
+  const child = s.cards.find(c => c.key === 'NSC-2');
+  assert.equal(child?.parentId, 'NSC-1', 'parentId should be set on new card');
+  assert.deepEqual(child?.blockItems, ['Needs review'], 'blockItems should be set on new card');
+});
+
+test('NSC-261 reducer card.create: dependsOn joined to string on Card', () => {
+  const dep = makeCard('NSC-1');
+  const s = applyEvent(snap([dep]), {
+    id: 'ev2', at: '2026-11-21T20:00:00Z', actor: 'you',
+    command: { type: 'card.create', key: 'NSC-3', title: 'Task', dependsOn: ['NSC-1'] },
+  });
+  const card = s.cards.find(c => c.key === 'NSC-3');
+  assert.equal(card?.dependsOn, 'NSC-1', 'dependsOn array is joined to comma-string on Card');
+});
+
+test('NSC-261 reducer card.create: empty dependsOn → no dependsOn field', () => {
+  const s = applyEvent(snap([]), {
+    id: 'ev3', at: '2026-11-21T20:00:00Z', actor: 'you',
+    command: { type: 'card.create', key: 'NSC-4', title: 'Task', dependsOn: [] },
+  });
+  const card = s.cards.find(c => c.key === 'NSC-4');
+  assert.ok(!card?.dependsOn, 'empty dependsOn should not set a field on Card');
+});
+
+// ─── NSC-261 hive-card.cjs: validation and key allocation ────────────────────
+
+const HIVE_CARD = join(HERE, '../../../../../../../hive/bin/hive-card.cjs');
+
+function runCard(json, hiveRoot) {
+  const env = { ...process.env, HIVE_ROOT: hiveRoot };
+  const result = spawnSync('node', [HIVE_CARD, json], { encoding: 'utf8', env });
+  let parsed;
+  try { parsed = JSON.parse(result.stdout.trim()); } catch { parsed = null; }
+  return { status: result.status, parsed, stderr: result.stderr };
+}
+
+test('NSC-261 hive-card: bad priority rejected', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'hcard-'));
+  writeFileSync(join(tmpDir, 'tasks.json'), JSON.stringify({ tasks: [] }));
+  const r = runCard('{"title":"T","priority":5}', tmpDir);
+  assert.equal(r.status, 1, 'should exit 1');
+  assert.ok(r.parsed?.error?.includes('priority'), `expected priority error, got: ${r.parsed?.error}`);
+});
+
+test('NSC-261 hive-card: bad parentId (not in ledger) rejected', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'hcard-'));
+  writeFileSync(join(tmpDir, 'tasks.json'), JSON.stringify({ tasks: [] }));
+  const r = runCard('{"title":"T","parentId":"NSC-99"}', tmpDir);
+  assert.equal(r.status, 1, 'should exit 1 for unknown parentId');
+  assert.ok(r.parsed?.error?.includes('NSC-99'), `expected error mentioning NSC-99, got: ${r.parsed?.error}`);
+});
+
+test('NSC-261 hive-card: valid create returns key', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'hcard-'));
+  writeFileSync(join(tmpDir, 'tasks.json'), JSON.stringify({ tasks: [
+    { id: 'NSC-1', title: 'Existing', status: 'todo', dependsOn: [], priority: 2, createdAt: '2026-11-21T00:00:00Z' }
+  ] }));
+  const r = runCard('{"title":"New card","priority":1,"status":"blocked","blockItems":["Check it"]}', tmpDir);
+  assert.equal(r.status, 0, `should exit 0, stderr: ${r.stderr}`);
+  assert.equal(r.parsed?.ok, true, 'ok should be true');
+  assert.ok(typeof r.parsed?.key === 'string' && r.parsed.key !== 'NSC-1', 'key should be a new distinct string');
+});
+
+test('NSC-261 hive-card: two sequential creates get distinct keys', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'hcard-'));
+  writeFileSync(join(tmpDir, 'tasks.json'), JSON.stringify({ tasks: [] }));
+  const r1 = runCard('{"title":"First"}', tmpDir);
+  const r2 = runCard('{"title":"Second"}', tmpDir);
+  assert.equal(r1.status, 0); assert.equal(r2.status, 0);
+  assert.ok(r1.parsed?.key !== r2.parsed?.key, `keys must differ: ${r1.parsed?.key} vs ${r2.parsed?.key}`);
 });

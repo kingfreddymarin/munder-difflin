@@ -1,8 +1,6 @@
 // NSC-261: Creates one card on the hive task ledger with all card fields visible on first open.
-// Step 1: card.create (title, description, assignee, priority, status).
-// Step 2: card.update for parentId (supported by core).
-// dependsOn is shown but is agent-managed (set directly in tasks.json — see COMMANDS.md Board Tasks).
-// blockItems: shown and attempted via card.update; reducer applies it immediately.
+// One card.create call carries all fields; dependsOn is a string[] in the ledger (displayed joined).
+// See COMMANDS.md Board Tasks for the agent path.
 import * as React from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 import { ToggleGroup, ToggleGroupItem } from '@/components/animate-ui/components/radix/toggle-group';
@@ -58,6 +56,9 @@ export function NewCardDialog({ open, onClose, onCreated, assignee }: { open: bo
     status: form.status,
     ...(form.description.trim() ? { description: form.description.trim() } : {}),
     ...(form.assignee ? { assignee: form.assignee } : {}),
+    ...(form.parentId ? { parentId: form.parentId } : {}),
+    ...(form.dependsOn.trim() ? { dependsOn: [form.dependsOn.trim()] } : {}),
+    ...(form.blockItems.length > 0 ? { blockItems: form.blockItems } : {}),
   };
   const reason = unsupported(command);
 
@@ -84,14 +85,6 @@ export function NewCardDialog({ open, onClose, onCreated, assignee }: { open: bo
     const result = await dispatch(command);
     if (!result || generationRef.current !== myGeneration) { setSending(false); setStatus('Could not create card. Try again.'); return; }
     const key = typeof result === 'string' ? result : null;
-
-    // Step 2: apply parentId and blockItems if provided.
-    if (key && (form.parentId || form.blockItems.length > 0)) {
-      const patch: Record<string, unknown> = {};
-      if (form.parentId) patch.parentId = form.parentId;
-      if (form.blockItems.length > 0) patch.blockItems = form.blockItems;
-      await dispatch({ type: 'card.update', key, patch } as Parameters<typeof dispatch>[0]);
-    }
 
     setSending(false);
     if (generationRef.current === myGeneration) {
@@ -163,7 +156,7 @@ export function NewCardDialog({ open, onClose, onCreated, assignee }: { open: bo
 
           {/* Depends on */}
           <div className="grid gap-1.5">
-            <Label htmlFor="nc-depends">Depends on <span className="text-muted-foreground font-normal text-xs">(card key — agents set via tasks.json)</span></Label>
+            <Label htmlFor="nc-depends">Depends on <span className="text-muted-foreground font-normal text-xs">(card key — stored as dependsOn in tasks.json)</span></Label>
             <Input id="nc-depends" placeholder="e.g. NSC-42" maxLength={40} value={form.dependsOn}
               onChange={(e) => setForm({ ...form, dependsOn: e.target.value.trim() })} />
           </div>

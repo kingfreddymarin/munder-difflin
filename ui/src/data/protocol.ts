@@ -10,7 +10,7 @@ export type Command =
   | { type: 'notification.act'; notificationId: string; action: string }
   | { type: 'card.move'; key: string; status: CardStatus }
   /** `key` is not sent: the core picks it and the provider puts it on the event. */
-  | { type: 'card.create'; title: string; description?: string; assignee?: string; priority?: 1 | 2 | 3; status?: 'todo' | 'blocked'; key?: string }
+  | { type: 'card.create'; title: string; description?: string; assignee?: string; priority?: 1 | 2 | 3; status?: 'todo' | 'blocked'; key?: string; parentId?: string; dependsOn?: string[]; blockItems?: string[] }
   | { type: 'automation.toggle'; id: string; enabled: boolean }
   | { type: 'access.set'; agentId: string; sourceId: string; access: Access }
   | { type: 'agent.update'; agentId: string; patch: Partial<Pick<Agent, 'name' | 'color' | 'model' | 'engine' | 'tokensCap' | 'persona' | 'tone' | 'autonomy' | 'yolo'>> }

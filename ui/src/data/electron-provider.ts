@@ -285,6 +285,7 @@ export function createElectronProvider(): ElectronProvider {
         priority: task.priority === 1 ? 'P1' : task.priority === 2 ? 'P2' : task.priority === 3 ? 'P3' : '',
         agentId: string(task.assignee), created: date(task.createdAt), createdBy: string(task.createdBy), updated: date(task.updatedAt ?? task.createdAt),
         description: string(task.description), dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.filter((id): id is string => typeof id === 'string').join(', ') : '', parentId: string(task.parentId) || undefined, teamId: string(task.teamId) || undefined,
+        blockItems: Array.isArray(task.blockItems) ? (task.blockItems as unknown[]).filter((b): b is string => typeof b === 'string') : undefined,
         plan: [], doneMeans: [], tags: strings(task.tags), workspace: string(task.workspace) || undefined,
         dir: string(task.dir) || undefined, refs: refs(task.refs), tokens: 0, origin: 'hive', people: [],
       }));
