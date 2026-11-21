@@ -112,7 +112,7 @@ export function SideAgentPage() {
               onChange={(event) => savePersona(event.target.value)}
             >
               <option value={PERSONA_DEFAULT}>Default (Floor assistant)</option>
-              <option value={PERSONA_NONE}>None — no persona</option>
+              <option value={PERSONA_NONE}>None — no persona, floor context only</option>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           </label>

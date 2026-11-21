@@ -264,15 +264,23 @@ function fixtureWithPersona(t, readPersona) {
   return { side, owner, spawned };
 }
 
-test('None persona omits --append-system-prompt and --prompt for both providers', (t) => {
+test('None persona keeps floor context but drops the identity line', (t) => {
   for (const provider of ['opencode', 'claude']) {
     const f = fixtureWithPersona(t, () => null);
     assert.equal(f.side.launch(f.owner, provider, false).ok, true);
     const { opts } = f.spawned.get(f.side.state(f.owner).ptyId);
-    assert.ok(!opts.args.includes('--append-system-prompt'), `${provider}: no --append-system-prompt`);
-    assert.ok(!opts.args.includes('--prompt'), `${provider}: no --prompt`);
-    const state = f.side.state(f.owner);
-    assert.equal(state.persona, null, `${provider}: state.persona is null`);
+    // Prompt args must be present (floor context is kept).
+    const promptArg = provider === 'opencode' ? '--prompt' : '--append-system-prompt';
+    assert.ok(opts.args.includes(promptArg), `${provider}: ${promptArg} present`);
+    const prompt = opts.args.at(-1);
+    // No identity/persona line.
+    assert.doesNotMatch(prompt, /You are /, `${provider}: no identity line`);
+    // Floor snapshot and safety lines are present.
+    assert.match(prompt, /read-only floor data/, `${provider}: safety line present`);
+    assert.match(prompt, /NSC-236 blocked/, `${provider}: cards present`);
+    assert.match(prompt, /main-orchestrator \(Fixture orchestrator\)/, `${provider}: roster present`);
+    // State carries null persona.
+    assert.equal(f.side.state(f.owner).persona, null, `${provider}: state.persona is null`);
   }
 });
 
