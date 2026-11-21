@@ -2564,8 +2564,10 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   // navigation must NOT flip readiness off (the renderer only drains on mount,
   // so a later deep link would otherwise queue and sit until a full reload).
   win.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) floorControlsReady.delete(wc);
     if (details.isMainFrame) rendererReadyForHires = false;
   });
+  wc.on('render-process-gone', () => floorControlsReady.delete(wc));
 
   // Paramount: the UI is the separate Paramount app, never src/renderer.
   // Floors run on their own partition, so the scheme is registered per session.
@@ -4015,17 +4017,14 @@ const floorOverview = createFloorOverview({
     const now = Date.now();
     return projectFloorRows(hive.registry(), hive.tasks(), (id) => {
       const pty = ptyForAgent(id);
-      if (!pty) return 'offline';
-      return now - (ptyManager.lastOutputAt(pty) ?? 0) < WORKER_WAKE_IDLE_MS ? 'working' : 'idle';
-    });
+      const busy = pty && now - (ptyManager.lastOutputAt(pty) ?? 0) < WORKER_WAKE_IDLE_MS;
+      return { status: !pty ? 'offline' : busy ? 'working' : 'idle', breaker: breaker.levelFor(id) };
+    }, roster.read()?.agents ?? []);
   },
   focus: () => {
     const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow();
-    const showControls = () => {
-      if (!win.isDestroyed()) win.webContents.send('floor-overview:controls');
-    };
-    if (win.webContents.isLoadingMainFrame()) win.webContents.once('did-finish-load', showControls);
-    else showControls();
+    pendingFloorControls.set(win.webContents, ++floorControlsRequestId);
+    deliverFloorControls(win.webContents);
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
@@ -4033,7 +4032,20 @@ const floorOverview = createFloorOverview({
   }
 });
 
-function canUseFloorOverview(event: Electron.IpcMainInvokeEvent): boolean {
+// The UI subscribes after its first snapshot, which can finish after page load.
+// Retain the request in main until the target's listener has handled it.
+const floorControlsReady = new WeakSet<Electron.WebContents>();
+const pendingFloorControls = new WeakMap<Electron.WebContents, number>();
+let floorControlsRequestId = 0;
+
+function deliverFloorControls(contents: Electron.WebContents): void {
+  const requestId = pendingFloorControls.get(contents);
+  if (requestId !== undefined && floorControlsReady.has(contents) && !contents.isDestroyed()) {
+    contents.send('floor-overview:controls', requestId);
+  }
+}
+
+function canUseFloorOverview(event: Pick<Electron.IpcMainEvent, 'senderFrame'>): boolean {
   const frame = event.senderFrame;
   if (!floorHome() || !frame || frame.parent !== null) return false;
   try {
@@ -4046,6 +4058,17 @@ function canUseFloorOverview(event: Electron.IpcMainInvokeEvent): boolean {
 ipcMain.handle('floor-overview:list', (event) => canUseFloorOverview(event) ? floorOverview.list() : []);
 ipcMain.handle('floor-overview:focus', (event, id: unknown) =>
   canUseFloorOverview(event) && typeof id === 'string' && /^[a-f0-9]{64}$/.test(id) ? floorOverview.focus(id) : false);
+ipcMain.on('floor-overview:controls-ready', (event) => {
+  if (!canUseFloorOverview(event) || event.senderFrame !== event.sender.mainFrame) return;
+  floorControlsReady.add(event.sender);
+  deliverFloorControls(event.sender);
+});
+ipcMain.on('floor-overview:controls-handled', (event, requestId: unknown) => {
+  if (!canUseFloorOverview(event) || event.senderFrame !== event.sender.mainFrame) return;
+  if (floorControlsReady.has(event.sender) && pendingFloorControls.get(event.sender) === requestId) {
+    pendingFloorControls.delete(event.sender);
+  }
+});
 
 // ─── Floors (owner requests 2026-11-12; Munder 0.5.7 parity, floors.ts) ────────
 // The floor is chosen on every launch: the main process claims nothing at boot, and the picker

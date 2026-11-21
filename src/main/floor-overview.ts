@@ -22,13 +22,31 @@ function asRecord(raw: unknown): Record<string, unknown> {
   return raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
 }
 
-export function projectFloorRows(registry: unknown, ledger: unknown, statusFor: (id: string) => string | undefined) {
+export function projectFloorRows(
+  registry: unknown,
+  ledger: unknown,
+  activityFor: (id: string) => { status: 'offline' | 'working' | 'idle'; breaker?: string },
+  rosterAgents: readonly unknown[]
+) {
+  const rosterStatuses = new Map(rosterAgents.map(raw => {
+    const agent = asRecord(raw);
+    return [agent.id, agent.status] as const;
+  }));
   const agents = Object.entries(asRecord(asRecord(registry).agents))
     .filter(([id, agent]) => id && asRecord(agent).archived !== true)
     .slice(0, MAX_ROWS)
     .map(([id, raw]) => {
       const agent = asRecord(raw);
-      return toRow(id, agent.name, statusFor(id) ?? agent.status);
+      const recorded = typeof agent.status === 'string' ? agent.status : rosterStatuses.get(id);
+      const live = activityFor(id);
+      // Match the regular floor's exceptional states before applying terminal recency.
+      const breaker = live.breaker || agent.breaker;
+      if (breaker === 'constrain' || breaker === 'constrained' || breaker === 'stop' || breaker === 'stopped') {
+        return toRow(id, agent.name, 'constrained');
+      }
+      if (recorded === 'blocked' || recorded === 'waiting') return toRow(id, agent.name, 'waiting');
+      if (recorded === 'crashed' || recorded === 'error') return toRow(id, agent.name, 'crashed');
+      return toRow(id, agent.name, live.status);
     });
   const tasks: FloorOverviewRow[] = [];
   const entries = asRecord(ledger).tasks;

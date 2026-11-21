@@ -4,8 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { once } = require('node:events');
+const { EventEmitter, once } = require('node:events');
 const { spawn } = require('node:child_process');
+const vm = require('node:vm');
+const ts = require('typescript');
 const load = require('./load-ts.cjs');
 
 const { createFloorOverview, projectFloorRows } = load('src/main/floor-overview.ts');
@@ -15,7 +17,7 @@ const { floorDataDirFor } = load('src/main/floors.ts');
 const rowsFor = (label, status = 'doing') => projectFloorRows(
   { agents: { god: { name: label, sessionId: 'private' }, archived: { archived: true } } },
   { tasks: [{ id: 'NSC-1', title: label + ' task', status, description: 'private', webhook: { tokenHash: 'private' } }] },
-  () => 'working'
+  () => ({ status: 'working' }), []
 );
 
 async function until(read) {
@@ -33,7 +35,106 @@ test('projection exposes only labelled active agents and task rows', () => {
     agents: [{ id: 'god', label: 'Alpha', status: 'working' }],
     tasks: [{ id: 'NSC-1', label: 'Alpha task', status: 'doing' }]
   });
-  assert.deepEqual(projectFloorRows(null, { tasks: [null, { id: 1 }] }, () => undefined), { agents: [], tasks: [] });
+  assert.deepEqual(projectFloorRows(null, { tasks: [null, { id: 1 }] }, () => ({ status: 'offline' }), []), { agents: [], tasks: [] });
+});
+
+const mainSource = fs.readFileSync(join(__dirname, '../src/main/index.ts'), 'utf8');
+const preloadSource = fs.readFileSync(join(__dirname, '../src/preload/index.ts'), 'utf8');
+const uiUrl = 'http://localhost:5173/';
+const compile = source => ts.transpileModule(source, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS }
+}).outputText;
+
+function overviewHandlers(overrides = {}) {
+  const start = mainSource.indexOf('const floorOverview = createFloorOverview(');
+  const end = mainSource.indexOf('// ─── Floors (owner requests', start);
+  const ipcMain = new EventEmitter();
+  ipcMain.handle = () => {};
+  let options;
+  const context = vm.createContext({
+    createFloorOverview: value => { options = value; },
+    URL, ipcMain, sharedDataDir: () => '/profile', app: { getPath: () => '/profile' },
+    floorHome: () => '/floor', paramountUiUrl: () => uiUrl, projectFloorRows,
+    ...overrides
+  });
+  vm.runInContext(compile(mainSource.slice(start, end)), context);
+  return { options, ipcMain, context };
+}
+
+test('overview preserves regular-floor status precedence with and without a live terminal', () => {
+  const { options } = overviewHandlers({
+    hive: {
+      registry: () => ({ agents: {
+        'blocked-live': { status: 'blocked' }, 'blocked-offline': { status: 'blocked' },
+        'crashed-live': { status: 'crashed' }, 'crashed-offline': {},
+        'constrained-live': { status: 'blocked' }, 'stopped-offline': { status: 'crashed' },
+        busy: { status: 'idle' }, quiet: { status: 'working' }, absent: { status: 'idle' }
+      } }),
+      tasks: () => ({ tasks: [] })
+    },
+    roster: { read: () => ({ agents: [{ id: 'crashed-offline', status: 'error' }] }) },
+    breaker: { levelFor: id => ({ 'constrained-live': 'constrained', 'stopped-offline': 'stopped' })[id] ?? 'healthy' },
+    ptyForAgent: id => id.endsWith('-live') || id === 'busy' || id === 'quiet' ? id : undefined,
+    ptyManager: { lastOutputAt: id => id === 'quiet' ? 0 : Date.now() },
+    WORKER_WAKE_IDLE_MS: 10_000
+  });
+  assert.deepEqual(Object.fromEntries(options.rows().agents.map(({ id, status }) => [id, status])), {
+    'blocked-live': 'waiting', 'blocked-offline': 'waiting', 'crashed-live': 'crashed', 'crashed-offline': 'crashed',
+    'constrained-live': 'constrained', 'stopped-offline': 'constrained', busy: 'working', quiet: 'idle', absent: 'offline'
+  });
+});
+
+test('Open floor reaches a renderer subscribing after initial load and reload', () => {
+  let loading = true;
+  let renderer;
+  const navigation = new EventEmitter();
+  const frame = { url: uiUrl, parent: null };
+  const wc = Object.assign(navigation, {
+    mainFrame: frame,
+    isDestroyed: () => false,
+    isLoadingMainFrame: () => loading,
+    send: (channel, ...args) => renderer.emit(channel, {}, ...args)
+  });
+  const win = { webContents: wc, isDestroyed: () => false, isMinimized: () => false, show() {}, focus() {} };
+  const { options, ipcMain, context } = overviewHandlers({ mainWindow: win });
+  const navStart = mainSource.indexOf("win.webContents.on('did-start-navigation'");
+  const navEnd = mainSource.indexOf('  // Paramount: the UI', navStart);
+  context.win = win;
+  context.wc = wc;
+  vm.runInContext(compile(mainSource.slice(navStart, navEnd)), context);
+  const preloadStart = preloadSource.indexOf('  onFloorViewControls:');
+  const preloadEnd = preloadSource.indexOf('  paramountSnapshot:', preloadStart);
+  const subscribe = () => {
+    const api = vm.runInNewContext(compile('({' + preloadSource.slice(preloadStart, preloadEnd) + '})'), { ipcRenderer: renderer });
+    let visible = true;
+    api.onFloorViewControls(() => { visible = false; });
+    return () => visible;
+  };
+  const loadUntilSnapshot = () => {
+    renderer = new EventEmitter();
+    renderer.send = (channel, ...args) => ipcMain.emit(channel, { sender: wc, senderFrame: frame }, ...args);
+    loading = false;
+    navigation.emit('did-finish-load');
+  };
+
+  renderer = new EventEmitter();
+  assert.equal(options.focus(), true);
+  loadUntilSnapshot();
+  const initial = subscribe();
+  const oldDocument = subscribe();
+
+  // Begin a full reload while the old renderer still exists, then finish the
+  // document load before the new FloorProvider resolves its first snapshot.
+  loading = true;
+  navigation.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+  assert.equal(options.focus(), true);
+  loadUntilSnapshot();
+  const reloaded = subscribe();
+  const subsequent = subscribe();
+  assert.deepEqual([initial(), oldDocument(), reloaded(), subsequent()], [false, true, false, true]);
+  navigation.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+  assert.equal(options.focus(), true);
+  assert.equal(subsequent(), false, 'same-document navigation keeps the mounted target ready');
 });
 
 test('separate processes share views and route focus, with no foreign or stale floor access', { timeout: 20_000 }, async t => {

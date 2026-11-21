@@ -755,8 +755,12 @@ const api = {
   listFloorViews: (): Promise<FloorOverview[]> => ipcRenderer.invoke('floor-overview:list'),
   focusFloorView: (id: string): Promise<boolean> => ipcRenderer.invoke('floor-overview:focus', id),
   onFloorViewControls: (callback: () => void): (() => void) => {
-    const listener = () => callback();
+    const listener = (_event: Electron.IpcRendererEvent, requestId: number) => {
+      callback();
+      ipcRenderer.send('floor-overview:controls-handled', requestId);
+    };
     ipcRenderer.on('floor-overview:controls', listener);
+    ipcRenderer.send('floor-overview:controls-ready');
     return () => ipcRenderer.removeListener('floor-overview:controls', listener);
   },
   paramountSnapshot: (): Promise<ParamountRawSnapshot> => ipcRenderer.invoke('paramount:snapshot'),
