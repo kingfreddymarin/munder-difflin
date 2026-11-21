@@ -6,16 +6,16 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { once } = require('node:events');
-const { electron, electronReady, hasAllFloorsView } = require('./smoke-main-expressions.cjs');
+const { electron, electronReady, floorPeerProfile, hasAllFloorsView } = require('./smoke-main-expressions.cjs');
 const app = path.resolve(process.argv[2] ?? path.join(__dirname, 'mac-arm64/Paramount.app'));
 const executable = path.join(app, 'Contents/MacOS/Paramount');
 const fixture = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paramount-nsc218-package-')));
 const profile = path.join(fixture, 'profile');
-const peerProfile = path.join(fixture, 'peer-profile');
 const a = path.join(fixture, 'floor-a');
 const b = path.join(fixture, 'floor-b');
+const peerProfile = floorPeerProfile(profile, b);
 const privateHome = path.join(fixture, 'fake-home');
-for (const dir of [profile, peerProfile, privateHome]) fs.mkdirSync(dir);
+for (const dir of [profile, peerProfile, privateHome]) fs.mkdirSync(dir, { recursive: true });
 for (const [home, label] of [[a, 'Alpha ledger'], [b, 'Beta ledger']]) {
   fs.mkdirSync(path.join(home, 'hive'), { recursive: true });
   fs.writeFileSync(path.join(home, 'hive', 'tasks.json'), JSON.stringify({
@@ -119,7 +119,13 @@ async function run() {
   const second = launch('Floor B', ['--floor-data=' + peerProfile, '--floor-shared=' + profile, '--floor-home=' + b]);
   peer = await connect(second);
   assert.equal(await peer.evaluate(`${electron}.app.getPath('userData')`), peerProfile);
-  await wait('both floor tasks', () => page("document.body.innerText.includes('Alpha ledger') && document.body.innerText.includes('Beta ledger')"));
+  await primary.evaluate(windowExpr + '.show(); ' + windowExpr + '.focus()');
+  await wait('both floor tasks projected to A', async () => {
+    const floors = await page('window.cth.listFloorViews()');
+    const taskIn = (home, label) => floors.some(floor => floor.home === home && floor.tasks.some(task => task.label === label));
+    return taskIn(a, 'Alpha ledger') && taskIn(b, 'Beta ledger');
+  });
+  await wait('both floor tasks rendered on A', () => page("document.body.innerText.includes('Alpha ledger') && document.body.innerText.includes('Beta ledger')"));
   await wait('floor B renderer', () => peer.page("!!window.cth?.listFloorViews"));
   await peer.page("localStorage.setItem('paramount.floor-views', 'true')");
   await peer.evaluate(windowExpr + '.webContents.reload()');

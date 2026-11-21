@@ -1,10 +1,18 @@
 'use strict';
+const { createHash } = require('node:crypto');
+const path = require('node:path');
 
 // Runtime.evaluate runs outside the application's CommonJS module scope.
 const mainRequire = 'globalThis.process.mainModule.require';
 const electron = `${mainRequire}('electron')`;
 const electronReady = `Boolean(globalThis.process?.mainModule && ${electron}.app?.isReady())`;
 const appBuild = `${mainRequire}(${electron}.app.getAppPath() + '/package.json').councilBuild`;
+
+// Match src/main/floors.ts for the smoke's separately launched peer.
+function floorPeerProfile(shared, home) {
+  const id = createHash('sha1').update(path.resolve(home)).digest('hex').slice(0, 12);
+  return path.join(shared, 'floors', id);
+}
 
 function hasAllFloorsView() {
   const nav = [...document.querySelectorAll('nav[aria-label="Floor views"]')]
@@ -42,4 +50,4 @@ function keyEvents(shortcut) {
   return [{ ...common, ...text, type: key === 'Enter' ? 'keyDown' : 'rawKeyDown' }, { ...common, type: 'keyUp' }];
 }
 
-module.exports = { electron, electronReady, appBuild, hasAllFloorsView, targetInRenderer, keyEvents };
+module.exports = { electron, electronReady, appBuild, floorPeerProfile, hasAllFloorsView, targetInRenderer, keyEvents };
