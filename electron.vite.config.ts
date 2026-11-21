@@ -56,7 +56,10 @@ export default defineConfig({
     define: defineMain,
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/main/index.ts') }
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          'hive-relay-cli': resolve(__dirname, 'src/main/hive-relay-cli.ts')
+        }
       }
     }
   },
