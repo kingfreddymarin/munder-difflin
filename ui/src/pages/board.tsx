@@ -17,17 +17,19 @@ import { useDispatch, useFloor, useUnsupported } from '@/data/store';
 import { useRouter } from '@/app/router';
 import { cn } from '@/lib/utils';
 import type { Card as CardT, CardStatus } from '@/data/types';
+import { childRollup, childrenOf, inFamily } from '@/data/card-tree';
 import { Screen } from '@/components/app/screen';
 
-/** Filter keys: `w:` workspace, `t:` tag, `a:` agent. OR inside a group, AND across groups. */
-type FilterKey = `${'w' | 't' | 'a'}:${string}`;
+/** Filter keys: `w:` workspace, `t:` tag, `a:` agent, `p:` parent card (it and its children). OR inside a group, AND across groups. */
+type FilterKey = `${'w' | 't' | 'a' | 'p'}:${string}`;
 
 function matches(card: CardT, selected: Set<FilterKey>): boolean {
-  const groups = { w: [] as string[], t: [] as string[], a: [] as string[] };
-  selected.forEach((k) => groups[k[0] as 'w' | 't' | 'a'].push(k.slice(2)));
+  const groups = { w: [] as string[], t: [] as string[], a: [] as string[], p: [] as string[] };
+  selected.forEach((k) => groups[k[0] as 'w' | 't' | 'a' | 'p'].push(k.slice(2)));
   return (!groups.w.length || groups.w.includes(card.workspace ?? ''))
     && (!groups.t.length || card.tags.some((t) => groups.t.includes(t)))
-    && (!groups.a.length || groups.a.includes(card.agentId));
+    && (!groups.a.length || groups.a.includes(card.agentId))
+    && (!groups.p.length || inFamily(card, groups.p));
 }
 
 function BoardFilter({ selected, onChange }: { selected: Set<FilterKey>; onChange: (next: Set<FilterKey>) => void }) {
@@ -36,6 +38,7 @@ function BoardFilter({ selected, onChange }: { selected: Set<FilterKey>; onChang
   const workspaces = React.useMemo(() => [...new Set(cards.flatMap((c) => (c.workspace ? [c.workspace] : [])))].sort(), [cards]);
   const tags = React.useMemo(() => [...new Set(cards.flatMap((c) => c.tags))].sort(), [cards]);
   const owners = React.useMemo(() => agents.filter((a) => cards.some((c) => c.agentId === a.id)), [agents, cards]);
+  const parents = React.useMemo(() => cards.filter((c) => !c.boardArchivedAt && childrenOf(cards, c.key).length > 0), [cards]);
   const toggle = (key: FilterKey, on: boolean) => {
     const next = new Set(selected);
     if (on) next.add(key);
@@ -50,7 +53,8 @@ function BoardFilter({ selected, onChange }: { selected: Set<FilterKey>; onChang
       ))}
     </>
   );
-  const label = (key: FilterKey) => key.startsWith('a:') ? agents.find((a) => a.id === key.slice(2))?.name ?? key.slice(2) : key.slice(2);
+  const label = (key: FilterKey) => key.startsWith('a:') ? agents.find((a) => a.id === key.slice(2))?.name ?? key.slice(2)
+    : key.startsWith('p:') ? `Under ${key.slice(2)}` : key.slice(2);
   return (
     <div className="flex flex-wrap items-center gap-2">
       <DropdownMenu>
@@ -58,12 +62,14 @@ function BoardFilter({ selected, onChange }: { selected: Set<FilterKey>; onChang
           <Button size="sm" variant="outline">Filter{selected.size ? ` · ${selected.size}` : ''}</Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="max-h-[60vh] overflow-y-auto">
-          {!workspaces.length && !tags.length && !owners.length && <DropdownMenuLabel className="text-muted-foreground font-normal">No tags on any card yet; agents add them.</DropdownMenuLabel>}
+          {!workspaces.length && !tags.length && !owners.length && !parents.length && <DropdownMenuLabel className="text-muted-foreground font-normal">No tags on any card yet; agents add them.</DropdownMenuLabel>}
           {group('Workspace', workspaces.map((w) => ({ key: `w:${w}` as FilterKey, label: w })))}
           {workspaces.length > 0 && tags.length > 0 && <DropdownMenuSeparator />}
           {group('Tags', tags.map((t) => ({ key: `t:${t}` as FilterKey, label: t })))}
           {(workspaces.length > 0 || tags.length > 0) && owners.length > 0 && <DropdownMenuSeparator />}
           {group('Agent', owners.map((a) => ({ key: `a:${a.id}` as FilterKey, label: a.name })))}
+          {(workspaces.length > 0 || tags.length > 0 || owners.length > 0) && parents.length > 0 && <DropdownMenuSeparator />}
+          {group('Parent', parents.map((c) => ({ key: `p:${c.key}` as FilterKey, label: `${c.key} · ${c.title}` })))}
         </DropdownMenuContent>
       </DropdownMenu>
       {[...selected].map((k) => (
@@ -117,6 +123,9 @@ import { NewCardDialog } from '@/features/team/new-card-dialog';
 import { CardActionMenuProvider, useCardActionTarget } from '@/features/team/card-action-menu';
 function BoardCard({ card, onOpen }: { card: CardT; onOpen: () => void }) {
   const agent = useFloor((s) => s.agents.find((a) => a.id === card.agentId));
+  const cards = useFloor((s) => s.cards);
+  const parent = card.parentId ? cards.find((c) => c.key === card.parentId) : undefined;
+  const rollup = React.useMemo(() => childRollup(cards, card.key), [cards, card.key]);
   const { onContextMenu, onKeyDown: menuKeyDown } = useCardActionTarget(card.key);
   const done = card.plan.filter((p) => p.state === 'done').length;
   const evidence = card.refs.filter((r) => r.kind === 'workitem' && r.system === 'ado').length;
@@ -137,7 +146,13 @@ function BoardCard({ card, onOpen }: { card: CardT; onOpen: () => void }) {
           {card.tags.map((t) => <Badge key={t} variant="secondary" className="px-1.5 py-0 text-[10px]">{t}</Badge>)}
         </span>
       )}
-      {(card.teamId || card.parentId) && <span className="text-[11px] text-muted-foreground">{card.teamId ? `Team ${card.teamId}` : ''}{card.parentId ? ` · child of ${card.parentId}` : ' · team parent'}</span>}
+      {(card.parentId || rollup) && (
+        <span className="text-muted-foreground flex items-center gap-2 text-[11px]">
+          {card.parentId && <span className="min-w-0 flex-1 truncate" title={parent ? `${parent.key} · ${parent.title}` : card.parentId}>↳ {card.parentId}{parent ? ` · ${parent.title}` : ''}</span>}
+          {rollup && <span className={cn('ml-auto shrink-0', rollup.done === rollup.total && 'text-emerald-400')}>{rollup.done}/{rollup.total} done</span>}
+        </span>
+      )}
+      {card.teamId && <span className="text-[11px] text-muted-foreground">Team {card.teamId}</span>}
       {card.dependsOn && <span className="text-[11px] text-amber-300">waits on {card.dependsOn}</span>}
       {card.plan.length > 0 && <Progress value={Math.round((done / card.plan.length) * 100)} className="h-1" />}
       <span className="text-muted-foreground flex items-center gap-2 text-[11px]">

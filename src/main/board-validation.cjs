@@ -51,7 +51,26 @@ function validateBoard(root, { now = Date.now(), staleHours = 48 } = {}) {
       if (missing.length) descriptions.push(`${task.id}: missing ${missing.join(', ')}`);
     }
   }
+  // Optional parent links (parentId): a missing parent warns (it may have been deleted); a malformed link, a self-parent or a cycle fails.
+  const parentOf = new Map(), badParents = [], missingParents = [];
+  for (const task of ledger.tasks) {
+    if (!task || typeof task !== 'object' || typeof task.id !== 'string' || parentOf.has(task.id) || task.parentId == null || task.parentId === '') continue;
+    if (typeof task.parentId !== 'string') badParents.push(`${task.id}: parentId is not a card id`);
+    else if (task.parentId === task.id) badParents.push(`${task.id}: is its own parent`);
+    else if (!ids.has(task.parentId)) missingParents.push(`${task.id}: parent ${task.parentId} does not exist`);
+    else parentOf.set(task.id, task.parentId);
+  }
+  const inCycle = new Set();
+  for (const start of parentOf.keys()) {
+    const path = [];
+    for (let at = start; parentOf.has(at) && !inCycle.has(at); at = parentOf.get(at)) {
+      const loop = path.indexOf(at);
+      if (loop >= 0) { const cycle = path.slice(loop); cycle.forEach((id) => inCycle.add(id)); badParents.push(`parent cycle: ${[...cycle, at].join(' -> ')}`); break; }
+      path.push(at);
+    }
+  }
   add('task_shape', malformed.length ? 'error' : 'pass', malformed);
+  add('parents', badParents.length ? 'error' : missingParents.length ? 'warn' : 'pass', [...badParents, ...missingParents]);
   add('unique_ids', duplicates.length ? 'error' : 'pass', duplicates);
   add('staleness', stale.length ? 'warn' : 'pass', stale);
   add('assignees', agents ? (owners.length ? 'warn' : 'pass') : 'skip', owners);

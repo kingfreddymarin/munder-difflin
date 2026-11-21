@@ -194,3 +194,49 @@ test('owner Board IPC requires a known window, the top frame and the configured 
     assert.equal(isBoardOwnerSender({ ...owner, url: new URL('/other.html', ui).href }, ui), false);
   }
 });
+
+// NSC-244: parent/child cards ------------------------------------------------
+
+function parentFixture() {
+  const { state, deps } = fixture();
+  state.tasks.push({ id: 'NSC-40' }, { id: 'NSC-41', parentId: 'NSC-40' }, { id: 'NSC-42', parentId: 'NSC-41' }, { id: 'NSC-43', boardArchivedAt: '2026-11-01T00:00:00.000Z' });
+  deps.canMutateBoard = () => true;
+  const writes = [];
+  deps.patchTask = (id, patch) => { writes.push({ id, patch }); return true; };
+  return { state, deps, writes };
+}
+
+test('card.update sets a parent and clears it by removing the field', () => {
+  const { deps, writes } = parentFixture();
+  const set = dispatchParamount({ type: 'card.update', key: 'NSC-31', patch: { parentId: 'NSC-40' } }, deps);
+  assert.equal(set.ok, true);
+  assert.deepEqual(writes[0], { id: 'NSC-31', patch: { parentId: 'NSC-40', updatedAt: set.event.at } });
+  assert.deepEqual(set.event.command.patch, { parentId: 'NSC-40' });
+  const cleared = dispatchParamount({ type: 'card.update', key: 'NSC-41', patch: { parentId: '' } }, deps);
+  assert.equal(cleared.ok, true);
+  assert.ok('parentId' in writes[1].patch && writes[1].patch.parentId === undefined);
+  assert.equal(JSON.stringify(writes[1].patch).includes('parentId'), false);
+  assert.deepEqual(cleared.event.command.patch, { parentId: '' });
+});
+
+test('card.update refuses a missing, archived or self parent and cycles before any write', () => {
+  const { state, deps, writes } = parentFixture();
+  deps.publish = () => assert.fail('Unexpected publish');
+  const update = (key, parentId) => dispatchParamount({ type: 'card.update', key, patch: { parentId } }, deps);
+  assert.equal(update('NSC-31', 'NSC-404').code, 'NOT_FOUND');
+  assert.equal(update('NSC-31', 'NSC-43').code, 'NOT_FOUND');
+  assert.equal(update('NSC-31', 'NSC-31').code, 'INVALID_INPUT');
+  assert.equal(update('NSC-40', 'NSC-41').code, 'INVALID_INPUT');
+  assert.equal(update('NSC-40', 'NSC-42').code, 'INVALID_INPUT');
+  assert.equal(update('NSC-31', 42).code, 'INVALID_INPUT');
+  assert.equal(update('NSC-31', 'two\nlines').code, 'INVALID_INPUT');
+  assert.deepEqual(writes, []);
+  assert.deepEqual(state.events, []);
+});
+
+test('parentError tolerates a cycle already on disk', () => {
+  const { parentError } = loadTs('src/main/paramount-board.ts');
+  const tasks = [{ id: 'A', parentId: 'B' }, { id: 'B', parentId: 'A' }, { id: 'C' }];
+  assert.equal(parentError(tasks, 'C', 'A'), null);
+  assert.equal(parentError(tasks, 'A', 'B').code, 'INVALID_INPUT');
+});

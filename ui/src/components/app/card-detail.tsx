@@ -5,6 +5,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from '@/lib/utils';
 import type { Card as CardT, CardRef, CardStatus } from '@/data/types';
 import { useDispatch, useFloor, useUnsupported } from '@/data/store';
+import { childrenOf, parentCandidates } from '@/data/card-tree';
+import { useRouter } from '@/app/router';
 import { OpenWith } from './external-link';
 import { AgentLink } from './agent-link';
 import { stamp } from './format';
@@ -68,12 +70,34 @@ export function MoveCardMenu({ card }: { card: CardT }) {
   );
 }
 
+/** Sets or clears the card's parent with card.update; the core refuses a missing parent and cycles. */
+function ParentPicker({ card }: { card: CardT }) {
+  const dispatch = useDispatch();
+  const unsupported = useUnsupported();
+  const cards = useFloor((s) => s.cards);
+  const options = parentCandidates(cards, card);
+  const current = card.parentId ?? '';
+  const reason = unsupported({ type: 'card.update', key: card.key, patch: { parentId: current } });
+  return (
+    <select aria-label={`Parent of ${card.key}`} className="border-input bg-background h-8 max-w-full rounded-md border px-2 text-sm"
+      value={current} disabled={!!reason} title={reason ?? undefined}
+      onChange={(e) => { if (e.target.value !== current) void dispatch({ type: 'card.update', key: card.key, patch: { parentId: e.target.value } }); }}>
+      <option value="">No parent</option>
+      {current && !options.some((c) => c.key === current) && <option value={current}>{current} (not on the Board)</option>}
+      {options.map((c) => <option key={c.key} value={c.key}>{c.key} · {c.title}</option>)}
+    </select>
+  );
+}
+
 export function CardDetail({ card }: { card: CardT }) {
   const agent = useFloor((s) => s.agents.find((a) => a.id === card.agentId));
   const col = columns.find((c) => c.id === card.status);
   const step = card.plan.filter((p) => p.state === 'done').length;
   const evidence = card.refs.filter((r) => r.kind === 'workitem' && r.system === 'ado');
   const links = card.refs.filter((r) => !evidence.includes(r));
+  const cards = useFloor((s) => s.cards);
+  const children = childrenOf(cards, card.key);
+  const { go } = useRouter();
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -91,6 +115,7 @@ export function CardDetail({ card }: { card: CardT }) {
         <dt className="text-muted-foreground">Task</dt><dd className="font-mono text-xs break-all">{card.task ?? 'hive only (no Studio task)'}</dd>
         <dt className="text-muted-foreground">Owner</dt>
         <dd>{agent ? <AgentLink agent={agent} /> : <span className="text-muted-foreground">{card.agentId || 'unassigned'}</span>}</dd>
+        <dt className="text-muted-foreground">Parent</dt><dd><ParentPicker card={card} /></dd>
         {(card.workspace || card.tags.length > 0) && (<><dt className="text-muted-foreground">Tags</dt>
           <dd className="flex flex-wrap gap-1">{card.workspace && <Badge variant="outline">{card.workspace}</Badge>}{card.tags.map((t) => <Badge key={t} variant="secondary">{t}</Badge>)}</dd></>)}
         {card.dir && (<><dt className="text-muted-foreground">Folder</dt><dd className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs break-all">{card.dir}</span><OpenWith path={card.dir} cardKey={card.key} /></dd></>)}
@@ -101,6 +126,26 @@ export function CardDetail({ card }: { card: CardT }) {
         <span className="text-muted-foreground text-xs">Description</span>
         <p className="text-sm leading-relaxed">{card.description || 'No description yet. The owner writes it when it starts the card.'}</p>
       </section>
+      {children.length > 0 && (
+        <section className="flex flex-col gap-1.5">
+          <span className="text-muted-foreground text-xs">Child cards · {children.filter((c) => c.status === 'done').length}/{children.length} done</span>
+          <ul className="flex flex-col gap-1">
+            {children.map((c) => {
+              const childCol = columns.find((x) => x.id === c.status);
+              return (
+                <li key={c.key}>
+                  <button type="button" onClick={() => go('board', { card: c.key })}
+                    className="hover:bg-muted/50 flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm">
+                    <span className="text-muted-foreground font-mono text-xs">{c.key}</span>
+                    <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                    <Badge variant="outline"><span className={cn('size-2 rounded-full', childCol?.dot)} />{childCol?.label ?? c.status}</Badge>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
       {card.plan.length > 0 && (
         <section className="flex flex-col gap-1.5">
           <span className="text-muted-foreground text-xs">Plan the agent follows · step {step} of {card.plan.length}</span>

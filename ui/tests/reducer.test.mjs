@@ -93,3 +93,23 @@ test('card.archive retains the card, status and update time in the snapshot', ()
     assert.equal(applyEvent(next, { ...event, at: '2026-11-22T10:00:00.000Z' }), next);
   }
 });
+
+// NSC-244: parent/child cards ------------------------------------------------
+
+const familySnap = () => ({ agents: [], chats: [], messages: [], audit: [], notifications: [], cards: [
+  { ...baseCard, key: 'NSC-1' }, { ...baseCard, key: 'NSC-2', parentId: 'NSC-1' }, { ...baseCard, key: 'NSC-3', parentId: 'NSC-2' }, { ...baseCard, key: 'NSC-4' },
+] });
+
+test('card.update sets and clears a parent', () => {
+  const set = applyEvent(familySnap(), ev({ type: 'card.update', key: 'NSC-4', patch: { parentId: 'NSC-1' } }));
+  assert.equal(set.cards[3].parentId, 'NSC-1');
+  const cleared = applyEvent(set, ev({ type: 'card.update', key: 'NSC-2', patch: { parentId: '' } }));
+  assert.equal(cleared.cards[1].parentId, undefined);
+});
+
+test('card.update ignores a missing parent, a self parent and a cycle', () => {
+  for (const [key, parentId] of [['NSC-4', 'NSC-404'], ['NSC-4', 'NSC-4'], ['NSC-1', 'NSC-3'], ['NSC-1', 'NSC-2']]) {
+    const snap = familySnap();
+    assert.equal(applyEvent(snap, ev({ type: 'card.update', key, patch: { parentId } })), snap, `${key} → ${parentId}`);
+  }
+});

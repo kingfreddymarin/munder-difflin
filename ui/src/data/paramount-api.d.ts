@@ -278,7 +278,8 @@ export interface ParamountBoardPreferences {
   columns: ParamountCardStatus[];
 }
 export type ParamountOpenApp = 'warp' | 'vscode';
-export type ParamountCardPatch = Partial<{ title: string; description: string; priority: 1 | 2 | 3; assignee: string }>;
+/** `parentId` is another card's key; '' clears it. The core refuses a missing parent, the card itself and cycles. */
+export type ParamountCardPatch = Partial<{ title: string; description: string; priority: 1 | 2 | 3; assignee: string; parentId: string }>;
 /** Board commands, handled by src/main/paramount-board.ts. Send them through `paramountDispatch`. */
 export type ParamountBoardCommand =
   | { type: 'board.columns'; order: ParamountCardStatus[] }
