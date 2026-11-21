@@ -31,6 +31,7 @@ const loaders = {
   terminal: () => import('@/pages/terminal').then((m) => ({ default: m.TerminalPage })),
   'side-agent': () => import('@/pages/side-agent').then((m) => ({ default: m.SideAgentPage })),
   health: () => import('@/pages/health').then((m) => ({ default: m.HealthPage })),
+  files: () => import('@/pages/files').then((m) => ({ default: m.FilesPage })),
   settings: () => import('@/pages/settings').then((m) => ({ default: m.SettingsPage })),
 };
 const pages: Record<string, React.LazyExoticComponent<React.ComponentType>> = Object.fromEntries(Object.entries(loaders).map(([id, load]) => [id, React.lazy(load)]));
