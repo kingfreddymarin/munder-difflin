@@ -114,13 +114,16 @@ function ColumnOrder({ order }: { order: CardStatus[] }) {
 const DRAG_TYPE = 'application/x-paramount-card';
 
 import { NewCardDialog } from '@/features/team/new-card-dialog';
+import { CardActionMenuProvider, useCardActionTarget } from '@/features/team/card-action-menu';
 function BoardCard({ card, onOpen }: { card: CardT; onOpen: () => void }) {
   const agent = useFloor((s) => s.agents.find((a) => a.id === card.agentId));
+  const { onContextMenu, onKeyDown: menuKeyDown } = useCardActionTarget(card.key);
   const done = card.plan.filter((p) => p.state === 'done').length;
   const evidence = card.refs.filter((r) => r.kind === 'workitem' && r.system === 'ado').length;
   return (
-    <div role="button" tabIndex={0} draggable onClick={onOpen}
-      onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
+    <div role="button" tabIndex={0} draggable aria-haspopup="menu" data-board-card={card.key} onClick={onOpen}
+      onContextMenu={onContextMenu}
+      onKeyDown={(e) => { menuKeyDown?.(e); if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
       onDragStart={(e) => { e.dataTransfer.setData(DRAG_TYPE, card.key); e.dataTransfer.effectAllowed = 'move'; }}
       className="bg-card hover:border-primary/50 focus-visible:ring-ring flex cursor-grab flex-col gap-2 rounded-lg border p-3 text-left transition-colors outline-none focus-visible:ring-2 active:cursor-grabbing">
       <span className="flex items-center gap-2 text-[11px]">
@@ -194,12 +197,13 @@ export function BoardPage() {
   const [selected, setSelected] = React.useState<Set<FilterKey>>(() => new Set());
 
   const [creating, setCreating] = React.useState(false);  const open = cards.find((c) => c.key === route.params.get('card'));
-  const visible = React.useMemo(() => cards.filter((c) => matches(c, selected)), [cards, selected]);
+  const visible = React.useMemo(() => cards.filter((c) => !c.boardArchivedAt && matches(c, selected)), [cards, selected]);
   const openCard = (key: string) => go('board', { card: key });
 
   return (
+    <CardActionMenuProvider>
     <Screen fill>
-      <PageHeader title="Board" description="The single list of work. Agents read their card’s plan every turn and tick steps as they go." actions={<Button onClick={() => setCreating(true)}>New card</Button>} />
+      <PageHeader title="Board" description="The single list of work. Agents read their card’s plan every turn and tick steps as they go." actions={<Button data-board-focus-fallback onClick={() => setCreating(true)}>New card</Button>} />
       <div className="flex flex-wrap items-center gap-3">
         <Tabs value={view} onValueChange={setView}>
           <TabsList>
@@ -250,5 +254,6 @@ export function BoardPage() {
         </DialogContent>
       </Dialog>
       <NewCardDialog open={creating} onClose={() => setCreating(false)} />
-    </Screen>  );
+    </Screen>
+    </CardActionMenuProvider>  );
 }

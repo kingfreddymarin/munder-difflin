@@ -83,6 +83,27 @@ export function applyEvent(s: Snapshot, ev: FloorEvent): Snapshot {
       };
       return audit({ ...s, cards: [...s.cards, card] }, ev, 'Created card', card.key, card.title, c.assignee ? [c.assignee] : []);
     }
+    case 'card.archive': {
+      const card = s.cards.find((x) => x.key === c.key);
+      if (!card || card.boardArchivedAt) return s;
+      const cards = s.cards.map((x) => x === card ? { ...x, boardArchivedAt: ev.at } : x);
+      return audit({ ...s, cards }, ev, 'Archived card', card.key, card.title, []);
+    }
+    case 'card.update': {
+      const card = s.cards.find((x) => x.key === c.key);
+      if (!card) return s;
+      const priorityStr: 'P1' | 'P2' | 'P3' | undefined = c.patch.priority === 1 ? 'P1' : c.patch.priority === 3 ? 'P3' : c.patch.priority === 2 ? 'P2' : undefined;
+      const cards = s.cards.map((x) => x.key !== c.key ? x : {
+        ...x,
+        ...(c.patch.title !== undefined ? { title: c.patch.title } : {}),
+        ...(c.patch.description !== undefined ? { description: c.patch.description } : {}),
+        ...(priorityStr !== undefined ? { priority: priorityStr } : {}),
+        ...(c.patch.assignee !== undefined ? { agentId: c.patch.assignee } : {}),
+        updated: ev.at,
+      });
+      const detail = Object.entries(c.patch).map(([k, v]) => `${k} = ${v}`).join(', ');
+      return audit({ ...s, cards }, ev, 'Updated card', card.key, detail, card.agentId ? [card.agentId] : []);
+    }
     case 'automation.toggle': {
       const a = s.automations.find((x) => x.id === c.id);
       if (!a) return s;

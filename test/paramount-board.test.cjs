@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 const { dispatchParamount } = loadTs('src/main/paramount.ts');
-const { cardRefs, createBoardDeps, openAppUrl } = loadTs('src/main/paramount-board.ts');
+const { cardRefs, createBoardDeps, isBoardOwnerSender, openAppUrl } = loadTs('src/main/paramount-board.ts');
 
 const PR = 'https://dev.azure.com/org/proj/_git/repo/pullrequest/23572';
 const WI = 'https://dev.azure.com/org/proj/_workitems/edit/19871';
@@ -117,4 +117,80 @@ test('cardRefs keeps only well-formed https refs', () => {
   const refs = cardRefs(fixture().state.tasks[0]);
   assert.deepEqual(refs.map((ref) => ref.id), ['23572', '19871']);
   assert.deepEqual(cardRefs({ refs: 'nope' }), []);
+});
+
+test('owner card edits patch only validated fields and publish the saved command', () => {
+  const { state, deps } = fixture();
+  deps.canMutateBoard = () => true;
+  deps.agents = () => ({ worker: {} });
+  const writes = [];
+  const published = [];
+  deps.patchTask = (id, patch) => { writes.push({ id, patch }); return true; };
+  deps.publish = (event) => published.push(event);
+
+  const result = dispatchParamount({ type: 'card.update', key: 'NSC-31', patch: { title: '  New title  ', assignee: 'worker' } }, deps);
+  assert.equal(result.ok, true);
+  assert.deepEqual(writes, [{ id: 'NSC-31', patch: { title: 'New title', assignee: 'worker', updatedAt: result.event.at } }]);
+  assert.deepEqual(state.events, published);
+  assert.deepEqual(result.event.command.patch, { title: 'New title', assignee: 'worker' });
+});
+
+test('owner authorization and supplied fields are checked before a Board write', () => {
+  const { state, deps } = fixture();
+  deps.patchTask = () => assert.fail('Unexpected write');
+  deps.publish = () => assert.fail('Unexpected publish');
+  const command = { type: 'card.update', key: 'NSC-31', patch: { title: 'Updated' } };
+  assert.equal(dispatchParamount(command, deps).code, 'FORBIDDEN');
+  assert.equal(dispatchParamount({ type: 'card.archive', key: 'NSC-31' }, deps).code, 'FORBIDDEN');
+  deps.canMutateBoard = () => true;
+  for (const patch of [{}, { status: 'done' }, { title: ' ' }, { title: 'two\nlines' },
+    { description: 42 }, { priority: null }, { assignee: 'missing-agent' }]) {
+    assert.equal(dispatchParamount({ ...command, patch }, deps).code, 'INVALID_INPUT');
+  }
+  assert.equal(dispatchParamount({ ...command, actor: 'you' }, deps).code, 'INVALID_INPUT');
+  assert.equal(dispatchParamount({ ...command, key: 'missing-card' }, deps).code, 'NOT_FOUND');
+  assert.deepEqual(state.events, []);
+});
+
+test('archive patches Board visibility and keeps workflow status and routing metadata', () => {
+  const { state, deps } = fixture();
+  const card = Object.assign(state.tasks[1], { status: 'doing', slack: { channel: 'channel', thread_ts: '123' }, result: 'original' });
+  deps.canMutateBoard = () => true;
+  let writes = 0;
+  deps.patchTask = (id, patch) => {
+    assert.equal(id, card.id);
+    assert.deepEqual(Object.keys(patch), ['boardArchivedAt']);
+    Object.assign(card, patch);
+    writes++;
+    return true;
+  };
+  const command = { type: 'card.archive', key: card.id };
+  const result = dispatchParamount(command, deps);
+  assert.equal(result.ok, true);
+  assert.equal(card.boardArchivedAt, result.event.at);
+  assert.equal(card.status, 'doing');
+  assert.equal(card.result, 'original');
+  assert.deepEqual(card.slack, { channel: 'channel', thread_ts: '123' });
+  assert.equal(dispatchParamount(command, deps).ok, true);
+  assert.equal(writes, 1);
+});
+
+test('a failed patch publishes no success event', () => {
+  const { state, deps } = fixture();
+  deps.canMutateBoard = () => true;
+  deps.patchTask = () => false;
+  deps.publish = () => assert.fail('Unexpected publish');
+  assert.equal(dispatchParamount({ type: 'card.update', key: 'NSC-31', patch: { title: 'Lost race' } }, deps).code, 'CONFLICT');
+  assert.deepEqual(state.events, []);
+});
+
+test('owner Board IPC requires a known window, the top frame and the configured UI', () => {
+  for (const ui of ['paramount://app/index.html', 'http://127.0.0.1:4173/']) {
+    const owner = { knownWindow: true, mainFrame: true, url: `${ui}#/board` };
+    assert.equal(isBoardOwnerSender(owner, ui), true);
+    assert.equal(isBoardOwnerSender({ ...owner, knownWindow: false }, ui), false);
+    assert.equal(isBoardOwnerSender({ ...owner, mainFrame: false }, ui), false);
+    assert.equal(isBoardOwnerSender({ ...owner, url: 'https://example.com/index.html' }, ui), false);
+    assert.equal(isBoardOwnerSender({ ...owner, url: new URL('/other.html', ui).href }, ui), false);
+  }
 });

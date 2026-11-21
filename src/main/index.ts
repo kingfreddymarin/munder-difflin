@@ -6,7 +6,7 @@ import { codexExecutionArgs, useCodexRemoteControl } from '../shared/executionPo
 import { bootFloorPlan, copyFloorMovedState, copyFloorPersistedState, dataFolderRefusal, FloorPersistedStateCopyError, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
 import { mergeAccountProfiles, resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
+import { type IpcMainInvokeEvent, app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync, appendFileSync,
@@ -23,7 +23,7 @@ import { PtyManager, type SpawnOptions } from './pty';
 import { createSideAgents, isSideAgentPty, sideAgentSnapshot } from './side-agent';
 import { createSnapshotCommandDiscovery, fallbackCommandPath, installedSnapshotEngines, probeLoginShellCommand, snapshotCommandTools, snapshotSignInPath } from './snapshotCommandDiscovery';
 import { dispatchParamount, type ParamountPrereqPlan, type ParamountPrereqStartPlan } from './paramount';
-import { createBoardDeps } from './paramount-board';
+import { createBoardDeps, isBoardOwnerSender } from './paramount-board';
 import { paramountShellDeps } from './paramount-shell';
 import { offeredModelIds, resolveAgentModel } from './paramount-models';
 import { agentModelPick, readAgentModels, saveAgentModelPick, teamModels, type ParamountTeamDeps } from './paramount-team';
@@ -4551,6 +4551,16 @@ function paramountTeamDeps(sender: Electron.WebContents): ParamountTeamDeps {
     }
   };
 }
+function isOwnerRenderer(evt: IpcMainInvokeEvent): boolean {
+  const window = BrowserWindow.fromWebContents(evt.sender);
+  const frame = evt.senderFrame;
+  return isBoardOwnerSender({
+    knownWindow: window !== null && allWindows.has(window),
+    mainFrame: frame !== null && frame === evt.sender.mainFrame,
+    url: frame?.url ?? ''
+  }, paramountUiUrl());
+}
+
 ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramount.dispatch', paramountLog, {
   sender: evt.sender.id,
   commandType: command && typeof command === 'object' && typeof (command as { type?: unknown }).type === 'string'
@@ -4589,6 +4599,7 @@ ipcMain.handle('paramount:dispatch', (evt, command: unknown) => traced('paramoun
   send: (msg) => { const sent = hive.send(msg, 'human'); analytics.trackMessageSent('hive'); return { ok: !!sent?.id }; },
   message: (id) => hive.voiceMessages({ id, limit: 1 })[0] ?? null,
   godId: () => hive.registry().godId ?? undefined,
+  canMutateBoard: () => hive.enabled() && isOwnerRenderer(evt),
   board: createBoardDeps({
     savePreference: (value) => saveParamountPreference('board', { ...value }),
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
@@ -4667,7 +4678,8 @@ ipcMain.handle('hive:addTask', (_evt, task: unknown) => {
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
   return { ok: hive.addTask(task as HiveTask) };
 });
-ipcMain.handle('hive:patchTask', (_evt, id: unknown, patch: unknown) => {
+ipcMain.handle('hive:patchTask', (evt, id: unknown, patch: unknown) => {
+  if (!isOwnerRenderer(evt)) return { ok: false, error: 'Only the floor owner can patch a task from the desktop' };
   if (typeof id !== 'string' || !id || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
     return { ok: false, error: 'invalid task patch' };
   }
