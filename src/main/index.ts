@@ -2564,10 +2564,13 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   // navigation must NOT flip readiness off (the renderer only drains on mount,
   // so a later deep link would otherwise queue and sit until a full reload).
   win.webContents.on('did-start-navigation', (details) => {
-    if (details.isMainFrame && !details.isSameDocument) floorControlsReady.delete(wc);
+    if (details.isMainFrame && !details.isSameDocument) floorControlsDocument.delete(wc);
     if (details.isMainFrame) rendererReadyForHires = false;
   });
-  wc.on('render-process-gone', () => floorControlsReady.delete(wc));
+  wc.on('did-frame-navigate', (_event, _url, _code, _status, isMainFrame, processId, frameId) => {
+    if (isMainFrame) floorControlsDocument.set(wc, { processId, frameId, ready: false });
+  });
+  wc.on('render-process-gone', () => floorControlsDocument.delete(wc));
 
   // Paramount: the UI is the separate Paramount app, never src/renderer.
   // Floors run on their own partition, so the scheme is registered per session.
@@ -4034,13 +4037,18 @@ const floorOverview = createFloorOverview({
 
 // The UI subscribes after its first snapshot, which can finish after page load.
 // Retain the request in main until the target's listener has handled it.
-const floorControlsReady = new WeakSet<Electron.WebContents>();
+// Between full navigation start and commit, even the current frame is outgoing.
+const floorControlsDocument = new WeakMap<Electron.WebContents, {
+  processId: number;
+  frameId: number;
+  ready: boolean;
+}>();
 const pendingFloorControls = new WeakMap<Electron.WebContents, number>();
 let floorControlsRequestId = 0;
 
 function deliverFloorControls(contents: Electron.WebContents): void {
   const requestId = pendingFloorControls.get(contents);
-  if (requestId !== undefined && floorControlsReady.has(contents) && !contents.isDestroyed()) {
+  if (requestId !== undefined && floorControlsDocument.get(contents)?.ready && !contents.isDestroyed()) {
     contents.send('floor-overview:controls', requestId);
   }
 }
@@ -4055,17 +4063,24 @@ function canUseFloorOverview(event: Pick<Electron.IpcMainEvent, 'senderFrame'>):
   } catch { return false; }
 }
 
+function floorControlsSenderDocument(event: Electron.IpcMainEvent) {
+  const document = floorControlsDocument.get(event.sender);
+  if (document && event.processId === document.processId && event.frameId === document.frameId &&
+      canUseFloorOverview(event) && event.senderFrame === event.sender.mainFrame) return document;
+  return undefined;
+}
+
 ipcMain.handle('floor-overview:list', (event) => canUseFloorOverview(event) ? floorOverview.list() : []);
 ipcMain.handle('floor-overview:focus', (event, id: unknown) =>
   canUseFloorOverview(event) && typeof id === 'string' && /^[a-f0-9]{64}$/.test(id) ? floorOverview.focus(id) : false);
 ipcMain.on('floor-overview:controls-ready', (event) => {
-  if (!canUseFloorOverview(event) || event.senderFrame !== event.sender.mainFrame) return;
-  floorControlsReady.add(event.sender);
+  const document = floorControlsSenderDocument(event);
+  if (!document) return;
+  document.ready = true;
   deliverFloorControls(event.sender);
 });
 ipcMain.on('floor-overview:controls-handled', (event, requestId: unknown) => {
-  if (!canUseFloorOverview(event) || event.senderFrame !== event.sender.mainFrame) return;
-  if (floorControlsReady.has(event.sender) && pendingFloorControls.get(event.sender) === requestId) {
+  if (floorControlsSenderDocument(event)?.ready && pendingFloorControls.get(event.sender) === requestId) {
     pendingFloorControls.delete(event.sender);
   }
 });

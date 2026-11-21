@@ -84,16 +84,16 @@ test('overview preserves regular-floor status precedence with and without a live
   });
 });
 
-test('Open floor reaches a renderer subscribing after initial load and reload', () => {
-  let loading = true;
+function floorControlsFixture() {
   let renderer;
-  const navigation = new EventEmitter();
-  const frame = { url: uiUrl, parent: null };
-  const wc = Object.assign(navigation, {
-    mainFrame: frame,
+  let frameId = 0;
+  const queuedIpc = [];
+  const wc = Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
-    isLoadingMainFrame: () => loading,
-    send: (channel, ...args) => renderer.emit(channel, {}, ...args)
+    send: (channel, ...args) => {
+      const target = renderer;
+      queuedIpc.push(() => target.emit(channel, {}, ...args));
+    }
   });
   const win = { webContents: wc, isDestroyed: () => false, isMinimized: () => false, show() {}, focus() {} };
   const { options, ipcMain, context } = overviewHandlers({ mainWindow: win });
@@ -104,37 +104,83 @@ test('Open floor reaches a renderer subscribing after initial load and reload', 
   vm.runInContext(compile(mainSource.slice(navStart, navEnd)), context);
   const preloadStart = preloadSource.indexOf('  onFloorViewControls:');
   const preloadEnd = preloadSource.indexOf('  paramountSnapshot:', preloadStart);
-  const subscribe = () => {
-    const api = vm.runInNewContext(compile('({' + preloadSource.slice(preloadStart, preloadEnd) + '})'), { ipcRenderer: renderer });
-    let visible = true;
-    api.onFloorViewControls(() => { visible = false; });
-    return () => visible;
+  const bridge = compile('({' + preloadSource.slice(preloadStart, preloadEnd) + '})');
+  return {
+    focus: options.focus,
+    navigate: (isSameDocument = false) => wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument }),
+    flush: () => {
+      while (queuedIpc.length) queuedIpc.shift()();
+    },
+    commit: () => {
+      const ipcRenderer = new EventEmitter();
+      const frame = { url: uiUrl, parent: null, processId: 1, routingId: ++frameId };
+      renderer = ipcRenderer;
+      wc.mainFrame = frame;
+      wc.emit('did-frame-navigate', {}, uiUrl, 200, 'OK', true, frame.processId, frame.routingId);
+      ipcRenderer.send = (channel, ...args) => queuedIpc.push(() => ipcMain.emit(channel, {
+        sender: wc, senderFrame: frame, processId: frame.processId, frameId: frame.routingId
+      }, ...args));
+      const api = vm.runInNewContext(bridge, { ipcRenderer });
+      return {
+        finishLoad: () => wc.emit('did-finish-load'),
+        subscribe: () => {
+          let visible = true;
+          api.onFloorViewControls(() => { visible = false; });
+          return () => visible;
+        }
+      };
+    }
   };
-  const loadUntilSnapshot = () => {
-    renderer = new EventEmitter();
-    renderer.send = (channel, ...args) => ipcMain.emit(channel, { sender: wc, senderFrame: frame }, ...args);
-    loading = false;
-    navigation.emit('did-finish-load');
-  };
+}
 
-  renderer = new EventEmitter();
-  assert.equal(options.focus(), true);
-  loadUntilSnapshot();
-  const initial = subscribe();
-  const oldDocument = subscribe();
+test('Open floor reaches a renderer subscribing after initial load and reload', () => {
+  const f = floorControlsFixture();
+  f.navigate();
+  assert.equal(f.focus(), true);
+  const first = f.commit();
+  first.finishLoad();
+  const initial = first.subscribe();
+  f.flush();
+  const oldDocument = first.subscribe();
+  f.flush();
 
   // Begin a full reload while the old renderer still exists, then finish the
   // document load before the new FloorProvider resolves its first snapshot.
-  loading = true;
-  navigation.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
-  assert.equal(options.focus(), true);
-  loadUntilSnapshot();
-  const reloaded = subscribe();
-  const subsequent = subscribe();
+  f.navigate();
+  assert.equal(f.focus(), true);
+  const next = f.commit();
+  next.finishLoad();
+  const reloaded = next.subscribe();
+  f.flush();
+  const subsequent = next.subscribe();
+  f.flush();
   assert.deepEqual([initial(), oldDocument(), reloaded(), subsequent()], [false, true, false, true]);
-  navigation.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
-  assert.equal(options.focus(), true);
+  f.navigate(true);
+  assert.equal(f.focus(), true);
+  f.flush();
   assert.equal(subsequent(), false, 'same-document navigation keeps the mounted target ready');
+});
+
+test('queued outgoing readiness cannot consume Open floor controls before reload commits', () => {
+  const f = floorControlsFixture();
+  f.navigate();
+  const outgoing = f.commit();
+  outgoing.finishLoad();
+  const outgoingVisible = outgoing.subscribe();
+
+  f.navigate();
+  assert.equal(f.focus(), true);
+  f.flush();
+
+  const incoming = f.commit();
+  const incomingVisible = incoming.subscribe();
+  f.flush();
+  assert.equal(incomingVisible(), false, 'the incoming document handles the request after commit');
+  assert.equal(outgoingVisible(), true, 'the outgoing document receives no controls request');
+  incoming.finishLoad();
+  const subsequent = incoming.subscribe();
+  f.flush();
+  assert.equal(subsequent(), true, 'acknowledgment clears the pending request');
 });
 
 test('separate processes share views and route focus, with no foreign or stale floor access', { timeout: 20_000 }, async t => {
