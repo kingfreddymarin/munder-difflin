@@ -27,8 +27,10 @@ execFileSync('node_modules/.bin/tsc', [
   '--skipLibCheck', join(HERE, '../../src/main/provider-limit.ts'),
 ]);
 const plFile = readdirSync(plDir, { recursive: true }).find((name) => String(name).endsWith('provider-limit.js'));
-const { detectProviderLimit, PROVIDER_LIMIT_USAGE_REACHED, PROVIDER_LIMIT_MONTHLY_SPEND } =
+const { detectProviderLimit, PROVIDER_LIMIT_USAGE_REACHED, PROVIDER_LIMIT_MONTHLY_SPEND, PROVIDER_LIMIT_IDLE_MS } =
   await import(pathToFileURL(join(plDir, String(plFile))).href);
+
+const IDLE = PROVIDER_LIMIT_IDLE_MS; // alias for readability in tests
 
 function agent(overrides) {
   return { status: 'idle', tokensUsed: 0, tokensCap: 0, providerLimited: false, ...overrides };
@@ -36,18 +38,18 @@ function agent(overrides) {
 
 // — provider-limit detector —
 
-test('detectProviderLimit: usage-reached fixture → true', () => {
+test('detectProviderLimit: usage-reached fixture + idle → true', () => {
   const fixture = readFileSync(join(fixturesDir, 'claude-usage-limit-reached.txt'), 'utf8');
-  assert.equal(detectProviderLimit(fixture), true);
+  assert.equal(detectProviderLimit(fixture, IDLE), true);
 });
 
-test('detectProviderLimit: monthly-spend fixture → true', () => {
+test('detectProviderLimit: monthly-spend fixture + idle → true', () => {
   const fixture = readFileSync(join(fixturesDir, 'claude-monthly-spend-limit.txt'), 'utf8');
-  assert.equal(detectProviderLimit(fixture), true);
+  assert.equal(detectProviderLimit(fixture, IDLE), true);
 });
 
 test('detectProviderLimit: normal working output → false', () => {
-  assert.equal(detectProviderLimit('Tool: Bash\nRead file: foo.ts\n✓ done'), false);
+  assert.equal(detectProviderLimit('Tool: Bash\nRead file: foo.ts\n✓ done', IDLE), false);
 });
 
 test('detectProviderLimit: exported constants match fixture content', () => {
@@ -55,6 +57,29 @@ test('detectProviderLimit: exported constants match fixture content', () => {
   const f2 = readFileSync(join(fixturesDir, 'claude-monthly-spend-limit.txt'), 'utf8');
   assert.ok(f1.includes(PROVIDER_LIMIT_USAGE_REACHED), 'usage-reached fixture must contain PROVIDER_LIMIT_USAGE_REACHED');
   assert.ok(f2.includes(PROVIDER_LIMIT_MONTHLY_SPEND), 'monthly-spend fixture must contain PROVIDER_LIMIT_MONTHLY_SPEND');
+});
+
+test('detectProviderLimit: needle earlier in tail followed by normal output → false', () => {
+  // Build a tail where the limit message is well before the last 10 non-empty lines.
+  const normalLines = Array.from({ length: 15 }, (_, i) => `Tool: Read file${i}.ts`).join('\n');
+  const tail = `Usage limit reached\nYour plan resets in 5h.\n${normalLines}`;
+  assert.equal(detectProviderLimit(tail, IDLE), false);
+});
+
+test('detectProviderLimit: needle in last lines but PTY busy (idleMs < threshold) → false', () => {
+  const tail = 'Usage limit reached\nYour plan resets in 5h.';
+  assert.equal(detectProviderLimit(tail, IDLE - 1), false);
+});
+
+test('detectProviderLimit: needle in last lines + fully idle → true', () => {
+  const tail = 'Usage limit reached\nYour plan resets in 5h.';
+  assert.equal(detectProviderLimit(tail, IDLE), true);
+});
+
+test('detectProviderLimit: ANSI-wrapped needle + idle → true', () => {
+  // Claude Code renders "Usage limit reached" with colour codes around it.
+  const tail = '\x1B[38;2;255;107;128mUsage limit reached\x1B[0m\nYour plan resets in 5h.';
+  assert.equal(detectProviderLimit(tail, IDLE), true);
 });
 
 // — agentStatusColour mapping —
