@@ -1,4 +1,5 @@
 import { canSwitchAgent, currentSwitchModel } from './agent-switch';
+import { OpenWith } from '@/components/app/external-link';
 import * as React from 'react';
 import { Switch } from '@/components/animate-ui/components/radix/switch';
 import { Button } from '@/components/animate-ui/components/buttons/button';
@@ -127,6 +128,11 @@ export function AgentProfileForm({ profile, compact = false }: { profile: Return
 
   return (
     <div className="flex flex-col gap-3">
+      {agent.cwd && <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span>Working folder</span>
+        <span className="text-muted-foreground break-all font-mono">{agent.cwd}</span>
+        <OpenWith path={agent.cwd} />
+      </div>}
       <div className="grid min-w-0 gap-1.5"><Label htmlFor="ag-name">Display name</Label><Input id="ag-name" value={form.name} disabled={!!fieldReason('name')} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
       <div className="grid min-w-0 gap-1.5">
         <Label htmlFor="ag-model">Model</Label>

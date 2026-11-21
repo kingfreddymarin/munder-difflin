@@ -130,3 +130,14 @@ test('unknown app, missing app, non-mac and missing deps fail with codes', async
   r = await dispatchParamount({ type: 'shell.openExternal', url: 'https://github.com/x' }, d);
   assert.equal(r.code, 'UNSUPPORTED');
 });
+
+test('VS Code receives the canonical path to an existing file', async (t) => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pm-open-file-')));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'notes and changes.txt');
+  fs.writeFileSync(file, 'Fixture');
+  const { calls, deps: d } = deps();
+  const result = await dispatchParamount({ type: 'shell.openIn', app: 'vscode', path: file }, d);
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.launched, [['Visual Studio Code', file]]);
+});

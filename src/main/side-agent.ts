@@ -238,13 +238,14 @@ export function createSideAgents(
       if (!stopped.ok) return stopped;
       scratch = mkdtempSync(join(tmpdir(), 'paramount-side-agent-'));
       const ptyId = `side-agent:${randomUUID()}`;
-      const result = pty.spawn({ id: ptyId, command: defaultCommand, ...sideAgentLaunch(provider, scratch, context) }, owner);
+      const launch = sideAgentLaunch(provider, scratch, context);
+      const result = pty.spawn({ id: ptyId, command: defaultCommand, ...launch }, owner);
       if (!result.ok) {
         clean(scratch);
         return failure(`Could not start ${label}. Check that its command-line app is installed and can run.`);
       }
       liveOwners.set(ptyId, owner);
-      entries.set(owner, { state: { status: 'running', ptyId, provider, context }, scratch });
+      entries.set(owner, { state: { status: 'running', ptyId, cwd: launch.cwd, provider, context }, scratch });
       publish(owner);
       return { ok: true };
     } catch {

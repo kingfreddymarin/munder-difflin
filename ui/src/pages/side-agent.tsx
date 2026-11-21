@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { PtyTerminalView } from '@/components/app/terminal/pty-terminal-view';
 import { SIDE_AGENT_TERMINAL_THEMES } from '@/components/app/terminal/terminal-themes';
+import { OpenWith } from '@/components/app/external-link';
 import { Screen } from '@/components/app/screen';
 import { AGENT_VIEW, agentViewParams } from '@/app/agent-view';
 import { useRouter } from '@/app/router';
@@ -82,6 +83,7 @@ export function SideAgentPage() {
           {running ? <>
             <Button className={`${outlineButton} ${buttonFocus}`} variant="outline" disabled={busy} onClick={() => void act('stop')}>Stop</Button>
             <Button className={`${outlineButton} ${buttonFocus}`} variant="outline" disabled={busy} onClick={() => void act('restart')}>Restart</Button>
+            <OpenWith path={state.cwd} />
           </> : <Button className={`bg-yellow-300 text-black hover:bg-yellow-400 ${buttonFocus}`} disabled={busy || !ready} onClick={() => void act('start')}>Start side agent</Button>}
         </div>
         {!bridge?.sideAgentAct && <p role="status" className="text-sm text-neutral-600 dark:text-neutral-400">Open this page in the Paramount desktop app to start a session.</p>}
@@ -135,7 +137,7 @@ export function SideAgentPage() {
         </div>}
       </section>
       {running && <div className="min-h-[360px] flex-1 overflow-hidden rounded-xl border border-neutral-300 dark:border-neutral-700">
-        <PtyTerminalView key={state.ptyId} ptyId={state.ptyId} label="Side agent terminal" palettes={SIDE_AGENT_TERMINAL_THEMES} />
+        <PtyTerminalView key={state.ptyId} ptyId={state.ptyId} cwd={state.cwd} label="Side agent terminal" palettes={SIDE_AGENT_TERMINAL_THEMES} />
       </div>}
     </Screen>
   );

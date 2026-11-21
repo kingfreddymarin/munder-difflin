@@ -9,6 +9,7 @@ export interface Agent {
   name: string;
   initials: string;
   role: Role;
+  cwd?: string;
   status: AgentStatus;
   engine: string;
   model: string;

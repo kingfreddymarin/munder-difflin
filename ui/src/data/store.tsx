@@ -240,12 +240,11 @@ export function useTeamApi() {
     : null, [provider]);
 }
 
-/** Lane e-terminal: the provider's artifact map and open-in-Warp, or null each when it has none. */
+/** Lane e-terminal: the provider's artifact map, or null when it has none. */
 export function useTerminalTools() {
   const { provider } = useStore();
   return React.useMemo(() => ({
     artifacts: provider.artifacts ? provider.artifacts.bind(provider) : null,
-    openIn: provider.openIn ? provider.openIn.bind(provider) : null,
   }), [provider]);
 }
 

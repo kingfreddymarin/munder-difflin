@@ -6,6 +6,7 @@ import type { CouncilLauncherPick } from '@/data/paramount-api';
 import * as React from 'react';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/animate-ui/components/radix/sheet';
 import { Switch } from '@/components/animate-ui/components/radix/switch';
+import { OpenWith } from '@/components/app/external-link';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -157,7 +158,7 @@ export function HireSheet({ open, bundle, orchestrator = false, manifest, notes,
               <span>Account launcher: {plan.launcher ?? 'Provider default'}</span>
               <span className="font-medium">{plan.name} <span className="text-muted-foreground font-mono text-xs">{plan.agentId}</span></span>
               <code className="bg-muted rounded px-2 py-1 font-mono text-xs break-all">{plan.command}</code>
-              <span className="text-muted-foreground text-xs break-all">in {plan.cwd}{plan.isolate ? ' · own worktree' : ''}</span>
+              <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground text-xs break-all">in {plan.cwd}{plan.isolate ? ' · own worktree' : ''}</span><OpenWith path={plan.cwd} /></div>
               {!plan.engineInstalled && <span className="text-xs text-amber-500">The {plan.engine} CLI is not installed; install it from Health, then hire.</span>}
               {plan.consentRequired.length > 0 && <span className="text-xs text-amber-500">Not enabled (needs your consent later): {plan.consentRequired.join(', ')}</span>}
               {plan.ignored.length > 0 && <span className="text-muted-foreground text-xs">Not applied by this build: {plan.ignored.join(', ')}</span>}

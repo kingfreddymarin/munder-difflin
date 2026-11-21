@@ -1,15 +1,16 @@
 // Every reference to something outside the app (GitHub PR or run, Azure DevOps build, PR or work item, a log)
 // goes through ExternalLink. The click never navigates the app window: the provider asks the core to open the
 // link in the default browser, and the core refuses anything off its allow-list with an errorId, shown here.
-// OpenInButtons does the same for a folder: Warp or VS Code, via the core, never a shell string.
+// OpenWith sends local paths through the desktop core.
 import * as React from 'react';
-import { ExternalLinkIcon, FolderCodeIcon, TerminalSquareIcon } from 'lucide-react';
+import { ExternalLinkIcon, FolderOpenIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/animate-ui/components/radix/popover';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/animate-ui/components/radix/dropdown-menu';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { ErrorNotice } from '@/components/app/error-notice';
 import { BackendError, toBackendError } from '@/data/errors';
 import type { ParamountOpenInApp } from '@/data/paramount-api';
-import { useOpeners } from '@/data/store';
+import { useDispatch, useOpeners, useUnsupported } from '@/data/store';
 import { cn } from '@/lib/utils';
 
 /** Shows a failure next to the control that caused it; closing the popover clears it. */
@@ -54,34 +55,49 @@ export function ExternalLink({ href, children, className, title, icon = true }: 
   );
 }
 
-const OPEN_IN: { app: ParamountOpenInApp; label: string; Icon: typeof TerminalSquareIcon }[] = [
-  { app: 'warp', label: 'Open in Warp', Icon: TerminalSquareIcon },
-  { app: 'vscode', label: 'Open in VS Code', Icon: FolderCodeIcon },
-];
+const OPEN_IN = [{ app: 'warp', label: 'Warp' }, { app: 'vscode', label: 'VS Code' }] as const;
 
-/** "Open in Warp" / "Open in VS Code" for an absolute folder the core checks exists. */
-export function OpenInButtons({ path, className }: { path: string; className?: string }) {
+export function OpenWith({ path, warpPath = path, cardKey }: { path?: string; warpPath?: string; cardKey?: string }) {
   const { openIn } = useOpeners();
+  const dispatch = useDispatch();
+  const unsupported = useUnsupported();
   const [error, setError] = React.useState<BackendError | null>(null);
-  const [busy, setBusy] = React.useState<ParamountOpenInApp | null>(null);
-  const open = (app: ParamountOpenInApp) => {
-    if (!openIn) return;
+  const [busy, setBusy] = React.useState(false);
+
+  async function open(app: ParamountOpenInApp) {
+    if (busy || !path) return;
+    if (cardKey) {
+      await dispatch({ type: 'card.open', key: cardKey, app });
+      return;
+    }
+    const target = app === 'warp' ? warpPath : path;
+    if (!target || !openIn) return;
     setError(null);
-    setBusy(app);
-    openIn(app, path).catch((cause) => setError(toBackendError(cause, 'shell.openIn'))).finally(() => setBusy(null));
-  };
+    setBusy(true);
+    try { await openIn(app, target); }
+    catch (cause) { setError(toBackendError(cause, 'shell.openIn')); }
+    finally { setBusy(false); }
+  }
+
+  if (!path || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(path)) return null;
   return (
-    <FailurePopover error={error} onClear={() => setError(null)}>
-      <span className={cn('inline-flex items-center gap-1', className)}>
-        {OPEN_IN.map(({ app, label, Icon }) => (
-          <Button key={app} type="button" size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs"
-            disabled={!openIn || busy !== null} aria-label={`${label}: ${path}`}
-            title={openIn ? `${label}: ${path}` : 'Opening folders needs the desktop core; sample data has none.'}
-            onClick={(event) => { event.preventDefault(); open(app); }}>
-            <Icon aria-hidden className="size-3.5" />{label}
+    <div className="inline-flex shrink-0 flex-col items-start">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" size="sm" variant="outline" className="h-7 shrink-0 gap-1 px-2 text-xs"
+            disabled={busy || (!cardKey && !openIn)} title={path} aria-label={`Open with: ${path}`}>
+            <FolderOpenIcon aria-hidden className="size-3.5" />Open with
           </Button>
-        ))}
-      </span>
-    </FailurePopover>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {OPEN_IN.map(({ app, label }) => {
+            const reason = cardKey ? unsupported({ type: 'card.open', key: cardKey, app }) : undefined;
+            return <DropdownMenuItem key={app} disabled={!!reason || (app === 'warp' && !warpPath)}
+              title={reason ?? undefined} onSelect={() => void open(app)}>{label}</DropdownMenuItem>;
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {error && <ErrorNotice error={error} className="mt-1 max-w-80" />}
+    </div>
   );
 }

@@ -15,7 +15,7 @@ type SideAgentSource = { provider: SideAgentProvider; context: SideAgentContext 
 
 export type SideAgentState =
   | { status: 'idle' }
-  | (SideAgentSource & { status: 'running'; ptyId: string })
+  | (SideAgentSource & { status: 'running'; ptyId: string; cwd?: string })
   | (SideAgentSource & { status: 'stopped' | 'exited'; exitCode?: number; signal?: number });
 
 export type SideAgentAction = 'start' | 'stop' | 'restart';
