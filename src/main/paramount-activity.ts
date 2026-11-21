@@ -19,6 +19,9 @@ export interface AgentActivity {
   breaker: string | null;
   /** Context window fill in percent, or null when the engine does not report it. */
   contextPct: number | null;
+  /** True when the agent's terminal output contained a provider usage-limit message
+   *  (e.g. Claude Code's "Usage limit reached"). Distinct from the circuit breaker. */
+  providerLimited: boolean;
 }
 
 export interface ActivityFacts {
@@ -33,6 +36,8 @@ export interface ActivityFacts {
   breaker?: string;
   lastTool?: string | null;
   context?: { tokens: number; limit: number } | null;
+  /** Whether the agent's terminal tail contains a provider usage-limit message. */
+  providerLimited?: boolean;
 }
 
 export function agentActivity(facts: Record<string, ActivityFacts>, now: number, idleMs: number): Record<string, AgentActivity> {
@@ -50,6 +55,7 @@ export function agentActivity(facts: Record<string, ActivityFacts>, now: number,
       costUsd: f.costUsd ?? null,
       breaker: f.breaker ?? null,
       contextPct: f.context && f.context.limit > 0 ? Math.round((f.context.tokens / f.context.limit) * 100) : null,
+      providerLimited: f.providerLimited ?? false,
     };
   }
   return out;

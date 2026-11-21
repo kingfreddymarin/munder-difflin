@@ -29,6 +29,8 @@ export interface Agent {
   contextPct: number | null;
   costUsd?: number | null;
   breaker?: string;
+  /** True when the agent's terminal output contained a provider usage-limit message. */
+  providerLimited?: boolean;
   bundle: string;
   skills: string[];
   mcps: string[];
