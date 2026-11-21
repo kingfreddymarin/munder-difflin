@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
+import type { FloorOverview } from '../shared/floor-overview';
 import type { AgentProvider } from '../shared/agentProvider';
 import type { ParamountCommand, ParamountPreloadAPI, ParamountRawSnapshot, ParamountResult, ParamountUpdate } from './paramount';
 import type { HireManifest } from '../shared/hire';
@@ -751,6 +752,13 @@ const api = {
   // ─── Hive (multi-agent coordination) ─────────────────────────────────────
   /** Aggregate fork-native read model. Paramount's UI provider projects it to
    *  its own Snapshot; existing hive and PTY methods remain available directly. */
+  listFloorViews: (): Promise<FloorOverview[]> => ipcRenderer.invoke('floor-overview:list'),
+  focusFloorView: (id: string): Promise<boolean> => ipcRenderer.invoke('floor-overview:focus', id),
+  onFloorViewControls: (callback: () => void): (() => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('floor-overview:controls', listener);
+    return () => ipcRenderer.removeListener('floor-overview:controls', listener);
+  },
   paramountSnapshot: (): Promise<ParamountRawSnapshot> => ipcRenderer.invoke('paramount:snapshot'),
   paramountSaveHirePreset: (manifest: unknown) => ipcRenderer.invoke('paramount:saveHirePreset', manifest),
   /** Validated commands lacking a direct fork preload equivalent. */

@@ -5,6 +5,7 @@ import { councilBuild, councilVersion, floorProcessHome, isFloorProcess, paramou
 import { codexExecutionArgs, useCodexRemoteControl } from '../shared/executionPolicy';
 import { bootFloorPlan, copyFloorMovedState, copyFloorPersistedState, dataFolderRefusal, FloorPersistedStateCopyError, floorDataDirFor, floorSpawnPlan, moveRelaunchArgs, normaliseHome, probeFloor, switchRelaunchArgs, validateFloorRequest, type FloorContext, type FloorProbe } from './floors';
 import { mergeAccountProfiles, resolveLauncherForSpawn, createLauncherDiscoveryCache, discoverLaunchers, discoverLaunchersAsync, launcherEnvironment, LAUNCHER_AUTH_ENV, launcherSessionExists, readLauncherState, saveLauncherPick, validateLauncher, type LauncherPick } from './council-account-launchers';
+import { createFloorOverview, projectFloorRows } from './floor-overview';
 import { heartbeatDigest, orchestratorInboxNudge } from './heartbeatDigest';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn, spawnSync } from 'node:child_process';
@@ -4006,6 +4007,46 @@ function paramountPublish(event: ParamountEvent): void {
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('paramount:event', event);
   }
 }
+const floorOverview = createFloorOverview({
+  shared: sharedDataDir(),
+  profile: app.getPath('userData'),
+  home: floorHome,
+  rows: () => {
+    const now = Date.now();
+    return projectFloorRows(hive.registry(), hive.tasks(), (id) => {
+      const pty = ptyForAgent(id);
+      if (!pty) return 'offline';
+      return now - (ptyManager.lastOutputAt(pty) ?? 0) < WORKER_WAKE_IDLE_MS ? 'working' : 'idle';
+    });
+  },
+  focus: () => {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow();
+    const showControls = () => {
+      if (!win.isDestroyed()) win.webContents.send('floor-overview:controls');
+    };
+    if (win.webContents.isLoadingMainFrame()) win.webContents.once('did-finish-load', showControls);
+    else showControls();
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    return true;
+  }
+});
+
+function canUseFloorOverview(event: Electron.IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame;
+  if (!floorHome() || !frame || frame.parent !== null) return false;
+  try {
+    const trusted = new URL(paramountUiUrl());
+    const actual = new URL(frame.url);
+    return actual.protocol === trusted.protocol && actual.host === trusted.host;
+  } catch { return false; }
+}
+
+ipcMain.handle('floor-overview:list', (event) => canUseFloorOverview(event) ? floorOverview.list() : []);
+ipcMain.handle('floor-overview:focus', (event, id: unknown) =>
+  canUseFloorOverview(event) && typeof id === 'string' && /^[a-f0-9]{64}$/.test(id) ? floorOverview.focus(id) : false);
+
 // ─── Floors (owner requests 2026-11-12; Munder 0.5.7 parity, floors.ts) ────────
 // The floor is chosen on every launch: the main process claims nothing at boot, and the picker
 // opens a floor in this process (openChosenFloor). With a floor open, New Floor… (Cmd+Shift+N)
@@ -6601,6 +6642,7 @@ app.whenReady().then(() => {
   // off, the app keeps Electron's default menu — zero behavior change.
   // Always installed: File carries New Floor… (the floor picker).
   installAppMenu();
+  if (gotInstanceLock) floorOverview.start();
   createWindow();
   // Auto-start the Slack webhook server when configured. Best-effort: a tunnel
   // failure (offline) is logged, not fatal. The tunnel URL is ephemeral and
@@ -6685,6 +6727,7 @@ function releaseFloorOnQuit(): void {
   floorGate.release();
 }
 function keepFloorReleaseLast(): void { app.removeListener('will-quit', releaseFloorOnQuit); app.on('will-quit', releaseFloorOnQuit); }
+app.on('will-quit', () => floorOverview.stop());
 app.on('will-quit', releaseFloorOnQuit);
 app.on('will-quit', (e) => {
   if (analyticsFlushed) return;

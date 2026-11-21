@@ -12,6 +12,8 @@ import { record } from '@/lib/perf';
 import { useOrchestratorStartup } from '@/app/use-orchestrator-startup';
 import { SetupFlow } from '@/app/setup-flow';
 import { FloorChooser } from '@/app/floor-chooser';
+import { FloorViewProvider, useFloorViewMode } from '@/app/floor-view-mode';
+import { FloorOverviewPage } from '@/app/floor-overview';
 import { FloorRefused } from '@/app/floor-refused';
 import { QuitConfirm } from '@/app/quit-confirm';
 import { AgentActionMenuProvider } from '@/features/team/agent-action-menu';
@@ -69,6 +71,7 @@ function SetupGateOrApp() {
 }
 function SetupGateOrAppBody() {
   const setup = useFloor((s) => s.floorSetup);
+  const views = useFloorViewMode();
   useOrchestratorStartup(setup);
   if (setup && !setup.complete) return <SetupFlow setup={setup} />;
   // Owner request 2026-11-12: every launch asks which floor to open; nothing is claimed before.
@@ -77,11 +80,14 @@ function SetupGateOrAppBody() {
   if (setup?.floorLock?.state === 'refused' || setup?.floorLock?.state === 'error') return <FloorRefused lock={setup.floorLock} />;
   return (
     <>
-      <AgentActionMenuProvider>
-        <RouterProvider><Routes /></RouterProvider>
-      </AgentActionMenuProvider>
+      <div hidden={views?.enabled && views.visible}>
+        <AgentActionMenuProvider>
+          <RouterProvider><Routes /></RouterProvider>
+        </AgentActionMenuProvider>
+      </div>
+      {views?.enabled && views.visible && <FloorOverviewPage back={() => views.setVisible(false)} />}
       {/* New Floor… (Cmd+Shift+N): the picker over this floor, which keeps running. */}
-      {setup?.choice?.newFloor && <FloorChooser key="new-floor" choice={setup.choice} lock={setup.floorLock} />}
+      {setup?.choice?.newFloor && <FloorChooser key="new-floor" choice={setup.choice} lock={setup.floorLock} viewMode={views} />}
     </>
   );
 }
@@ -91,7 +97,7 @@ export default function App() {
     <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
       <TooltipProvider>
         <FloorProvider provider={provider} fallback={<div className="text-muted-foreground p-8 text-sm">Connecting to the floor…</div>}>
-          <SetupGateOrApp />
+          <FloorViewProvider><SetupGateOrApp /></FloorViewProvider>
         </FloorProvider>
       </TooltipProvider>
     </ThemeProvider>

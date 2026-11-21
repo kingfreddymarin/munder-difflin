@@ -1,3 +1,4 @@
+import type { FloorOverview } from '../../../src/shared/floor-overview';
 import type { ParamountPreloadAPI } from './paramount-api';
 
 export type * from './paramount-api';
@@ -5,6 +6,9 @@ export type * from './paramount-api';
 /** The preload surface Paramount uses. The optional calls exist on the fork's preload but are not in the shared
  *  contract; each caller checks for them and says what it cannot do when one is missing. */
 export type ElectronBridge = ParamountPreloadAPI & {
+  listFloorViews?(): Promise<FloorOverview[]>;
+  focusFloorView?(id: string): Promise<boolean>;
+  onFloorViewControls?(callback: () => void): () => void;
   resizePty?(id: string, cols: number, rows: number): Promise<{ ok: boolean; error?: string }>;
   killPty?(id: string): Promise<{ ok: boolean; error?: string }>;
   // Terminal (lane e-terminal): the same calls Munder's own terminal uses.
