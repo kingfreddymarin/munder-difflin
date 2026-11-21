@@ -90,6 +90,8 @@ export interface SpawnOptions {
   env?: Record<string, string>;
   /** Explicit per-spawn removals, applied after all environment layering. */
   envUnset?: string[];
+  /** When false, pass only the portable terminal environment and explicit overrides. */
+  inheritEnv?: boolean;
   /** When set, run this string as a VISIBLE shell script instead of resolving/
    *  spawning `command`. Used by the missing-CLI auto-install path: the script
    *  (a banner + an install command) streams to the same Terminal tab. Routed
@@ -667,7 +669,7 @@ export class PtyManager {
         // Inherited env minus the parent Claude session's identity markers,
         // then the app's defaults and locale, then per-agent values — see
         // ptyEnv.ts for why the strip exists and why it is prefix-based.
-        env: buildPtyEnv(process.env, userPath, opts.env, process.platform, opts.envUnset)
+        env: buildPtyEnv(process.env, userPath, opts.env, process.platform, opts.envUnset, opts.inheritEnv)
       });
 
       // Capture THIS session object so the proc's callbacks can tell whether the

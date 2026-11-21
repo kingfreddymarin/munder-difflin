@@ -3,6 +3,7 @@
 // charges and edits by an autonomous agent. Never uses the normal app profile.
 // Run after npm run build and (cd ui && npm run build):
 // node --experimental-websocket test/paramount-orchestrator-smoke.cjs
+// Add PARAMOUNT_SMOKE_SIDE_AGENT=1 for the side-agent acceptance flow.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -22,6 +23,36 @@ const builtUI = path.join(work, 'ui');
 // after the test has loaded index.html.
 fs.cpSync(path.join(root, 'ui/dist'), builtUI, { recursive: true });
 fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nprintf "fixture CLI ready\\n"\nprintf started > "$PARAMOUNT_SMOKE_CAPTURE"\nwhile read -r line; do printf "%s\\n" "$line" >> "$PARAMOUNT_SMOKE_INPUT"; printf "fixture received input\\n"; done\n', { mode: 0o755 });
+const sideCapture = path.join(work, 'side-starts.jsonl');
+const sideInput = path.join(work, 'side-input');
+const fixtureNode = JSON.stringify(process.execPath);
+const sideFixture = path.join(bin, 'side-fixture.cjs');
+fs.writeFileSync(sideFixture, `
+const fs = require('node:fs');
+const path = require('node:path');
+const readline = require('node:readline');
+fs.appendFileSync(${JSON.stringify(sideCapture)}, JSON.stringify({
+  provider: process.argv[2], args: process.argv.slice(3), cwd: process.cwd(), home: process.env.HOME,
+  isolated: !process.env.HIVE_ROOT && !process.env.AGENT_ID && !process.env.NSC236_FIXTURE_SECRET,
+  pid: process.pid
+}) + '\\n');
+console.log('side fixture ready');
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  if (line === 'fail') process.exit(23);
+  fs.appendFileSync(${JSON.stringify(sideInput)}, line + '\\n');
+});
+`);
+if (process.env.PARAMOUNT_SMOKE_SIDE_AGENT === '1') {
+  fs.writeFileSync(path.join(bin, 'opencode'), `#!/bin/sh
+exec ${fixtureNode} "${sideFixture}" opencode "$@"
+`, { mode: 0o755 });
+  const claude = path.join(bin, 'claude');
+  const floorFixture = fs.readFileSync(claude, 'utf8');
+  fs.writeFileSync(claude, floorFixture.replace('#!/bin/sh', `#!/bin/sh
+case " $* " in
+  *" --restricted "*) exec ${fixtureNode} "${sideFixture}" claude "$@";;
+esac`));
+}
 const fixtureShell = path.join(bin, 'fixture-shell');
 // shellEnv requests -ilc; execute the script against the fixture PATH, without
 // loading a user's rc files which could replace it with the real CLI.
@@ -73,12 +104,79 @@ async function main(expression) {
 }
 const page = (js) => main(`require('electron').BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(${JSON.stringify(js)})`);
 const click = (label) => page(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(label)}); if (!b || b.disabled) return false; b.click(); return true; })()`);
+async function runSideAgentSmoke() {
+  const state = () => page('window.cth.sideAgentState()');
+  const starts = () => fs.existsSync(sideCapture)
+    ? fs.readFileSync(sideCapture, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
+  const count = async (expected) => assert.equal((await page('window.cth.listPtys()')).length, expected);
+  const rosterIds = async () => Object.keys((await page('window.cth.hiveRegistry()')).agents).sort();
+  const ledger = () => page('window.cth.paramountSnapshot().then(s => s.tasks)');
+  const before = await rosterIds();
+  const beforeLedger = await ledger();
+  await page("location.hash = '#/side-agent'");
+  await until(() => click('Start side agent'), 'side agent start');
+  const first = await until(async () => { const value = await state(); return value.status === 'running' && value; }, 'first side agent');
+  const firstRun = await until(() => starts()[0], 'OpenCode fixture boot');
+  assert.equal(firstRun.provider, 'opencode');
+  assert.equal(firstRun.isolated, true);
+  assert.equal(first.context.orchestratorId, 'god');
+  assert.match(firstRun.args.at(-1), /floor orchestrator ID god/);
+  assert.notEqual(firstRun.cwd, root);
+  await count(1);
+  assert.deepEqual(await rosterIds(), before);
+  await until(() => page("!!document.querySelector('[aria-label=\"Side agent terminal\"] .xterm')"), 'side terminal attached');
+  assert.equal((await page(`window.cth.writePty(${JSON.stringify(first.ptyId)}, 'fixture question\\r')`)).ok, true);
+  await until(() => fs.existsSync(sideInput) && fs.readFileSync(sideInput, 'utf8').includes('fixture question'), 'side terminal input');
+
+  assert.equal(await click('Open source orchestrator'), true);
+  await until(() => page("location.hash === '#/terminal?a=god'"), 'orchestrator link');
+  await page("location.hash = '#/side-agent'");
+  await until(() => click('Restart'), 'side agent restart');
+  const restarted = await until(async () => {
+    const value = await state();
+    return value.status === 'running' && value.ptyId !== first.ptyId && value;
+  }, 'fresh side agent');
+  assert.equal((await page(`window.cth.writePty(${JSON.stringify(first.ptyId)}, 'stale')`)).ok, false);
+  await until(() => starts()[1], 'restarted provider boot');
+  assert.equal(fs.existsSync(firstRun.home), false);
+  await until(() => click('Stop'), 'stop side agent');
+  await until(async () => (await state()).status === 'stopped', 'stopped state');
+  assert.equal(fs.existsSync(starts()[1].home), false);
+
+  await until(() => page(`(() => {
+    const select = document.querySelector('select');
+    if (!select || select.disabled) return false;
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, 'claude');
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`), 'choose Claude');
+  assert.equal(await click('Start side agent'), true);
+  const thirdRun = await until(() => starts()[2], 'Claude fixture boot');
+  assert.equal(thirdRun.provider, 'claude');
+  assert.equal(thirdRun.isolated, true);
+  assert.equal(thirdRun.args.includes('--tools='), true);
+  const changed = await state();
+  assert.notEqual(changed.ptyId, restarted.ptyId);
+  assert.equal((await page(`window.cth.writePty(${JSON.stringify(changed.ptyId)}, 'fail\\r')`)).ok, true);
+  await until(() => page("document.body.innerText.includes('provider exited (code 23)')"), 'exit error');
+  assert.equal((await state()).exitCode, 23);
+  assert.equal(fs.existsSync(thirdRun.home), false);
+  assert.deepEqual(await rosterIds(), before);
+  assert.deepEqual(await ledger(), beforeLedger);
+  await count(1);
+  assert.equal(await click('Start side agent'), true);
+  await until(() => starts()[3], 'retry after exit');
+  await until(() => click('Stop'), 'stop retried side agent');
+  console.log(JSON.stringify({ result: 'PASS', sideAgent: true, providerSelection: true,
+    contextAndOrchestratorLink: true, ptyInput: true, restartStopExitAndRetry: true,
+    floorRosterLedgerAndTerminalsUnchanged: true, scratchCleanup: true }));
+}
 async function run() {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const url = `http://127.0.0.1:${server.address().port}/index.html`;
   child = spawn(process.env.PARAMOUNT_SMOKE_ELECTRON || require('electron'), ['--inspect=0', wrapper], {
     cwd: root, env: { ...process.env, PARAMOUNT_UI_URL: url, SHELL: fixtureShell,
-      PATH: bin + path.delimiter + process.env.PATH, PARAMOUNT_SMOKE_CAPTURE: capture, PARAMOUNT_SMOKE_INPUT: inputCapture, DO_NOT_TRACK: '1' },
+      PATH: bin + path.delimiter + process.env.PATH, PARAMOUNT_SMOKE_CAPTURE: capture, PARAMOUNT_SMOKE_INPUT: inputCapture, NSC236_FIXTURE_SECRET: 'do-not-forward', DO_NOT_TRACK: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let inspector = '';
@@ -145,6 +243,11 @@ async function run() {
   await page("location.hash = '#/terminal'");
   checkpoint('Terminal');
   await until(() => page("document.body.innerText.includes('Paramount') && !!document.querySelector('.xterm')"), 'Terminal projection');
+  if (process.env.PARAMOUNT_SMOKE_SIDE_AGENT === '1') {
+    checkpoint('Side Agent');
+    await runSideAgentSmoke();
+    return;
+  }
   checkpoint('heartbeat conversation');
   const heartbeatBody = 'Floor heartbeat — 1 actionable inbox message(s) awaiting you (worker/human mail). Drain your inbox NOW and act on them.\nRecent log:\n{"kind":"paramount-op"}';
   assert.equal((await page(`window.cth.hiveSend({ to: 'god', act: 'inform', subject: 'Heartbeat', body: ${JSON.stringify(heartbeatBody)} }, 'heartbeat')`)).ok, true);
@@ -191,7 +294,7 @@ run().catch(async (error) => {
   process.exitCode = 1;
 }).finally(async () => {
   if (ws?.readyState === WebSocket.OPEN) {
-    try { await page("(async () => { for (const p of await window.cth.listPtys()) await window.cth.killPty(p.id); })()"); } catch { /* app may already have exited */ }
+    try { await page("(async () => { await window.cth.sideAgentAct?.('stop'); for (const p of await window.cth.listPtys()) await window.cth.killPty(p.id); })()"); } catch { /* app may already have exited */ }
     try { await main("setTimeout(() => require('electron').app.exit(0), 50); true"); } catch { /* transport may already be closed */ }
     ws.close();
   }

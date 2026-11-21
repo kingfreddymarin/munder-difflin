@@ -14,7 +14,8 @@ import { SetupGate } from './setup-gate';
 import { cn } from '@/lib/utils';
 import { AgentAvatar } from '@/components/app/agent-avatar';
 import { AGENT_VIEW, agentViewParams, terminalRoster } from './agent-view';
-import { prewarmTerminals } from '@/components/app/terminal/terminal-pool';
+import { findBridge } from '@/data/bridge';
+import { disposeTerminal, prewarmTerminals } from '@/components/app/terminal/terminal-pool';
 import { TERMINAL_THEMES } from '@/components/app/terminal/terminal-themes';
 import { getTerminalFontSize } from '@/components/app/terminal/terminalFontSize';
 import { Button } from '@/components/animate-ui/components/buttons/button';
@@ -25,6 +26,9 @@ import { useDispatch } from '@/data/store';
 /** Buffer every live agent's output from spawn, as Munder's App does (terminal-pool prewarmTerminals). */
 function usePrewarmTerminals() {
   const terminals = useFloor((s) => s.terminals);
+  React.useEffect(() => findBridge()?.onSideAgentChanged?.((disposedPtyId) => {
+    if (disposedPtyId) disposeTerminal(disposedPtyId);
+  }), []);
   React.useEffect(() => {
     const theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
     prewarmTerminals(terminals.map((t) => t.ptyId), TERMINAL_THEMES[theme], getTerminalFontSize());

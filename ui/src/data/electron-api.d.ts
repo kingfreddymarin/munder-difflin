@@ -1,3 +1,4 @@
+import type { SideAgentAction, SideAgentProvider, SideAgentResult, SideAgentState } from '../../../src/shared/sideAgent';
 import type { ParamountPreloadAPI } from './paramount-api';
 
 export type * from './paramount-api';
@@ -5,6 +6,9 @@ export type * from './paramount-api';
 /** The preload surface Paramount uses. The optional calls exist on the fork's preload but are not in the shared
  *  contract; each caller checks for them and says what it cannot do when one is missing. */
 export type ElectronBridge = ParamountPreloadAPI & {
+  sideAgentState?(): Promise<SideAgentState>;
+  sideAgentAct?(action: SideAgentAction, provider?: SideAgentProvider): Promise<SideAgentResult>;
+  onSideAgentChanged?(cb: (disposedPtyId?: string) => void): () => void;
   resizePty?(id: string, cols: number, rows: number): Promise<{ ok: boolean; error?: string }>;
   killPty?(id: string): Promise<{ ok: boolean; error?: string }>;
   // Terminal (lane e-terminal): the same calls Munder's own terminal uses.
@@ -13,7 +17,7 @@ export type ElectronBridge = ParamountPreloadAPI & {
   onPtyRelaunch?(id: string, cb: () => void): () => void;
   copyToClipboard?(text: string): Promise<{ ok: boolean; error?: string }>;
   // Quit confirmation (Munder's QuitWarningModal): main defers a quit while agents run and asks the window.
-  onCloseRequested?(cb: (info: { ptyCount: number }) => void): () => void;
+  onCloseRequested?(cb: (info: { ptyCount: number; sideAgentCount?: number }) => void): () => void;
   confirmClose?(): Promise<void>;
   cancelClose?(): Promise<void>;
   readClipboard?(): Promise<string>;

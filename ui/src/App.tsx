@@ -27,6 +27,7 @@ const loaders = {
   board: () => import('@/pages/board').then((m) => ({ default: m.BoardPage })),
   team: () => import('@/pages/team').then((m) => ({ default: m.TeamPage })),
   terminal: () => import('@/pages/terminal').then((m) => ({ default: m.TerminalPage })),
+  'side-agent': () => import('@/pages/side-agent').then((m) => ({ default: m.SideAgentPage })),
   health: () => import('@/pages/health').then((m) => ({ default: m.HealthPage })),
   settings: () => import('@/pages/settings').then((m) => ({ default: m.SettingsPage })),
 };

@@ -43,12 +43,18 @@ const CLAUDE_CONFIG_KEEP = new Set([
   'CLAUDE_CODE_USE_VERTEX'
 ]);
 
+const TERMINAL_ENV = new Set([
+  'LANG', 'LC_ALL', 'LC_CTYPE', 'SYSTEMROOT', 'WINDIR', 'COMSPEC',
+  'TEMP', 'TMP', 'TMPDIR'
+]);
+
 export function buildPtyEnv(
   parentEnv: NodeJS.ProcessEnv,
   userPath: string,
   agentEnv?: Record<string, string>,
   platform: NodeJS.Platform = process.platform,
-  unset: readonly string[] = []
+  unset: readonly string[] = [],
+  inheritEnv = true
 ): Record<string, string> {
   // Layer 1 — inherit, minus the parent session's Claude identity. Only this
   // layer is stripped: a marker set deliberately via `agentEnv` below survives,
@@ -56,7 +62,7 @@ export function buildPtyEnv(
   // cannot be silently wiped by the strip.
   const inherited: Record<string, string> = {};
   for (const [k, v] of Object.entries(parentEnv)) {
-    if (v === undefined) continue;
+    if (v === undefined || (!inheritEnv && !TERMINAL_ENV.has(k.toUpperCase()))) continue;
     if (CLAUDE_MARKER_RE.test(k) && !CLAUDE_CONFIG_KEEP.has(k)) continue;
     inherited[k] = v;
   }
