@@ -11,7 +11,7 @@ import { useGraphPlacement } from './use-graph-placement';
 
 const activeStroke = 'stroke-yellow-700 dark:stroke-yellow-300';
 const neutralStroke = 'stroke-neutral-500';
-const agentStroke = { working: activeStroke, waiting: activeStroke, constrained: neutralStroke, idle: neutralStroke, crashed: neutralStroke };
+const agentStroke = { working: activeStroke, waiting: activeStroke, constrained: neutralStroke, idle: neutralStroke, crashed: neutralStroke, compacting: activeStroke };
 const cardStroke: Record<CardStatus, string> = { blocked: activeStroke, doing: activeStroke, review: neutralStroke, todo: neutralStroke, backlog: neutralStroke, done: neutralStroke };
 const cardLabel: Record<CardStatus, string> = { blocked: 'Blocked', doing: 'Doing', review: 'In review', todo: 'To do', backlog: 'Backlog', done: 'Done' };
 const toolbarButton = 'rounded px-2 py-1 font-medium hover:bg-neutral-200 dark:hover:bg-neutral-700 focus-visible:outline-2 focus-visible:outline-current disabled:opacity-40';

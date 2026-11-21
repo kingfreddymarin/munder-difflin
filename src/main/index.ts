@@ -103,6 +103,7 @@ import { textContextMenuTemplate } from './text-context-menu';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, WORKER_WAKE_IDLE_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { agentActivity, type ActivityFacts } from './paramount-activity';
+import { detectProviderLimit } from './provider-limit';
 import { lagOp, startLagProbe } from './lag-probe';
 import { createSnapshotStageTimer, type SnapshotStage } from './paramountSnapshotTiming';
 import { createSnapshotStageCapture } from './snapshotStageCapture';
@@ -1243,6 +1244,8 @@ function paramountActivity(): ReturnType<typeof agentActivity> {
     const ptyId = ptyForAgent(id);
     const u = usageById.get(id);
     const spans = snap.spans[id] ?? [];
+    const tail = ptyId ? ptyManager.tailFor(ptyId) : undefined;
+    const idleMs = (ptyId ? ptyManager.idleFor(ptyId) : undefined) ?? 0;
     facts[id] = {
       lastOutputAt: ptyId ? ptyManager.lastOutputAt(ptyId) : undefined,
       tokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined,
@@ -1254,6 +1257,7 @@ function paramountActivity(): ReturnType<typeof agentActivity> {
       breaker: breaker.levelFor(id),
       lastTool: spans.length ? spans[spans.length - 1].tool : null,
       context: hookServer.contextFor(id) ?? null,
+      providerLimited: tail ? detectProviderLimit(tail, idleMs) : false,
     };
   }
   return agentActivity(facts, Date.now(), WORKER_WAKE_IDLE_MS);

@@ -2,7 +2,7 @@
 // nothing about your org, people or repos is written into components.
 
 export type Role = 'paramount' | 'lead' | 'co-lead' | 'worker' | 'ephemeral' | 'watcher';
-export type AgentStatus = 'working' | 'waiting' | 'constrained' | 'idle' | 'crashed';
+export type AgentStatus = 'working' | 'waiting' | 'constrained' | 'idle' | 'crashed' | 'compacting';
 
 export interface Agent {
   id: string;
@@ -29,6 +29,8 @@ export interface Agent {
   contextPct: number | null;
   costUsd?: number | null;
   breaker?: string;
+  /** True when the agent's terminal output contained a provider usage-limit message. */
+  providerLimited?: boolean;
   bundle: string;
   skills: string[];
   mcps: string[];
