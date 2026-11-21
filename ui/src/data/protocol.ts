@@ -11,6 +11,7 @@ export type Command =
   | { type: 'card.move'; key: string; status: CardStatus }
   /** `key` is not sent: the core picks it and the provider puts it on the event. */
   | { type: 'card.create'; title: string; description?: string; assignee?: string; priority?: 1 | 2 | 3; status?: 'todo' | 'blocked'; key?: string }
+  | { type: 'card.update'; key: string; patch: Partial<{ title: string; description: string; priority: 1 | 2 | 3; assignee: string }> }
   | { type: 'automation.toggle'; id: string; enabled: boolean }
   | { type: 'access.set'; agentId: string; sourceId: string; access: Access }
   | { type: 'agent.update'; agentId: string; patch: Partial<Pick<Agent, 'name' | 'color' | 'model' | 'engine' | 'tokensCap' | 'persona' | 'tone' | 'autonomy' | 'yolo'>> }
