@@ -21,12 +21,12 @@ import { Screen } from '@/components/app/screen';
 const healthBadge = { 'on-track': ['success', 'On track'], 'at-risk': ['warning', 'At risk'], blocked: ['danger', 'Blocked'] } as const;
 const kindTone: Record<ActivityKind, string> = { message: 'text-sky-300', tool: 'text-muted-foreground', edit: 'text-violet-300', ticket: 'text-emerald-400', breaker: 'text-rose-400', question: 'text-amber-300', lifecycle: 'text-teal-300' };
 // Live activity: re-read the core's snapshot (log tail included) this often while Home is visible.
-const span: Record<TileSize, string> = { sm: 'lg:row-span-1', md: 'lg:row-span-2', lg: 'lg:col-span-2 lg:row-span-2' };
-const density: Record<HomeDensity, { gap: string; row: string }> = {
-  compact: { gap: 'gap-2', row: 'lg:auto-rows-[minmax(150px,1fr)]' },
-  comfortable: { gap: 'gap-3', row: 'lg:auto-rows-[minmax(190px,1fr)]' },
-  spacious: { gap: 'gap-5', row: 'lg:auto-rows-[minmax(240px,1fr)]' },
+const span: Record<TileSize, string> = {
+  sm: 'max-h-64 lg:row-span-1',
+  md: 'max-h-96 lg:row-span-2',
+  lg: 'max-h-[min(65dvh,32rem)] lg:col-span-2 lg:row-span-2',
 };
+const density: Record<HomeDensity, string> = { compact: 'gap-2', comfortable: 'gap-3', spacious: 'gap-5' };
 const ago = (ms: number, now: number) => { const s = Math.max(0, Math.round((now - ms) / 1000)); return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`; };
 
 function Stat({ label, value, decimals = 0, suffix }: { label: string; value: number | string; decimals?: number; suffix?: string }) {
@@ -80,9 +80,9 @@ export function HomePage() {
     switch (id) {
       case 'objectives':
         return (
-          <Tile key={id} title="Main objectives" hint={objectives.length ? undefined : 'none set'} className={cls}
+          <Tile key={id} title="Main objectives" hint={objectives.length ? undefined : 'none set'} className={cls} scrollLabel="Main objectives"
             actions={!editingObjectives && <Button size="sm" variant="ghost" onClick={() => setEditingObjectives(true)}>{objectives.length ? 'Edit' : 'Set objectives'}</Button>}>
-            {editingObjectives ? <ObjectivesEditor objectives={objectives} agents={agents} openCards={cards.filter((c) => c.status !== 'done')} onDone={() => setEditingObjectives(false)} /> : <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
+            {editingObjectives ? <ObjectivesEditor objectives={objectives} agents={agents} openCards={cards.filter((c) => c.status !== 'done')} onDone={() => setEditingObjectives(false)} /> : <div className="flex shrink-0 flex-col gap-2">
               {objectives.length === 0 && <span className="text-muted-foreground text-sm">No objectives for this floor yet.</span>}
               {objectives.map((o) => {
                 const own = cards.filter((c) => o.cardKeys.includes(c.key));
@@ -111,7 +111,7 @@ export function HomePage() {
         );
       case 'asks':
         return (
-          <Tile key={id} title="Ask me" className={cls}
+          <Tile key={id} title="Ask me" className={cls} scrollLabel="Ask me"
             hint={asks.length ? <span title={askers.join(', ')}>{askers.slice(0, 3).join(', ')}{askers.length > 3 ? ` +${askers.length - 3}` : ''} · {asks.length} waiting</span> : 'nothing waiting'}
             actions={asks.length > 3 ? (
               <SeeAll title="Ask me" description="Everything an agent is waiting on you for" count={asks.length}>
@@ -123,10 +123,10 @@ export function HomePage() {
         );
       case 'activity':
         return (
-          <Tile key={id} title="Agent activity" className={cls}
+          <Tile key={id} title="Agent activity" className={cls} scrollLabel="Agent activity"
             hint={<span className="flex items-center gap-1.5"><span className={cn('size-1.5 rounded-full', refreshedAt ? 'animate-pulse bg-emerald-400' : 'bg-muted-foreground')} />{refreshedAt ? `live · ${ago(refreshedAt, now)}` : 'waiting for the core'}</span>}
             actions={<SeeAll title="Agent activity" count={feed.length}>{feed.map((e) => <div key={e.id} className="flex gap-2 text-sm"><span className="text-muted-foreground w-11 shrink-0 font-mono text-xs">{clock(e.at)}</span><span className="flex-1"><span className={kindTone[e.kind]}>{who(e.agentId)}</span> · {e.text}</span></div>)}</SeeAll>}>
-            <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto">
+            <div className="flex shrink-0 flex-col gap-0.5">
               {feed.length === 0 && <span className="text-muted-foreground text-sm">No agent activity in the core's log yet.</span>}
               {feed.slice(0, 30).map((e) => {
                 const a = agent(e.agentId);
@@ -143,8 +143,8 @@ export function HomePage() {
         );
       case 'closed':
         return (
-          <Tile key={id} title="Recently closed" className={cls} actions={<SeeAll title="Closed cards" count={closed.length}>{closed.map((c) => <button key={c.key} type="button" onClick={() => go('board', { card: c.key })} className="hover:bg-accent flex gap-2 rounded-md p-2 text-left text-sm"><span className="text-muted-foreground font-mono text-xs">{c.key}</span><span className="flex-1">{c.title}</span></button>)}</SeeAll>}>
-            <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto">
+          <Tile key={id} title="Recently closed" className={cls} scrollLabel="Recently closed" actions={<SeeAll title="Closed cards" count={closed.length}>{closed.map((c) => <button key={c.key} type="button" onClick={() => go('board', { card: c.key })} className="hover:bg-accent flex gap-2 rounded-md p-2 text-left text-sm"><span className="text-muted-foreground font-mono text-xs">{c.key}</span><span className="flex-1">{c.title}</span></button>)}</SeeAll>}>
+            <div className="flex shrink-0 flex-col gap-0.5">
               {closed.length === 0 && <span className="text-muted-foreground text-sm">No card is done yet.</span>}
               {closed.slice(0, 12).map((c) => {
                 const a = agent(c.agentId);
@@ -161,8 +161,8 @@ export function HomePage() {
         );
       case 'wins':
         return (
-          <Tile key={id} title="What went well" className={cls} actions={<SeeAll title="What went well" count={wins.length}>{wins.map((w) => <div key={w.id} className="flex flex-col gap-0.5 rounded-md border p-2.5"><span className="text-sm font-medium">{w.title}</span><span className="text-muted-foreground text-xs">{w.detail}</span></div>)}</SeeAll>}>
-            <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
+          <Tile key={id} title="What went well" className={cls} scrollLabel="What went well" actions={<SeeAll title="What went well" count={wins.length}>{wins.map((w) => <div key={w.id} className="flex flex-col gap-0.5 rounded-md border p-2.5"><span className="text-sm font-medium">{w.title}</span><span className="text-muted-foreground text-xs">{w.detail}</span></div>)}</SeeAll>}>
+            <div className="flex shrink-0 flex-col gap-2">
               {wins.length === 0 && <span className="text-muted-foreground text-sm">Nothing recorded yet.</span>}
               {wins.slice(0, 8).map((w) => {
                 const a = agent(w.agentId);
@@ -183,8 +183,8 @@ export function HomePage() {
   };
 
   return (
-    <Screen className={space.gap}>
-      <div className="flex flex-wrap items-center gap-3">
+    <Screen className={space}>
+      <div className="flex shrink-0 flex-wrap items-center gap-3">
         <div className="flex flex-col">
           <h1 className="text-xl font-semibold tracking-tight">{greeting}</h1>
           <span className="text-muted-foreground text-xs">{agents.filter((a) => a.status === 'working').length} of {agents.length} agents working · {asks.length} waiting on you</span>
@@ -207,7 +207,7 @@ export function HomePage() {
       </div>
 
       {tiles.length === 0 && <span className="text-muted-foreground text-sm">Every tile is hidden. Use Customize to show some.</span>}
-      <div className={cn('grid flex-1 grid-cols-1 lg:grid-cols-3 lg:grid-flow-dense', space.gap, space.row)}>
+      <div className={cn('grid flex-1 grid-cols-1 items-stretch lg:min-h-0 lg:grid-flow-dense lg:auto-rows-[minmax(0,1fr)] lg:grid-cols-3', space)}>
         {tiles.map((t) => tile(t.id, t.size))}
       </div>
     </Screen>
