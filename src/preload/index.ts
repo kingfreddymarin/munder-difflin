@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
-import type { SideAgentAction, SideAgentProvider, SideAgentResult, SideAgentState } from '../shared/sideAgent';
+import type { SideAgentAction, SideAgentModelList, SideAgentProvider, SideAgentResult, SideAgentState } from '../shared/sideAgent';
 import type { FloorOverview } from '../shared/floor-overview';
 import type { AgentProvider } from '../shared/agentProvider';
 import type { ParamountCommand, ParamountPreloadAPI, ParamountRawSnapshot, ParamountResult, ParamountUpdate } from './paramount';
@@ -334,6 +334,14 @@ export interface HarnessConfig {
   providerBaseUrls?: Partial<Record<AgentProvider, string>>;
   /** Per-CLI-provider default model slug, used to pre-fill the model picker. */
   providerDefaultModels?: Partial<Record<AgentProvider, string>>;
+  /** Which persona the side agent reads as.
+   *  - `undefined` (absent) = default "Floor assistant" identity line + floor context.
+   *  - `null`               = None — no identity/persona line; floor context is still sent.
+   *  - agentId string       = impersonate that agent (name + role prepended) + floor context. */
+  sideAgentPersona?: string | null;
+  /** The model the side agent launches with, per provider. Absent = the provider's
+   *  own default. Only honoured when that provider's CLI listed the id this session. */
+  sideAgentModels?: Partial<Record<SideAgentProvider, string>>;
 }
 
 export interface MemoryStatus {
@@ -582,6 +590,9 @@ const api = {
   sideAgentState: (): Promise<SideAgentState> => ipcRenderer.invoke('side-agent:state'),
   sideAgentAct: (action: SideAgentAction, provider?: SideAgentProvider): Promise<SideAgentResult> =>
     ipcRenderer.invoke('side-agent:act', action, provider),
+  /** Models the provider CLI lists (discovered in main, cached per session). */
+  sideAgentModels: (provider: SideAgentProvider, refresh?: boolean): Promise<SideAgentModelList> =>
+    ipcRenderer.invoke('side-agent:models', provider, refresh === true),
   onSideAgentChanged: (cb: (disposedPtyId?: string) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, disposedPtyId?: string) => cb(disposedPtyId);
     ipcRenderer.on('side-agent:changed', listener);

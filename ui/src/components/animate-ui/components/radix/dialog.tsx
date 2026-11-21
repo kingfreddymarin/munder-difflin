@@ -68,7 +68,7 @@ function DialogContent({
       <DialogOverlay />
       <DialogContentPrimitive
         className={cn(
-          'bg-background fixed top-[50%] left-[50%] z-50 grid max-h-[calc(100svh-2rem)] w-full max-w-[calc(100%-2rem)] overflow-y-auto translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg sm:max-w-lg',
+          'bg-background fixed top-[50%] left-[50%] z-50 flex max-h-[calc(100svh-2rem)] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] flex-col gap-4 overflow-hidden rounded-lg border p-6 shadow-lg sm:max-w-lg',
           className,
         )}
         {...props}
@@ -85,12 +85,23 @@ function DialogContent({
   );
 }
 
+type DialogBodyProps = React.ComponentProps<'div'>;
+
+function DialogBody({ className, ...props }: DialogBodyProps) {
+  return (
+    <div
+      className={cn('flex min-h-0 flex-1 flex-col overflow-y-auto', className)}
+      {...props}
+    />
+  );
+}
+
 type DialogHeaderProps = DialogHeaderPrimitiveProps;
 
 function DialogHeader({ className, ...props }: DialogHeaderProps) {
   return (
     <DialogHeaderPrimitive
-      className={cn('flex flex-col gap-2 text-center sm:text-left', className)}
+      className={cn('flex flex-shrink-0 flex-col gap-2 text-center sm:text-left', className)}
       {...props}
     />
   );
@@ -102,7 +113,7 @@ function DialogFooter({ className, ...props }: DialogFooterProps) {
   return (
     <DialogFooterPrimitive
       className={cn(
-        'flex flex-col-reverse gap-2 sm:flex-row sm:justify-end',
+        'flex flex-shrink-0 flex-col-reverse gap-2 sm:flex-row sm:justify-end',
         className,
       )}
       {...props}
@@ -138,6 +149,7 @@ export {
   DialogClose,
   DialogContent,
   DialogHeader,
+  DialogBody,
   DialogFooter,
   DialogTitle,
   DialogDescription,
@@ -146,6 +158,7 @@ export {
   type DialogCloseProps,
   type DialogContentProps,
   type DialogHeaderProps,
+  type DialogBodyProps,
   type DialogFooterProps,
   type DialogTitleProps,
   type DialogDescriptionProps,

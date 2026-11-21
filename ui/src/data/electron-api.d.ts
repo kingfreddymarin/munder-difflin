@@ -1,5 +1,6 @@
-import type { SideAgentAction, SideAgentProvider, SideAgentResult, SideAgentState } from '../../../src/shared/sideAgent';
+import type { SideAgentAction, SideAgentModelList, SideAgentProvider, SideAgentResult, SideAgentState } from '../../../src/shared/sideAgent';
 import type { FloorOverview } from '../../../src/shared/floor-overview';
+import type { HarnessConfig } from '../../../src/preload/index';
 import type { ParamountPreloadAPI } from './paramount-api';
 
 export type * from './paramount-api';
@@ -9,6 +10,8 @@ export type * from './paramount-api';
 export type ElectronBridge = ParamountPreloadAPI & {
   sideAgentState?(): Promise<SideAgentState>;
   sideAgentAct?(action: SideAgentAction, provider?: SideAgentProvider): Promise<SideAgentResult>;
+  /** Models the provider CLI lists; discovered in main with a timeout, cached for the session. */
+  sideAgentModels?(provider: SideAgentProvider, refresh?: boolean): Promise<SideAgentModelList>;
   onSideAgentChanged?(cb: (disposedPtyId?: string) => void): () => void;
   listFloorViews?(): Promise<FloorOverview[]>;
   focusFloorView?(id: string): Promise<boolean>;
@@ -24,6 +27,9 @@ export type ElectronBridge = ParamountPreloadAPI & {
   onCloseRequested?(cb: (info: { ptyCount: number; sideAgentCount?: number }) => void): () => void;
   confirmClose?(): Promise<void>;
   cancelClose?(): Promise<void>;
+  getConfig?(): Promise<HarnessConfig>;
+  updateConfig?(patch: Partial<HarnessConfig>): Promise<HarnessConfig>;
+  onConfigChanged?(cb: (config: HarnessConfig) => void): () => void;
   readClipboard?(): Promise<string>;
   /** Native folder dialog (openDirectory + createDirectory). error 'cancelled' when the human cancels. */
   chooseFolder?(): Promise<{ ok: true; path: string } | { ok: false; error: string }>;
@@ -48,7 +54,18 @@ export type ElectronBridge = ParamountPreloadAPI & {
   freeflowTranscribe?(arg: { audio: ArrayBuffer | Uint8Array; mimeType?: string; filename?: string }): Promise<{ ok: boolean; text?: string; error?: string }>;
   textSearch?(query: string): Promise<{ ok: boolean; results: Array<{ source: string; excerpt: string }> }>;
   searchMemory?(query: string, wing?: string): Promise<{ ok: boolean; output: string; error?: string }>;
+  // ─── Filesystem viewer/editor (NSC-247) ──────────────────────────────────
+  listDir?(root: string, rel: string): Promise<{ ok: true; entries: DirEntry[]; path: string } | { ok: false; error: string }>;
+  readFile?(root: string, rel: string): Promise<{ ok: true; content: string; path: string; size: number } | { ok: false; error: string }>;
+  writeFile?(root: string, rel: string, content: string): Promise<{ ok: true; path: string } | { ok: false; error: string }>;
 };
+
+export interface DirEntry {
+  name: string;
+  isDir: boolean;
+  size: number;
+  mtime: number;
+}
 
 declare global {
   interface Window {

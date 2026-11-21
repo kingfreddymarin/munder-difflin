@@ -12,12 +12,15 @@ execFileSync('node_modules/.bin/tsc', [
   '--ignoreConfig', '--outDir', outputDir, '--target', 'ES2022', '--module', 'ESNext', '--moduleResolution', 'Bundler',
   '--skipLibCheck', 'src/data/electron-api.d.ts', 'src/data/electron-provider.ts',
 ]);
-for (const file of readdirSync(outputDir).filter((name) => name.endsWith('.js'))) {
-  const path = join(outputDir, file);
+const emitted = readdirSync(outputDir, { recursive: true }).map(String).filter((n) => n.endsWith('.js'));
+for (const f of emitted) {
+  const path = join(outputDir, f);
   writeFileSync(path, readFileSync(path, 'utf8').replace(/from '(\.\/[^']+)'/g, "from '$1.js'"));
 }
-const { askOptions, cardAsks, logActivity } = await import(pathToFileURL(join(outputDir, 'projection.js')).href);
-const { createElectronProvider } = await import(pathToFileURL(join(outputDir, 'electron-provider.js')).href);
+const projectionFile = emitted.find((n) => n.endsWith('projection.js'));
+const providerFile = emitted.find((n) => n.endsWith('electron-provider.js'));
+const { askOptions, cardAsks, logActivity } = await import(pathToFileURL(join(outputDir, String(projectionFile))).href);
+const { createElectronProvider } = await import(pathToFileURL(join(outputDir, String(providerFile))).href);
 rmSync(outputDir, { recursive: true });
 
 test('askOptions: two to six bullets or numbers are a decision, anything else is free text', () => {
