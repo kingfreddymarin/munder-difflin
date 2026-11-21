@@ -2,7 +2,7 @@ import { AgentProfileForm, useAgentProfile } from './agent-profile';
 import { LauncherSettings } from './launcher-select';
 import * as React from 'react';
 // An agent's big card: overview, queue, activity and profile in one modal, opened from any agent on the Team screen.
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/animate-ui/components/radix/dialog';
 import { Tabs, TabsContent, TabsContents, TabsList, TabsTrigger } from '@/components/animate-ui/components/radix/tabs';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { Badge } from '@/components/ui/badge';
@@ -113,13 +113,14 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
 
   return (
     <Dialog open={!!agent} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex max-h-[88vh] flex-col overflow-y-auto sm:max-w-3xl">
+      <DialogContent className="sm:max-w-3xl">
         {agent && (
           <>
             <DialogHeader>
               <DialogTitle>{agent.name}</DialogTitle>
               <DialogDescription>{agent.doing || 'Not reported.'}</DialogDescription>
             </DialogHeader>
+            <DialogBody>
             <Tabs key={`${agentId}:${tab ?? ''}`} defaultValue={tab ?? 'overview'} className="flex min-h-0 flex-1 flex-col gap-3">
               <TabsList className="w-full">
                 <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -221,6 +222,7 @@ export function AgentSheet({ agentId, onClose, tab }: { agentId: string | null; 
                 </TabsContent>
               </TabsContents>
             </Tabs>
+            </DialogBody>
           </>
         )}
       </DialogContent>
