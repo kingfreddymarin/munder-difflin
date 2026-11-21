@@ -3,8 +3,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
+// TypeScript 5.9.3 lives two levels up at munder-difflin/node_modules; ui/ has TS 7 (no transpileModule).
 const require = createRequire(new URL('../../package.json', import.meta.url));
 const ts = require('typescript');
+
+// jsdom and dompurify were installed in ui/node_modules; need a separate require base.
+const requireUi = createRequire(new URL('../package.json', import.meta.url));
+const { JSDOM } = requireUi('jsdom');
+const createDOMPurify = requireUi('dompurify');
 
 const sourceUrl = new URL('../src/features/files/file-viewer.tsx', import.meta.url);
 const source = readFileSync(sourceUrl, 'utf8');
@@ -31,6 +37,9 @@ const stubLucide = new Proxy({}, { get: (_, k) => k });
 const stubMarked = {
   marked: { setOptions: () => {}, parse: (s) => `<p>${s}</p>` },
 };
+// DOMPurify stub used only for module-loading (utility functions don't invoke sanitize).
+const stubDOMPurify = { sanitize: (s) => s };
+stubDOMPurify.default = stubDOMPurify;
 
 function loadModule() {
   const mod = { exports: {} };
@@ -38,11 +47,16 @@ function loadModule() {
     if (id === 'react') return stubReact;
     if (id === 'lucide-react') return stubLucide;
     if (id === 'marked') return stubMarked;
+    if (id === 'dompurify') return stubDOMPurify;
     // App aliases return empty stubs so imports don't throw
     return new Proxy({}, { get: (_, k) => k });
   });
   return mod.exports;
 }
+
+// Real DOMPurify instance backed by jsdom — used for sanitization security tests.
+const purifyWindow = new JSDOM('').window;
+const DOMPurify = createDOMPurify(purifyWindow);
 
 const { bytes, isMarkdown, isTextFile, MAX_EDIT_BYTES } = loadModule();
 
@@ -144,4 +158,42 @@ test('sortEntries: case-insensitive within same type', () => {
   ];
   const sorted = sortEntries(entries);
   assert.equal(sorted[0].name, 'a.ts');
+});
+
+// ─── Markdown sanitization (DOMPurify) ───────────────────────────────────────
+// These tests use a real DOMPurify instance backed by jsdom, matching what
+// the renderer does in Electron. They prove that the sanitize() call in
+// file-viewer.tsx's useMemo actually strips the attack vectors.
+
+test('sanitize: strips <script> tags entirely', () => {
+  const dirty = '<p>Hello</p><script>alert(1)</script>';
+  const clean = DOMPurify.sanitize(dirty);
+  assert.ok(!clean.includes('<script'), `script tag survived: ${clean}`);
+  assert.ok(!clean.includes('alert'), `script content survived: ${clean}`);
+});
+
+test('sanitize: strips onerror from <img>', () => {
+  const dirty = '<img src="x" onerror="alert(1)">';
+  const clean = DOMPurify.sanitize(dirty);
+  assert.ok(!clean.includes('onerror'), `onerror survived: ${clean}`);
+});
+
+test('sanitize: strips javascript: href', () => {
+  const dirty = '<a href="javascript:alert(1)">click</a>';
+  const clean = DOMPurify.sanitize(dirty);
+  assert.ok(!clean.includes('javascript:'), `javascript: href survived: ${clean}`);
+});
+
+test('sanitize: strips onload from <svg>', () => {
+  const dirty = '<svg onload="alert(1)"><rect/></svg>';
+  const clean = DOMPurify.sanitize(dirty);
+  assert.ok(!clean.includes('onload'), `onload survived: ${clean}`);
+});
+
+test('sanitize: preserves safe Markdown HTML', () => {
+  const safe = '<h1>Title</h1><p>Some <strong>bold</strong> text.</p><a href="https://example.com">link</a>';
+  const clean = DOMPurify.sanitize(safe);
+  assert.ok(clean.includes('<h1>'), 'h1 was stripped');
+  assert.ok(clean.includes('<strong>'), 'strong was stripped');
+  assert.ok(clean.includes('href="https://example.com"'), 'safe href was stripped');
 });

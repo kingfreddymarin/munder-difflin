@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { FolderOpen, File, Folder, ChevronRight, Save, Eye, Pencil, X, Loader2, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { Tile } from '@/components/app/tile';
@@ -200,7 +201,8 @@ function FileEditor({ root, fileRel, fileName, onClose }: EditorProps) {
 
   const mdHtml = React.useMemo(() => {
     if (!isMd || mode !== 'preview' || draft === null) return null;
-    return { __html: marked.parse(draft) as string };
+    const raw = marked.parse(draft) as string;
+    return { __html: DOMPurify.sanitize(raw) };
   }, [isMd, mode, draft]);
 
   return (
