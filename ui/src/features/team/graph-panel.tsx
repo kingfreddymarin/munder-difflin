@@ -1,86 +1,165 @@
-// Team graph built from data: reporting lines from agent.reportsTo, live edges from who is working,
-// amber edges for agents waiting on you, dashed edges from automations to the agent they wake,
-// and open task cards under their owner (see graph-model.ts).
 import * as React from 'react';
 import { useFloor } from '@/data/store';
 import { statusMeta } from '@/components/app/status';
 import { useRouter } from '@/app/router';
 import type { CardStatus } from '@/data/types';
 import { useAgentActionTargets } from './agent-action-menu';
-import { agentLayout, buildTaskGraph, CARD_H, CARD_W, GRAPH_WIDTH, UNASSIGNED } from './graph-model';
+import { AGENT_H, AGENT_W, agentKey, buildGraphLayout, cardKey, CARD_H, CARD_W, GRAPH_WIDTH, triggerKey, TRIGGER_H, TRIGGER_W, UNASSIGNED, YOU, type GraphBox } from './graph-model';
+import { useGraphPlacement } from './use-graph-placement';
 
 const ringHex = { working: '#38bdf8', waiting: '#fbbf24', constrained: '#fb7185', idle: '#71717a', crashed: '#f43f5e' } as const;
 const cardHex: Record<CardStatus, string> = { blocked: '#f43f5e', doing: '#38bdf8', review: '#a78bfa', todo: '#71717a', backlog: '#52525b', done: '#22c55e' };
 const cardLabel: Record<CardStatus, string> = { blocked: 'Blocked', doing: 'Doing', review: 'In review', todo: 'To do', backlog: 'Backlog', done: 'Done' };
-const clip = (text: string, n: number) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
+const toolbarButton = 'rounded px-2 py-1 font-medium hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40';
+const clip = (text: string, limit: number) => {
+  const chars = Array.from(text);
+  return chars.length > limit ? `${chars.slice(0, limit - 1).join('')}…` : text;
+};
+
+/** Where the line between two node centres meets the edge of the first node. */
+function edgePoint(from: GraphBox, to: GraphBox) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const fraction = Math.min(from.width / 2 / Math.abs(dx), from.height / 2 / Math.abs(dy));
+  return { x: from.x + dx * fraction, y: from.y + dy * fraction };
+}
+
+function GraphEdge({ from, to, kind, stroke, dash, strong = false }: { from: GraphBox; to: GraphBox; kind: string; stroke?: string; dash?: string; strong?: boolean }) {
+  if (from === to) return null;
+  const a = edgePoint(from, to);
+  const b = edgePoint(to, from);
+  return <line data-edge={kind} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={stroke ?? 'currentColor'} strokeDasharray={dash} strokeWidth={strong ? 2.5 : 1.5} opacity={strong ? 0.9 : 0.65} />;
+}
 
 export function GraphPanel({ onOpen }: { onOpen: (id: string) => void }) {
+  const floor = useFloor((s) => s.floorSetup?.harnessHome);
+  const storageKey = `paramount.team.graph.v1:${floor ?? 'sample'}`;
+  return <FloorGraph key={storageKey} storageKey={storageKey} onOpen={onOpen} />;
+}
+
+function FloorGraph({ storageKey, onOpen }: { storageKey: string; onOpen: (id: string) => void }) {
   const agents = useFloor((s) => s.agents);
   const automations = useFloor((s) => s.automations);
   const cards = useFloor((s) => s.cards);
   const actionTargets = useAgentActionTargets(agents.map((agent) => agent.id));
   const { go } = useRouter();
-  const layout = React.useMemo(() => agentLayout(agents), [agents]);
-  // The agent that reports to you: Paramount's own lead, else the first agent with no manager.
+  const scroll = React.useRef<HTMLDivElement>(null);
+  const svg = React.useRef<SVGSVGElement>(null);
+  const hintId = React.useId();
+  const clipId = React.useId();
+  const agentsById = React.useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
+  const countsByAgent = React.useMemo(() => {
+    const counts = new Map<string, { open: number; blocked: number }>();
+    for (const card of cards) {
+      if (card.status === 'done') continue;
+      const owner = counts.get(card.agentId) ?? { open: 0, blocked: 0 };
+      owner.open++;
+      if (card.status === 'blocked') owner.blocked++;
+      counts.set(card.agentId, owner);
+    }
+    return counts;
+  }, [cards]);
   const rootId = (agents.find((a) => a.role === 'paramount') ?? agents.find((a) => !a.reportsTo))?.id;
-  const root = rootId ? layout[rootId] : undefined;
-  const triggers = automations.filter((a) => a.enabled).slice(0, 4);
-  const tasks = React.useMemo(() => buildTaskGraph(cards, layout), [cards, layout]);
-  const taskPos = Object.fromEntries(tasks.nodes.map((n) => [n.key, n]));
+  const triggers = React.useMemo(() => automations.filter((a) => a.enabled).slice(0, 4), [automations]);
+  const { slots, tasks, height } = React.useMemo(() => buildGraphLayout(agents, cards, triggers.map((t) => t.id)), [agents, cards, triggers]);
+  const { displayed, bind, notice, reset, canReset } = useGraphPlacement(storageKey, slots, height, svg);
+  const root = rootId ? displayed[agentKey(rootId)] : undefined;
   const openCard = (key: string) => go('board', { card: key });
-  const activate = (e: React.KeyboardEvent, key: string) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCard(key); } };
+
+  function jumpToTask() {
+    if (!tasks.nodes.length || !svg.current) return;
+    const first = tasks.nodes.reduce((top, node) => displayed[cardKey(node.key)].y < displayed[cardKey(top.key)].y ? node : top);
+    const target = [...svg.current.querySelectorAll<SVGGElement>('[data-task-node]')].find((node) => node.dataset.taskNode === first.key);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
   return (
-    // Full-width drawing that scrolls inside the tile, so the task band is never clipped or covered.
-    <div data-graph-scroll className="min-h-0 flex-1 overflow-auto">
-    <svg viewBox={`0 0 ${GRAPH_WIDTH} ${tasks.height}`} role="img" aria-label="Team graph" className="block h-auto w-full min-w-[36rem]">
-      <g fill="none" strokeWidth="2">
-        {root && <line x1="480" y1="26" x2={root.x} y2={root.y - 18} stroke="#38bdf8" strokeWidth="3" />}
-        {agents.filter((a) => a.reportsTo && layout[a.reportsTo]).map((a) => {
-          const p = layout[a.id], q = layout[a.reportsTo!];
-          return <line key={a.id} x1={q.x} y1={q.y + 21} x2={p.x} y2={p.y - 21} stroke={a.status === 'working' ? '#38bdf8' : '#3f3f46'} strokeWidth={a.status === 'working' ? 3 : 2} />;
-        })}
-        {agents.filter((a) => a.status === 'waiting').map((a) => <path key={`w-${a.id}`} d={`M${layout[a.id].x - 18} ${layout[a.id].y} C ${layout[a.id].x - 120} ${layout[a.id].y - 80}, 400 26, 462 26`} stroke="#fbbf24" strokeDasharray="6 5" />)}
-        {triggers.map((t, i) => <line key={t.id} x1="158" y1={61 + i * 50} x2={(root?.x ?? 480) - 24} y2={root?.y ?? 70} stroke="#52525b" strokeDasharray="4 5" />)}
-        {tasks.edges.map((e) => {
-          const to = taskPos[e.to];
-          if (e.kind === 'owner') {
-            const a = layout[e.from];
-            return <line key={`o-${e.to}`} data-edge="owner" x1={a.x} y1={a.y + 60} x2={to.x} y2={to.y - 15} stroke={cardHex[to.status]} strokeOpacity="0.5" />;
-          }
-          const from = taskPos[e.from];
-          return <path key={`${e.kind}-${e.from}-${e.to}`} data-edge={e.kind} d={`M${from.x + 60} ${from.y} C ${from.x + 110} ${from.y}, ${to.x + 110} ${to.y}, ${to.x + 60} ${to.y}`} stroke="#a1a1aa" strokeDasharray={e.kind === 'depends' ? '6 4' : '2 4'} />;
-        })}
-      </g>
-      {triggers.map((t, i) => (
-        <g key={t.id}>
-          <rect x="8" y={47 + i * 50} width="150" height="28" rx="14" fill="currentColor" className="text-muted" />
-          <text x="83" y={65 + i * 50} textAnchor="middle" fontSize="11" fill="currentColor" className="text-muted-foreground">{t.name.length > 20 ? `${t.name.slice(0, 19)}…` : t.name}</text>
-        </g>
-      ))}
-      <circle cx="480" cy="26" r="17" fill="currentColor" className="text-foreground" />
-      <text x="480" y="30" textAnchor="middle" fontSize="11" fontWeight="600" fill="currentColor" className="text-background">You</text>
-      {agents.map((a) => (
-        <g key={a.id} role="button" tabIndex={0} aria-label={`${a.name}, ${statusMeta[a.status].label}. Right-click or Shift+F10 for agent actions.`} {...actionTargets[a.id]} onClick={() => onOpen(a.id)} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(a.id); else actionTargets[a.id]?.onKeyDown?.(e); }} className="cursor-pointer">
-          <circle cx={layout[a.id].x} cy={layout[a.id].y} r="21" fill="currentColor" className="text-secondary" stroke={ringHex[a.status]} strokeWidth="3" />
-          <text x={layout[a.id].x} y={layout[a.id].y + 4} textAnchor="middle" fontSize="11" fontFamily="var(--font-mono)" fill="currentColor" className="text-foreground">{a.initials}</text>
-          <text x={layout[a.id].x} y={layout[a.id].y + 38} textAnchor="middle" fontSize="12" fill="currentColor" className="text-muted-foreground">{a.name}</text>
-          <text x={layout[a.id].x} y={layout[a.id].y + 53} textAnchor="middle" fontSize="9" fill="currentColor" className="text-muted-foreground">{a.teamNames?.join(', ') || ''} · {cards.filter((card) => card.agentId === a.id && card.status !== 'done').length} open / {cards.filter((card) => card.agentId === a.id && card.status === 'blocked').length} blocked</text>
-        </g>
-      ))}
-      {tasks.nodes.map((n) => (
-        <g key={n.key} data-task-node={n.key} role="button" tabIndex={0} aria-label={`Card ${n.key}: ${n.title}. ${cardLabel[n.status]}${n.priority ? `, ${n.priority}` : ''}. Owner ${agents.find((a) => a.id === n.agentId)?.name ?? 'unassigned'}.`} onClick={() => openCard(n.key)} onKeyDown={(e) => activate(e, n.key)} className="cursor-pointer">
-          <rect x={n.x - CARD_W / 2} y={n.y - CARD_H / 2} width={CARD_W} height={CARD_H} rx="6" fill="currentColor" className="text-card" stroke={cardHex[n.status]} strokeWidth="2" />
-          <text x={n.x} y={n.y - 2} textAnchor="middle" fontSize="9" fontFamily="var(--font-mono)" fill="currentColor" className="text-muted-foreground">{n.key} · {cardLabel[n.status]}{n.priority ? ` · ${n.priority}` : ''}</text>
-          <text x={n.x} y={n.y + 10} textAnchor="middle" fontSize="10" fill="currentColor" className="text-foreground">{clip(n.title, 22)}</text>
-        </g>
-      ))}
-      {tasks.columns.map((c) => (
-        <g key={`col-${c.owner}`}>
-          <text x={c.x} y={c.top - 24} textAnchor="middle" fontSize="10" fill="currentColor" className="text-muted-foreground">{c.owner === UNASSIGNED ? 'Unassigned' : clip(agents.find((a) => a.id === c.owner)?.name ?? c.owner, 18)}</text>
-          {c.hidden > 0 && <text x={c.x} y={c.top + c.shown * 44} textAnchor="middle" fontSize="10" fill="currentColor" className="text-muted-foreground">+{c.hidden} more</text>}
-        </g>
-      ))}
-    </svg>
-    </div>
+    <>
+      <div className="flex shrink-0 flex-wrap items-center gap-x-2 border-b pb-1 text-xs">
+        <span id={hintId} className="mr-auto text-muted-foreground">Drag nodes or use the arrow keys.</span>
+        <button type="button" className={toolbarButton} onClick={() => scroll.current?.scrollTo(0, 0)}>Top</button>
+        <button type="button" className={toolbarButton} onClick={jumpToTask} disabled={!tasks.nodes.length}>Tasks</button>
+        <button type="button" className={toolbarButton} onClick={reset} disabled={!canReset}>Reset layout</button>
+      </div>
+      <div className="flex shrink-0 flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground" aria-label="Connection types">
+        <span><span aria-hidden="true">━ </span>Reporting / ownership</span>
+        <span><span aria-hidden="true" className="text-amber-500">┄ </span>Waiting on you</span>
+        <span><span aria-hidden="true">┄ </span>Trigger / dependency</span>
+        <span><span aria-hidden="true">┈ </span>Parent task</span>
+      </div>
+      <span className="sr-only" role="status">{notice}</span>
+      <div ref={scroll} data-graph-scroll className="min-h-0 flex-1 overflow-auto overscroll-contain rounded-lg bg-muted/25">
+        <svg ref={svg} viewBox={`0 0 ${GRAPH_WIDTH} ${height}`} role="group" aria-label="Team graph" className="block h-auto w-full min-w-[36rem]">
+          <defs>
+            {[[AGENT_W, AGENT_H], [CARD_W, CARD_H], [TRIGGER_W, TRIGGER_H]].map(([width, h]) => (
+              <clipPath id={`${clipId}-${width}`} key={width}><rect x={-width / 2 + 7} y={-h / 2} width={width - 14} height={h} /></clipPath>
+            ))}
+          </defs>
+          <g aria-hidden="true" className="pointer-events-none text-muted-foreground">
+            {root && <GraphEdge from={YOU} to={root} kind="reports" stroke={ringHex.working} strong />}
+            {agents.map((a) => {
+              const manager = a.reportsTo && agentsById.has(a.reportsTo) ? displayed[agentKey(a.reportsTo)] : undefined;
+              return manager && <GraphEdge key={a.id} from={manager} to={displayed[agentKey(a.id)]} kind="reports" stroke={a.status === 'working' ? ringHex.working : undefined} strong={a.status === 'working'} />;
+            })}
+            {agents.filter((a) => a.status === 'waiting').map((a) => <GraphEdge key={a.id} from={displayed[agentKey(a.id)]} to={YOU} kind="waiting" stroke={ringHex.waiting} dash="6 5" />)}
+            {triggers.map((t) => <GraphEdge key={t.id} from={displayed[triggerKey(t.id)]} to={root ?? YOU} kind="trigger" dash="4 5" />)}
+            {tasks.edges.map((e) => <GraphEdge key={`${e.kind}-${e.from}-${e.to}`} from={displayed[e.kind === 'owner' ? agentKey(e.from) : cardKey(e.from)]} to={displayed[cardKey(e.to)]} kind={e.kind} dash={e.kind === 'depends' ? '6 4' : e.kind === 'parent' ? '2 4' : undefined} />)}
+          </g>
+          <circle cx={YOU.x} cy={YOU.y} r="17" fill="currentColor" className="text-foreground" />
+          <text x={YOU.x} y={YOU.y + 4} textAnchor="middle" fontSize="11" fontWeight="600" fill="currentColor" className="text-background">You</text>
+          {triggers.map((t) => {
+            const id = triggerKey(t.id);
+            const { x, y, width, height: h } = displayed[id];
+            return <g key={id} {...bind(id, t.name, () => go('team', { panel: 'automations' }))} data-graph-node={id} aria-label={`Automation ${t.name}. Open Automations.`} aria-describedby={hintId} transform={`translate(${x} ${y})`}>
+              <rect x={-width / 2} y={-h / 2} width={width} height={h} rx="7" fill="var(--card)" stroke="var(--muted-foreground)" strokeDasharray="3 3" />
+              <text x="0" y="4" clipPath={`url(#${clipId}-${width})`} textAnchor="middle" fontSize="11" fill="currentColor" className="text-foreground">{clip(t.name, 21)}</text>
+              <title>{t.name}</title>
+            </g>;
+          })}
+          {agents.map((a) => {
+            const id = agentKey(a.id);
+            const { x, y, width, height: h } = displayed[id];
+            const counts = countsByAgent.get(a.id);
+            const summary = `${counts?.open ?? 0} open · ${counts?.blocked ?? 0} blocked`;
+            const team = a.teamNames?.join(', ');
+            const label = `${a.name}, ${statusMeta[a.status].label}. ${team ? `${team}. ` : ''}${summary}. Right-click or Shift+F10 for agent actions.`;
+            return <g key={id} {...bind(id, a.name, () => onOpen(a.id), actionTargets[a.id]?.onKeyDown)} onContextMenu={actionTargets[a.id]?.onContextMenu} data-graph-node={id} aria-label={label} aria-describedby={hintId} transform={`translate(${x} ${y})`}>
+              <rect x={-width / 2} y={-h / 2} width={width} height={h} rx="9" fill="var(--card)" stroke="var(--border)" strokeWidth="2" />
+              <circle cy="-17" r="11" fill="var(--secondary)" stroke={ringHex[a.status]} strokeWidth="2" />
+              <text y="-14" textAnchor="middle" fontSize="8" fontFamily="var(--font-mono)" fill="currentColor" className="text-foreground">{a.initials}</text>
+              <g clipPath={`url(#${clipId}-${width})`} textAnchor="middle" fill="currentColor">
+                <text y="4" fontSize="11" fontWeight="600" className="text-foreground">{clip(a.name, 16)}</text>
+                <text y="15" fontSize="9" className="text-muted-foreground">{team && clip(team, 18)}</text>
+                <text y={team ? 25 : 19} fontSize="9" className="text-muted-foreground">{summary}</text>
+              </g>
+              <title>{[a.name, team, statusMeta[a.status].label].filter(Boolean).join(' · ')}</title>
+            </g>;
+          })}
+          {tasks.columns.map((c) => {
+            const owner = c.owner === UNASSIGNED ? 'Unassigned' : agentsById.get(c.owner)?.name ?? c.owner;
+            return <g key={c.owner} transform={`translate(${c.x} ${c.top - 28})`}>
+              <text y="4" clipPath={`url(#${clipId}-${CARD_W})`} textAnchor="middle" fontSize="10" fill="currentColor" className="text-muted-foreground">{c.hidden ? `${clip(owner, 11)} · +${c.hidden} more` : clip(owner, 19)}</text>
+              <title>{owner}{c.hidden > 0 && ` · +${c.hidden} more`}</title>
+            </g>;
+          })}
+          {tasks.nodes.map((n) => {
+            const id = cardKey(n.key);
+            const { x, y, width, height: h } = displayed[id];
+            const owner = agentsById.get(n.agentId)?.name ?? 'unassigned';
+            const status = `${cardLabel[n.status]}${n.priority ? `, ${n.priority}` : ''}`;
+            const label = `Card ${n.key}: ${n.title}. ${status}. Owner ${owner}.`;
+            return <g key={id} {...bind(id, n.key, () => openCard(n.key))} data-graph-node={id} data-task-node={n.key} aria-label={label} aria-describedby={hintId} transform={`translate(${x} ${y})`}>
+              <rect x={-width / 2} y={-h / 2} width={width} height={h} rx="6" fill="var(--card)" stroke={cardHex[n.status]} strokeWidth="2" />
+              <g clipPath={`url(#${clipId}-${width})`} textAnchor="middle" fill="currentColor">
+                <text y="-2" fontSize="9" className="text-muted-foreground">{clip(`${n.key} · ${status}`, 23)}</text>
+                <text y="10" fontSize="10" className="text-foreground">{clip(n.title, 19)}</text>
+              </g>
+              <title>{label}</title>
+            </g>;
+          })}
+        </svg>
+      </div>
+    </>
   );
 }

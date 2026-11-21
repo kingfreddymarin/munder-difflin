@@ -24,7 +24,7 @@ import { persistTeamPanels, TEAM_PANEL_LAYOUT_KEY } from './team-panel-layout';
 type PanelId = TeamPanelId;
 const PANELS: Record<PanelId, { title: string; hint: string }> = {
   agents: { title: 'Agents', hint: 'tap one for its profile' },
-  graph: { title: 'Team graph', hint: 'reporting · live · asked you · triggers' },
+  graph: { title: 'Team graph', hint: '' },
   activity: { title: 'Activity', hint: 'today, per agent' },
   sources: { title: 'Data sources', hint: 'tap a cell to change access' },
   automations: { title: 'Automations', hint: 'hover for the rule' },
