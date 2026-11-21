@@ -113,6 +113,7 @@ function role(value: string, isGod: boolean): Agent['role'] {
 
 function status(value: string, breaker: string): Agent['status'] {
   if (breaker === 'constrain' || breaker === 'constrained' || breaker === 'stop' || breaker === 'stopped') return 'constrained';
+  if (value === 'compacting') return 'compacting';
   if (value === 'working' || value === 'busy') return 'working';
   if (value === 'blocked' || value === 'waiting') return 'waiting';
   if (value === 'crashed' || value === 'error') return 'crashed';
