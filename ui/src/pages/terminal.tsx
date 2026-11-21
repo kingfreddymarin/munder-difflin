@@ -5,6 +5,9 @@ import { PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { Code, CodeBlock, CodeHeader } from '@/components/animate-ui/components/animate/code';
 import { Button } from '@/components/animate-ui/components/buttons/button';
 import { IconButton } from '@/components/animate-ui/components/buttons/icon';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/animate-ui/components/radix/popover';
+import { Switch } from '@/components/animate-ui/components/radix/switch';
+import { SlidersHorizontal } from '@/components/animate-ui/icons/sliders-horizontal';
 import { Terminal } from '@/components/animate-ui/icons/terminal';
 import { Send } from '@/components/animate-ui/icons/send';
 import { Input } from '@/components/ui/input';
@@ -18,6 +21,7 @@ import { OpenWith } from '@/components/app/external-link';
 import { Screen } from '@/components/app/screen';
 import { PtyTerminalView } from '@/components/app/terminal/pty-terminal-view';
 import { SessionSide } from '@/components/app/terminal/session-side';
+import { loadTerminalPanels, persistTerminalPanels, TERMINAL_SIDE_PANEL_IDS, type TerminalSidePanelId } from './terminal-panel-layout';
 
 const SIDEBAR_KEY = 'paramount.terminal.sidebar.open';
 
@@ -36,6 +40,7 @@ export function TerminalPage() {
   const { route } = useRouter();
   const [draft, setDraft] = React.useState('');
   const [sidebarOpen, setSidebarOpen] = React.useState(loadSidebarOpen);
+  const [sidePanels, setSidePanels] = React.useState<TerminalSidePanelId[]>(loadTerminalPanels);
   const sidebarId = React.useId();
   const sidebar = React.useRef<HTMLDivElement>(null);
   const toggleButton = React.useRef<HTMLButtonElement>(null);
@@ -48,6 +53,14 @@ export function TerminalPage() {
     if (sidebar.current?.contains(document.activeElement)) toggleButton.current?.focus();
     setSidebarOpen((open) => !open);
   }, []);
+
+  const toggleSidePanel = (id: TerminalSidePanelId, on: boolean) => {
+    setSidePanels((prev) => persistTerminalPanels(
+      on
+        ? TERMINAL_SIDE_PANEL_IDS.filter((p) => p === id || prev.includes(p))
+        : prev.filter((p) => p !== id),
+    ));
+  };
 
   React.useEffect(() => {
     try { window.localStorage.setItem(SIDEBAR_KEY, String(sidebarOpen)); } catch { /* storage is optional */ }
@@ -86,6 +99,28 @@ export function TerminalPage() {
           <span className={cn('truncate text-xs', statusMeta[agent.status].text)}>{statusMeta[agent.status].label}</span>
           <span className="ml-auto" />
           {session?.cwd && <OpenWith path={session.cwd} />}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="ghost" aria-label="Customize sidebar panels" title="Customize sidebar panels">
+                <SlidersHorizontal animateOnHover />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64">
+              <div className="flex flex-col gap-2">
+                <span className="text-sm font-medium">Sidebar panels</span>
+                {TERMINAL_SIDE_PANEL_IDS.map((id) => {
+                  const on = sidePanels.includes(id);
+                  const label = id === 'asks' ? 'Asks' : id === 'talk' ? 'Agents talk' : id === 'artifacts' ? 'Artifacts' : id === 'updates' ? 'Updates' : 'Profile';
+                  return (
+                    <div key={id} className="flex items-center gap-2">
+                      <Switch checked={on} onCheckedChange={(v) => toggleSidePanel(id, v)} aria-label={`Show ${label}`} />
+                      <span className="flex-1 text-sm">{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </PopoverContent>
+          </Popover>
           <Button
             ref={toggleButton}
             type="button"
@@ -131,7 +166,7 @@ export function TerminalPage() {
           </section>
         )}
         {agent && <div id={sidebarId} ref={sidebar} hidden={!sidebarOpen} className="min-h-0 min-w-0">
-          <SessionSide key={agent.id} agent={agent} defaultProfile={!session} className="h-[min(65vh,36rem)] min-h-64 lg:h-full lg:min-h-0" />
+          <SessionSide key={agent.id} agent={agent} defaultProfile={!session} visibleTabs={sidePanels} className="h-[min(65vh,36rem)] min-h-64 lg:h-full lg:min-h-0" />
         </div>}
       </div>
     </Screen>

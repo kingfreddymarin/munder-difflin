@@ -21,28 +21,35 @@ import { useRouter } from '@/app/router';
 import { AgentProfileForm, useAgentProfile } from '@/features/team/agent-profile';
 
 type Tab = 'asks' | 'talk' | 'artifacts' | 'updates' | 'profile';
+const ALL_TABS: Tab[] = ['asks', 'talk', 'artifacts', 'updates', 'profile'];
 
-export function SessionSide({ agent, defaultProfile, className }: { agent: Agent; defaultProfile: boolean; className?: string }) {
+export function SessionSide({ agent, defaultProfile, className, visibleTabs }: { agent: Agent; defaultProfile: boolean; className?: string; visibleTabs?: Tab[] }) {
   const messages = useFloor((s) => s.messages);
   const agents = useFloor((s) => s.agents);
   const asks = React.useMemo(() => openAsks(messages, agent.id), [messages, agent.id]);
   const { route } = useRouter();
+  const shownTabs = visibleTabs ?? ALL_TABS;
   const [tab, setTab] = React.useState<Tab>(() => {
-    if (route.params.get('tab') === 'updates') return 'updates';
-    if (defaultProfile) return 'profile';
-    return asks.length ? 'asks' : 'talk';
+    const requested = route.params.get('tab') === 'updates' ? 'updates' : defaultProfile ? 'profile' : asks.length ? 'asks' : 'talk';
+    return shownTabs.includes(requested) ? requested : shownTabs[0] ?? 'talk';
   });
-  React.useEffect(() => { if (route.params.get('tab') === 'updates') setTab('updates'); }, [route.params]);
+  // When a panel is hidden while it is active, redirect to the first visible panel.
+  React.useEffect(() => {
+    if (!shownTabs.includes(tab)) setTab(shownTabs[0] ?? 'talk');
+  }, [shownTabs, tab]);
+  React.useEffect(() => {
+    if (route.params.get('tab') === 'updates' && shownTabs.includes('updates')) setTab('updates');
+  }, [route.params, shownTabs]);
   const updates = messages.filter((m) => m.kind === 'system' && m.terminalAgentId === agent.id).sort((a, b) => b.at.localeCompare(a.at));
   return (
     <aside aria-label={`${agent.name} context`} className={cn('bg-card flex min-h-0 flex-col gap-2 overflow-hidden rounded-xl border p-2', className)}>
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="min-h-0 flex-1">
         <TabsList aria-label="Terminal sidebar tabs" className="h-auto w-full shrink-0 flex-wrap">
-          <TabsTrigger value="asks">Asks{asks.length ? ` · ${asks.length}` : ''}</TabsTrigger>
-          <TabsTrigger value="talk">Agents talk</TabsTrigger>
-          <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
-          <TabsTrigger value="updates">Updates</TabsTrigger>
-          <TabsTrigger value="profile" className="text-black focus-visible:ring-[#FFC24B] data-[state=active]:bg-[#FFC24B] data-[state=active]:text-black dark:text-white dark:data-[state=active]:text-black">Profile</TabsTrigger>
+          {shownTabs.includes('asks') && <TabsTrigger value="asks">Asks{asks.length ? ` · ${asks.length}` : ''}</TabsTrigger>}
+          {shownTabs.includes('talk') && <TabsTrigger value="talk">Agents talk</TabsTrigger>}
+          {shownTabs.includes('artifacts') && <TabsTrigger value="artifacts">Artifacts</TabsTrigger>}
+          {shownTabs.includes('updates') && <TabsTrigger value="updates">Updates</TabsTrigger>}
+          {shownTabs.includes('profile') && <TabsTrigger value="profile" className="text-black focus-visible:ring-[#FFC24B] data-[state=active]:bg-[#FFC24B] data-[state=active]:text-black dark:text-white dark:data-[state=active]:text-black">Profile</TabsTrigger>}
         </TabsList>
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
           {tab === 'asks' && <AsksList asks={asks} agent={agent} />}
