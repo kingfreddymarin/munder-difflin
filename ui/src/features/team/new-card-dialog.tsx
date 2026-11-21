@@ -16,27 +16,29 @@ export function NewCardDialog({ open, onClose, onCreated, assignee }: { open: bo
   const agents = useFloor((s) => s.agents);
   const dispatch = useDispatch();
   const unsupported = useUnsupported();
-  // Tracks whether the user dismissed the dialog before the create resolved.
-  const cancelledRef = React.useRef(false);
+  // Monotonic generation counter. Each submit claims a generation; handleClose advances past it.
+  // A pending completion only acts if its generation still matches — survives close/reopen cycles.
+  const generationRef = React.useRef(0);
   const empty = React.useCallback(() => ({ title: '', description: '', assignee: assignee ?? '', priority: 2 as 1 | 2 | 3 }), [assignee]);
   const [form, setForm] = React.useState(empty);
   const [sending, setSending] = React.useState(false);
-  React.useEffect(() => { if (open) { setForm(empty()); cancelledRef.current = false; } }, [open, empty]);
+  React.useEffect(() => { if (open) setForm(empty()); }, [open, empty]);
 
   const command = { type: 'card.create' as const, title: form.title.trim(), priority: form.priority,
     ...(form.description.trim() ? { description: form.description.trim() } : {}), ...(form.assignee ? { assignee: form.assignee } : {}) };
   const reason = unsupported(command);
 
-  const handleClose = () => { cancelledRef.current = true; onClose(); };
+  const handleClose = () => { generationRef.current++; onClose(); };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (!command.title || reason) return;
     setSending(true);
+    const myGeneration = ++generationRef.current;
     const result = await dispatch(command);
     setSending(false);
-    if (result && !cancelledRef.current) {
+    if (result && generationRef.current === myGeneration) {
       if (typeof result === 'string') onCreated?.(result);
       onClose();
     }

@@ -292,15 +292,14 @@ test('chips show card key; linked card title is shown if in openCards', () => {
 });
 
 // ── NewCardDialog harness ────────────────────────────────────────────────────
-// Tests NewCardDialog directly. Hooks in order: useRef (cancelledRef), useCallback, useState×2, useEffect.
-// useEffect is suppressed (we manage initial state directly); dispatch is a controllable promise.
+// Tests NewCardDialog directly. Hooks in order: useRef (generationRef), useCallback, useState×2, useEffect.
+// useEffect is suppressed; dispatch slots are per-submit so old and new submits can be resolved independently.
 function makeDialogHarness() {
   const values = []; let cursor = 0;
   const refMap = new Map(); let refCursor = 0;
-  let resolveDispatch = null;
+  const dispatchSlots = []; // { promise, resolve } per submitForm() call
   const dispatched = [];
   const created = []; let closed = 0;
-  let currentDispatchPromise = new Promise((res) => { resolveDispatch = res; });
 
   const react = {
     createElement: (tag, props, ...children) => ({ tag, props: { ...props, children } }),
@@ -314,12 +313,17 @@ function makeDialogHarness() {
       return refMap.get(i);
     },
     useCallback: (fn) => fn,
-    useEffect: () => {}, // effects managed by test: initial state from useState defaults
+    useEffect: () => {}, // suppressed — generation ref never resets between openings
   };
   const req = (id) => {
     if (id === 'react') return react;
     if (id === '@/data/store') return {
-      useDispatch: () => async (c) => { dispatched.push(c); return currentDispatchPromise; },
+      useDispatch: () => async (c) => {
+        dispatched.push(c);
+        const slot = {}; slot.promise = new Promise(res => { slot.resolve = res; });
+        dispatchSlots.push(slot);
+        return slot.promise;
+      },
       useFloor: (sel) => sel({ agents: [], cards: [] }),
       useUnsupported: () => () => null,
     };
@@ -332,25 +336,21 @@ function makeDialogHarness() {
     return mod.NewCardDialog({ open: true, onClose: () => closed++, onCreated: (key) => created.push(key) });
   };
   const setTitle = (title) => {
-    const tree = render();
-    nodes(tree).find((n) => n.props?.id === 'nc-title').props.onChange({ target: { value: title } });
+    nodes(render()).find((n) => n.props?.id === 'nc-title').props.onChange({ target: { value: title } });
   };
   const submitForm = () => {
-    // Reset dispatch promise for this submission
-    currentDispatchPromise = new Promise((res) => { resolveDispatch = res; });
-    const tree = render();
-    nodes(tree).find((n) => n.tag === 'form').props.onSubmit({ preventDefault() {}, stopPropagation() {} });
+    nodes(render()).find((n) => n.tag === 'form').props.onSubmit({ preventDefault() {}, stopPropagation() {} });
   };
   const clickCancel = () => {
-    const tree = render();
-    // Cancel button: ghost variant Button
-    const cancel = nodes(tree).find((n) => n.tag === 'Button' && n.props?.variant === 'ghost' && n.props?.type === 'button');
+    const cancel = nodes(render()).find((n) => n.tag === 'Button' && n.props?.variant === 'ghost' && n.props?.type === 'button');
     if (cancel) cancel.props.onClick();
   };
+  const tick = () => new Promise(setImmediate);
   return {
     render, setTitle, submitForm, clickCancel, dispatched, created,
-    closed: () => closed,
-    resolve: (key) => { resolveDispatch(key); },
+    closed: () => closed, tick,
+    resolve: (key) => dispatchSlots[dispatchSlots.length - 1]?.resolve(key),
+    resolveSlot: (i, key) => dispatchSlots[i]?.resolve(key),
   };
 }
 
@@ -361,7 +361,7 @@ test('NewCardDialog: dispatch-returned key is delivered to onCreated', async () 
   h.setTitle('My card');
   h.submitForm();
   h.resolve('NSC-33');
-  await new Promise(setImmediate); await new Promise(setImmediate);
+  await h.tick(); await h.tick();
   assert.deepEqual(h.created, ['NSC-33'], 'key from dispatch result delivered — not snapshot inference');
 });
 
@@ -369,10 +369,30 @@ test('NewCardDialog: cancel before create resolves does not call onCreated', asy
   const h = makeDialogHarness();
   h.setTitle('My card');
   h.submitForm();
-  h.clickCancel(); // sets cancelledRef.current = true
+  h.clickCancel(); // advances generationRef past the in-flight submit
   h.resolve('NSC-33');
-  await new Promise(setImmediate); await new Promise(setImmediate);
+  await h.tick(); await h.tick();
   assert.deepEqual(h.created, [], 'onCreated suppressed when cancel preceded resolve');
+});
+
+test('NewCardDialog: old pending create does not affect a reopened dialog', async () => {
+  const h = makeDialogHarness();
+  // First opening: submit, then cancel before the core replies
+  h.setTitle('First card');
+  h.submitForm(); // dispatchSlots[0]; generationRef 0→1, myGen=1
+  h.clickCancel(); // generationRef 1→2; onClose() → closed=1
+  // Reopen on the same objective (useEffect suppressed — generationRef stays at 2)
+  h.setTitle('Second card');
+  h.submitForm(); // dispatchSlots[1]; generationRef 2→3, myGen=3
+  // Now the old create's core reply arrives
+  h.resolveSlot(0, 'NSC-33');
+  await h.tick(); await h.tick();
+  assert.deepEqual(h.created, [], 'old create does not call onCreated after reopen');
+  assert.equal(h.closed(), 1, 'dialog closed once from cancel only — old create does not close the new opening');
+  // New create's reply arrives
+  h.resolve('NSC-44');
+  await h.tick(); await h.tick();
+  assert.deepEqual(h.created, ['NSC-44'], 'new create delivers its own key');
 });
 
 test('removing a chip redirects focus to the new-card button', () => {
