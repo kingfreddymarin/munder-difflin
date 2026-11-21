@@ -108,3 +108,27 @@ export function groupResults(items: SearchResult[]): Array<{ kind: SearchKind; l
     results: map.get(k)!,
   }));
 }
+
+/**
+ * Returns true when a keydown event should open the search palette.
+ *
+ * Platform rules (Ctrl+K is readline kill-to-end-of-line in xterm):
+ *   macOS  → Cmd+K only (Ctrl+K must reach the terminal PTY unchanged)
+ *   other  → Ctrl+K only when the event target is NOT inside an xterm (.xterm)
+ *
+ * `target` is typed as a duck-typed closest-capable object (no DOM lib needed
+ * for standalone compilation and unit tests).
+ */
+export function isSearchTrigger(
+  key: string,
+  metaKey: boolean,
+  ctrlKey: boolean,
+  target: { closest(selector: string): object | null } | null,
+  isMac: boolean,
+): boolean {
+  if (key.toLowerCase() !== 'k') return false;
+  if (isMac) return metaKey && !ctrlKey;
+  if (!ctrlKey) return false;
+  if (target !== null && target.closest('.xterm') !== null) return false;
+  return true;
+}

@@ -15,7 +15,7 @@ execFileSync('node_modules/.bin/tsc', [
   '--skipLibCheck', join(HERE, '../src/features/search/search-index.ts'),
 ]);
 const file = readdirSync(outputDir, { recursive: true }).find((n) => String(n).endsWith('search-index.js'));
-const { buildSearchIndex, filterResults, groupResults, STATIC_VIEWS, STATIC_SETTINGS, KIND_ORDER, KIND_LABELS } =
+const { buildSearchIndex, filterResults, groupResults, STATIC_VIEWS, STATIC_SETTINGS, KIND_ORDER, KIND_LABELS, isSearchTrigger } =
   await import(pathToFileURL(join(outputDir, String(file))).href);
 
 // — fixtures —
@@ -160,4 +160,25 @@ test('agent navigation uses terminal route with agent id param', () => {
   assert.ok(item);
   assert.equal(item.route, 'terminal');
   assert.deepEqual(item.params, { a: 'agent-99' });
+});
+
+// — isSearchTrigger: platform-aware key predicate —
+
+const outside = { closest: (_s) => null };        // outside any xterm
+const insideXterm = { closest: (s) => s === '.xterm' ? {} : null };
+
+test('isSearchTrigger: macOS Cmd+K → open', () => {
+  assert.equal(isSearchTrigger('k', true, false, outside, true), true);
+});
+
+test('isSearchTrigger: macOS Ctrl+K → ignore (let terminal PTY handle it)', () => {
+  assert.equal(isSearchTrigger('k', false, true, outside, true), false);
+});
+
+test('isSearchTrigger: non-mac Ctrl+K outside terminal → open', () => {
+  assert.equal(isSearchTrigger('k', false, true, outside, false), true);
+});
+
+test('isSearchTrigger: non-mac Ctrl+K inside xterm → ignore', () => {
+  assert.equal(isSearchTrigger('k', false, true, insideXterm, false), false);
 });

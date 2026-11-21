@@ -24,6 +24,7 @@ import { MoreHorizontal } from 'lucide-react';
 import { useDispatch } from '@/data/store';
 import { useFloorViewMode } from './floor-view-mode';
 import { FloorSearch } from '@/features/search/floor-search';
+import { isSearchTrigger } from '@/features/search/search-index';
 
 /** Buffer every live agent's output from spawn, as Munder's App does (terminal-pool prewarmTerminals). */
 function usePrewarmTerminals() {
@@ -151,8 +152,9 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
   const [searchOpen, setSearchOpen] = React.useState(false);
 
   React.useEffect(() => {
+    const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform);
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+      if (isSearchTrigger(e.key, e.metaKey, e.ctrlKey, e.target as Element | null, isMac)) {
         e.preventDefault();
         setSearchOpen((o) => !o);
       }
