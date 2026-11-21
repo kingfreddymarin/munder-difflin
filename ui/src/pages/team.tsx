@@ -29,12 +29,13 @@ const PANELS: Record<PanelId, { title: string; hint: string }> = {
   sources: { title: 'Data sources', hint: 'tap a cell to change access' },
   automations: { title: 'Automations', hint: 'hover for the rule' },
 };
-const DEFAULT: PanelId[] = ['graph', 'agents', 'activity', 'sources', 'automations'];
+const PANEL_ORDER: PanelId[] = ['graph', 'agents', 'activity', 'sources', 'automations'];
+const DEFAULT: PanelId[] = ['graph'];
 
 function load(): PanelId[] {
   try {
     const v = JSON.parse(localStorage.getItem(TEAM_PANEL_LAYOUT_KEY) ?? 'null');
-    return Array.isArray(v) ? v.filter(isTeamPanelId) : DEFAULT;
+    return Array.isArray(v) ? ['graph', ...v.filter((id) => isTeamPanelId(id) && id !== 'graph')] : DEFAULT;
   } catch {
     return DEFAULT;
   }
@@ -42,10 +43,10 @@ function load(): PanelId[] {
 
 const gridFor: Record<number, string> = {
   1: 'grid-cols-1',
-  2: 'lg:grid-cols-2',
-  3: 'lg:grid-cols-2 lg:grid-rows-2 [&>*:first-child]:lg:col-span-2',
-  4: 'lg:grid-cols-2 lg:grid-rows-2',
-  5: 'lg:grid-cols-3 lg:grid-rows-2 [&>*:first-child]:lg:col-span-2',
+  2: 'lg:grid-rows-[minmax(22rem,2fr)_minmax(12rem,1fr)]',
+  3: 'lg:grid-cols-2 lg:grid-rows-[minmax(22rem,2fr)_minmax(12rem,1fr)] [&>*:first-child]:lg:col-span-full',
+  4: 'lg:grid-cols-3 lg:grid-rows-[minmax(22rem,2fr)_minmax(12rem,1fr)] [&>*:first-child]:lg:col-span-full',
+  5: 'lg:grid-cols-4 lg:grid-rows-[minmax(22rem,2fr)_minmax(12rem,1fr)] [&>*:first-child]:lg:col-span-full',
 };
 
 export function TeamPage() {
@@ -92,10 +93,10 @@ export function TeamPage() {
     });
     return () => cancelAnimationFrame(frame);
   }, [panelToFocus, panels]);
-  const toggle = (id: PanelId, on: boolean) => apply(on ? DEFAULT.filter((p) => p === id || panels.includes(p)) : panels.filter((p) => p !== id));
+  const toggle = (id: PanelId, on: boolean) => apply(on ? PANEL_ORDER.filter((p) => p === id || panels.includes(p)) : panels.filter((p) => p !== id));
   const move = (id: PanelId, d: -1 | 1) => {
     const i = panels.indexOf(id), j = i + d;
-    if (i < 0 || j < 0 || j >= panels.length) return;
+    if (i < 1 || j < 1 || j >= panels.length) return;
     const next = [...panels];
     [next[i], next[j]] = [next[j], next[i]];
     apply(next);
@@ -113,11 +114,10 @@ export function TeamPage() {
   };
 
   return (
-    <Screen>
+    <Screen fill>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex min-w-48 flex-1 flex-col">
           <h1 className="text-xl font-semibold tracking-tight">Team</h1>
-          <span className="text-muted-foreground text-xs">Agents, graph, activity, data sources and automations on one screen</span>
         </div>
         <Popover>
           <PopoverTrigger asChild>
@@ -126,14 +126,14 @@ export function TeamPage() {
           <PopoverContent align="end" className="w-80">
             <div className="flex flex-col gap-2">
               <span className="text-sm font-medium">Panels on this screen</span>
-              {DEFAULT.map((id) => {
+              {PANEL_ORDER.filter((id) => id !== 'graph').map((id) => {
                 const on = panels.includes(id);
                 return (
                   <div key={id} className="flex items-center gap-2">
                     <Switch checked={on} onCheckedChange={(v) => toggle(id, v)} aria-label={`Show ${PANELS[id].title}`} />
                     <span className="flex-1 text-sm">{PANELS[id].title}</span>
-                    <Button size="icon-sm" variant="ghost" disabled={!on} onClick={() => move(id, -1)} aria-label={`Move ${PANELS[id].title} up`}>↑</Button>
-                    <Button size="icon-sm" variant="ghost" disabled={!on} onClick={() => move(id, 1)} aria-label={`Move ${PANELS[id].title} down`}>↓</Button>
+                    <Button size="icon-sm" variant="ghost" disabled={!on || panels.indexOf(id) <= 1} onClick={() => move(id, -1)} aria-label={`Move ${PANELS[id].title} up`}>↑</Button>
+                    <Button size="icon-sm" variant="ghost" disabled={!on || panels.at(-1) === id} onClick={() => move(id, 1)} aria-label={`Move ${PANELS[id].title} down`}>↓</Button>
                   </div>
                 );
               })}
@@ -152,7 +152,7 @@ export function TeamPage() {
           title={teamApi ? 'Add an agent: review the exact command, then start it in a terminal' : 'Hiring needs the desktop core.'}>Hire</Button>
       </div>
       <Button variant="link" className="self-start" onClick={() => go('settings', { tab: 'team' })}>Team configuration is in Settings › Team</Button>
-      <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3', gridFor[panels.length] ?? gridFor[5])}>
+      <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto auto-rows-[minmax(22rem,1fr)]', gridFor[panels.length] ?? gridFor[5])}>
         {panels.map((id) => (
           <div key={id} id={`team-panel-${id}`} className="min-h-0 min-w-0">
             <Tile title={PANELS[id].title} hint={PANELS[id].hint} className="h-full">{body(id)}</Tile>
