@@ -2117,7 +2117,7 @@ export class HiveManager {
       return Array.isArray(cards) ? cards.find((card) => card?.id === id) : undefined;
     };
     const task = readTask();
-    if (!task) return { ok: false, code: 'NOT_FOUND', message: 'This task is no longer on the Board.' };
+    if (!task || task.boardArchivedAt) return { ok: false, code: 'NOT_FOUND', message: 'This task is no longer on the Board.' };
     const previous = task.boardDispatch;
     if (previous?.delivered && previous.agentId === agentId && task.assignee === agentId) {
       return { ok: true, receipt: previous, reused: true };
@@ -2133,7 +2133,7 @@ export class HiveManager {
     });
     const complete = (receipt: BoardDispatchReceipt): BoardDispatchResult => {
       const current = readTask();
-      if (!current || current.status === 'done' || (current.assignee || null) !== expectedAssignee
+      if (!current || current.boardArchivedAt || current.status === 'done' || (current.assignee || null) !== expectedAssignee
         || current.boardDispatch?.messageId !== receipt.messageId) return uncertain();
       const delivered = { ...receipt, delivered: true };
       if (!this.patchTask(id, { assignee: agentId, boardDispatch: delivered })) return uncertain();

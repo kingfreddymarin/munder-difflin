@@ -220,7 +220,7 @@ function SendTask({ card }: { card: CardT }) {
   const reason = unsupported(command);
   const send = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (inFlight.current || !recipient || reason || card.status === 'done') return;
+    if (inFlight.current || !recipient || reason || card.status === 'done' || card.boardArchivedAt) return;
     inFlight.current = true;
     setPending(true);
     setFailed(false);
@@ -234,7 +234,7 @@ function SendTask({ card }: { card: CardT }) {
       setFailed(true);
     }
   };
-  if (card.status === 'done') return null;
+  if (card.status === 'done' || card.boardArchivedAt) return null;
   return (
     <form onSubmit={send} className="grid gap-2 border-b pb-4">
       <label htmlFor={selectId} className="text-sm font-medium">Send task to an agent</label>

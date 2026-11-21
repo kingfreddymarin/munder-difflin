@@ -192,3 +192,13 @@ test('an interrupted assignment reconciles a handled mailbox receipt without sen
   assert.deepEqual(restarted.inbox('worker-pam'), []);
   assert.equal(events.length, 1);
 });
+
+test('refuses to send a card archived from the Board and leaves every inbox empty', (t) => {
+  const { hive, run, events } = fixture(t);
+  assert.equal(hive.patchTask(card.id, { boardArchivedAt: '2026-11-21T10:00:00.000Z' }), true);
+  const result = run();
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'NOT_FOUND');
+  assert.deepEqual(hive.inbox('worker-pam'), []);
+  assert.deepEqual(events, []);
+});
